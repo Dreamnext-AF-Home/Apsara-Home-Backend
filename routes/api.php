@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\CategoryController;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\PaymentController;
 use App\Http\Controllers\Api\AdminAuthController;
+use App\Http\Controllers\Api\AdminOrderController;
 
 
 // Public auth routes
@@ -18,6 +19,7 @@ Route::prefix('auth')->group(function () {
 Route::post('/payments/checkout-session', [PaymentController::class, 'createCheckoutSession']);
 Route::get('/payments/checkout-session/{checkoutId}', [PaymentController::class, 'verifyCheckoutSession']);
 Route::get('/categories', [CategoryController::class, 'index']);
+Route::get('/products/slug/{slug}', [ProductController::class, 'showBySlug']);
 Route::get('/products', [ProductController::class, 'index']);
 
 
@@ -36,6 +38,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/admin/categories', [CategoryController::class, 'store']);
     Route::put('/admin/categories/{id}', [CategoryController::class, 'update']);
     Route::delete('/admin/categories/{id}', [CategoryController::class, 'destroy']);
+    Route::get('/orders/history', [PaymentController::class, 'checkoutHistory']);
+    Route::get('/admin/orders', [AdminOrderController::class, 'index']);
+    Route::patch('/admin/orders/{id}/approve', [AdminOrderController::class, 'approve']);
+    Route::patch('/admin/orders/{id}/reject', [AdminOrderController::class, 'reject']);
+    Route::patch('/admin/orders/{id}/status', [AdminOrderController::class, 'updateStatus']);
 });
 
 Route::prefix('admin/auth')->group(function () {

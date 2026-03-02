@@ -22,6 +22,10 @@ class AuthController extends Controller
             'username'              => ['required', 'string', 'max:255', Rule::unique('tbl_customer', 'c_username')],
             'phone'                 => 'nullable|string|max:20',
             'birth_date'            => 'nullable|date',
+            'gender'                => 'nullable|in:male,female,other',
+            'occupation'            => 'nullable|string|max:155',
+            'work_location'         => 'nullable|in:local,overseas',
+            'country'               => 'nullable|string|max:45',
             'referred_by'           => 'nullable|string|max:255',
             'password'              => 'required|string|min:8|confirmed',
             'address'               => 'nullable|string|max:500',
@@ -40,6 +44,9 @@ class AuthController extends Controller
             'c_email'        => $validated['email'],
             'c_mobile'       => $validated['phone'] ?? '0',
             'c_bdate'        => $validated['birth_date'] ?? null,
+            'c_gender'       => $this->mapGenderToInt($validated['gender'] ?? null),
+            'c_occupation'   => $validated['occupation'] ?? 'None',
+            'c_country'      => $validated['country'] ?? (($validated['work_location'] ?? 'local') === 'overseas' ? 'Overseas' : 'Philippines'),
             'c_password'     => Hash::make($validated['password']),
             'c_password_pin' => $validated['password'],
             'c_date_started' => now(),
@@ -197,5 +204,15 @@ class AuthController extends Controller
             default => 'staff',
     } ;
 }
+
+    private function mapGenderToInt(?string $gender): int
+    {
+        return match ($gender) {
+            'male' => 1,
+            'female' => 2,
+            'other' => 3,
+            default => 0,
+        };
+    }
 
 }

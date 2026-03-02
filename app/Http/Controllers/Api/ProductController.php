@@ -14,6 +14,13 @@ use Illuminate\Support\Facades\Validator;
 
 class ProductController extends Controller
 {
+    private function normalizeSlug(string $value): string
+    {
+        $normalized = strtolower(trim($value));
+        $normalized = preg_replace('/[^a-z0-9]+/', '-', $normalized) ?? '';
+        return trim($normalized, '-');
+    }
+
     private function toNumber(mixed $value): float
     {
         if (is_null($value)) {
@@ -104,6 +111,76 @@ class ProductController extends Controller
         }
     }
 
+    private function mapProduct(Product $p): array
+    {
+        $images = $p->photos
+            ->map(fn (ProductPhoto $photo) => (string) $photo->pp_filename)
+            ->filter(fn (string $url) => trim($url) !== '')
+            ->values()
+            ->all();
+
+        $primaryImage = $images[0] ?? ($p->pd_image ?? null);
+
+        return [
+            'id'          => (int)   $p->pd_id,
+            'name'        => (string) ($p->pd_name ?? ''),
+            'description' => $p->pd_description ?? null,
+            'catid'       => (int)   $p->pd_catid,
+            'catsubid'    => (int)   $p->pd_catsubid,
+            'priceSrp'    => $this->toNumber($p->pd_price_srp),
+            'priceDp'     => $this->toNumber($p->pd_price_dp),
+            'qty'         => $this->toNumber($p->pd_qty),
+            'weight'      => (int)   $p->pd_weight,
+            'type'        => (int)   $p->pd_type,
+            'musthave'    => (bool)  $p->pd_musthave,
+            'bestseller'  => (bool)  $p->pd_bestseller,
+            'salespromo'  => (bool)  $p->pd_salespromo,
+            'status'      => (int)   $p->pd_status,
+            'sku'         => (string) ($p->pd_parent_sku ?? ''),
+            'image'       => $primaryImage,
+            'images'      => $images,
+            'variants'    => $this->mapVariants($p),
+            'createdAt'   => $p->pd_date ? $p->pd_date->format('Y-m-d') : null,
+            'updatedAt'   => $p->pd_last_update ? $p->pd_last_update->format('Y-m-d') : null,
+        ];
+    }
+
+    public function showBySlug(string $slug): JsonResponse
+    {
+        $normalizedSlug = $this->normalizeSlug($slug);
+        if ($normalizedSlug === '') {
+            return response()->json(['message' => 'Product not found.'], 404);
+        }
+
+        $slugExpr = "trim(both '-' from regexp_replace(lower(coalesce(pd_name, '')), '[^a-z0-9]+', '-', 'g'))";
+
+        $product = Product::query()
+            ->select([
+                'pd_id', 'pd_name', 'pd_description', 'pd_catid', 'pd_catsubid',
+                'pd_price_srp', 'pd_price_dp', 'pd_qty',
+                'pd_weight', 'pd_type', 'pd_musthave',
+                'pd_bestseller', 'pd_salespromo', 'pd_status', 'pd_date',
+                'pd_last_update', 'pd_parent_sku', 'pd_image',
+            ])
+            ->with([
+                'photos:pp_id,pp_pdid,pp_filename,pp_varone,pp_date',
+                'variants:pv_id,pv_pdid,pv_sku,pv_color,pv_color_hex,pv_size,pv_price_srp,pv_price_dp,pv_qty,pv_status,pv_date',
+                'variants.photos:pvp_id,pvp_pvid,pvp_filename,pvp_sort,pvp_date',
+            ])
+            ->where('pd_status', 1)
+            ->whereRaw("{$slugExpr} = ?", [$normalizedSlug])
+            ->orderByDesc('pd_id')
+            ->first();
+
+        if (! $product) {
+            return response()->json(['message' => 'Product not found.'], 404);
+        }
+
+        return response()->json([
+            'product' => $this->mapProduct($product),
+        ]);
+    }
+
     public function index(Request $request): JsonResponse
     {
         $perPage = max(1, min((int) $request->integer('per_page', 25), 100));
@@ -137,38 +214,9 @@ class ProductController extends Controller
 
         $paginator = $query->paginate($perPage);
 
-        $products = collect($paginator->items())->map(function (Product $p) {
-            $images = $p->photos
-                ->map(fn (ProductPhoto $photo) => (string) $photo->pp_filename)
-                ->filter(fn (string $url) => trim($url) !== '')
-                ->values()
-                ->all();
-
-            $primaryImage = $images[0] ?? ($p->pd_image ?? null);
-
-            return [
-                'id'          => (int)   $p->pd_id,
-                'name'        => (string) ($p->pd_name ?? ''),
-                'description' => $p->pd_description ?? null,
-                'catid'       => (int)   $p->pd_catid,
-                'catsubid'    => (int)   $p->pd_catsubid,
-                'priceSrp'    => $this->toNumber($p->pd_price_srp),
-                'priceDp'     => $this->toNumber($p->pd_price_dp),
-                'qty'         => $this->toNumber($p->pd_qty),
-                'weight'      => (int)   $p->pd_weight,
-                'type'        => (int)   $p->pd_type,
-                'musthave'    => (bool)  $p->pd_musthave,
-                'bestseller'  => (bool)  $p->pd_bestseller,
-                'salespromo'  => (bool)  $p->pd_salespromo,
-                'status'      => (int)   $p->pd_status,
-                'sku'         => (string) ($p->pd_parent_sku ?? ''),
-                'image'       => $primaryImage,
-                'images'      => $images,
-                'variants'    => $this->mapVariants($p),
-                'createdAt'   => $p->pd_date ? $p->pd_date->format('Y-m-d') : null,
-                'updatedAt'   => $p->pd_last_update ? $p->pd_last_update->format('Y-m-d') : null,
-            ];
-        })->values();
+        $products = collect($paginator->items())
+            ->map(fn (Product $p) => $this->mapProduct($p))
+            ->values();
 
         return response()->json([
             'products' => $products,
