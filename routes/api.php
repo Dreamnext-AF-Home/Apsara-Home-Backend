@@ -18,6 +18,7 @@ Route::prefix('auth')->group(function () {
 Route::post('/payments/checkout-session', [PaymentController::class, 'createCheckoutSession']);
 Route::get('/payments/checkout-session/{checkoutId}', [PaymentController::class, 'verifyCheckoutSession']);
 Route::get('/categories', [CategoryController::class, 'index']);
+Route::get('/products', [ProductController::class, 'index']);
 
 
 // Protected routes (requires Sanctum token)
