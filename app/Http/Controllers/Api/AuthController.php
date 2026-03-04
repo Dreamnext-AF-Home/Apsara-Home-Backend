@@ -27,13 +27,34 @@ class AuthController extends Controller
             'work_location'         => 'nullable|in:local,overseas',
             'country'               => 'nullable|string|max:45',
             'referred_by'           => 'nullable|string|max:255',
-            'password'              => 'required|string|min:8|confirmed',
+            'password'              => [
+                'required',
+                'string',
+                'min:8',
+                'confirmed',
+                'regex:/[A-Z]/',
+                'regex:/[a-z]/',
+                'regex:/[0-9]/',
+                'regex:/[^A-Za-z0-9]/',
+            ],
             'address'               => 'nullable|string|max:500',
             'barangay'              => 'nullable|string|max:255',
             'city'                  => 'nullable|string|max:255',
             'province'              => 'nullable|string|max:255',
             'region'                => 'nullable|string|max:255',
             'zip_code'              => 'nullable|string|max:20',
+        ], [
+            'password.min' => 'Password must be at least 8 characters.',
+            'password.confirmed' => 'Password confirmation does not match.',
+            'password.regex' => 'Password must include uppercase, lowercase, number, and special character.',
+        ]);
+
+        $this->validateNoBadWords([
+            'first_name' => $validated['first_name'] ?? null,
+            'last_name' => $validated['last_name'] ?? null,
+            'middle_name' => $validated['middle_name'] ?? null,
+            'name' => $validated['name'] ?? null,
+            'username' => $validated['username'] ?? null,
         ]);
 
         $customer = Customer::create([
@@ -232,6 +253,68 @@ class AuthController extends Controller
             'other' => 3,
             default => 0,
         };
+    }
+
+    private function validateNoBadWords(array $values): void
+    {
+        $blocked = $this->badWordList();
+        $errors = [];
+
+        foreach ($values as $field => $value) {
+            if (!is_string($value) || trim($value) === '') {
+                continue;
+            }
+
+            if ($this->containsBlockedWord($value, $blocked)) {
+                $errors[$field] = ['This field contains prohibited words. Please use appropriate text.'];
+            }
+        }
+
+        if (!empty($errors)) {
+            throw ValidationException::withMessages($errors);
+        }
+    }
+
+    private function containsBlockedWord(string $value, array $blocked): bool
+    {
+        $lower = strtolower($value);
+        $normalized = preg_replace('/[^a-z0-9]+/', ' ', $lower) ?? '';
+        $compact = preg_replace('/[^a-z0-9]+/', '', $lower) ?? '';
+
+        foreach ($blocked as $word) {
+            $needle = strtolower(trim($word));
+            if ($needle === '') {
+                continue;
+            }
+
+            $needleCompact = preg_replace('/[^a-z0-9]+/', '', $needle) ?? '';
+
+            if (str_contains($normalized, $needle) || ($needleCompact !== '' && str_contains($compact, $needleCompact))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function badWordList(): array
+    {
+        return [
+            'fuck',
+            'shit',
+            'bitch',
+            'asshole',
+            'puta',
+            'gago',
+            'ulol',
+            'tanga',
+            'tarantado',
+            'nigger',
+            'nigga',
+            'faggot',
+            'porn',
+            'sex',
+        ];
     }
 
 }
