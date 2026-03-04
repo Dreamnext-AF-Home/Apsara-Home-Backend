@@ -13,6 +13,86 @@ use Illuminate\Support\Facades\DB;
 
 class AdminOrderController extends Controller
 {
+    public function notifications(Request $request)
+    {
+        $admin = $this->resolveAdmin($request);
+        if (!$admin) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        $now = now();
+        $approvalSlaCutoff = $now->copy()->subMinutes(45);
+
+        $pendingApprovalCount = (int) CheckoutHistory::query()
+            ->where('ch_approval_status', 'pending_approval')
+            ->count();
+
+        $overdueApprovalCount = (int) CheckoutHistory::query()
+            ->where('ch_approval_status', 'pending_approval')
+            ->where('created_at', '<=', $approvalSlaCutoff)
+            ->count();
+
+        $failedPaymentsCount = (int) CheckoutHistory::query()
+            ->whereIn('ch_status', ['failed', 'cancelled', 'expired'])
+            ->count();
+
+        $fulfillmentQueueCount = (int) CheckoutHistory::query()
+            ->where('ch_approval_status', 'approved')
+            ->whereIn('ch_fulfillment_status', ['processing', 'packed', 'shipped', 'out_for_delivery'])
+            ->count();
+
+        $items = array_values(array_filter([
+            [
+                'id' => 'pending_approval',
+                'title' => 'Pending Order Approvals',
+                'description' => $pendingApprovalCount > 0
+                    ? $pendingApprovalCount . ' order(s) are waiting for approval.'
+                    : 'No pending approvals right now.',
+                'count' => $pendingApprovalCount,
+                'severity' => $pendingApprovalCount > 0 ? 'warning' : 'success',
+                'href' => '/admin/orders/pending',
+            ],
+            [
+                'id' => 'overdue_sla',
+                'title' => 'Approval SLA Overdue',
+                'description' => $overdueApprovalCount > 0
+                    ? $overdueApprovalCount . ' order(s) exceeded the 45-minute approval SLA.'
+                    : 'All pending approvals are within SLA.',
+                'count' => $overdueApprovalCount,
+                'severity' => $overdueApprovalCount > 0 ? 'critical' : 'success',
+                'href' => '/admin/orders/pending',
+            ],
+            [
+                'id' => 'failed_payments',
+                'title' => 'Failed Payments',
+                'description' => $failedPaymentsCount > 0
+                    ? $failedPaymentsCount . ' checkout(s) are tagged as failed/cancelled/expired.'
+                    : 'No failed payment records detected.',
+                'count' => $failedPaymentsCount,
+                'severity' => $failedPaymentsCount > 0 ? 'warning' : 'success',
+                'href' => '/admin/orders/failed_payments',
+            ],
+            [
+                'id' => 'fulfillment_queue',
+                'title' => 'Fulfillment In Progress',
+                'description' => $fulfillmentQueueCount > 0
+                    ? $fulfillmentQueueCount . ' approved order(s) are in fulfillment stages.'
+                    : 'No active fulfillment queue.',
+                'count' => $fulfillmentQueueCount,
+                'severity' => 'info',
+                'href' => '/admin/orders/processing',
+            ],
+        ], fn ($item) => is_array($item)));
+
+        $unreadCount = $pendingApprovalCount + $overdueApprovalCount + $failedPaymentsCount;
+
+        return response()->json([
+            'unread_count' => $unreadCount,
+            'items' => $items,
+            'generated_at' => $now->toDateTimeString(),
+        ]);
+    }
+
     public function index(Request $request)
     {
         $admin = $this->resolveAdmin($request);

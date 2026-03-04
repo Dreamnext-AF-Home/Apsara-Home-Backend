@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Customer;
 use App\Models\CustomerVerificationRequest;
 use App\Models\CustomerWalletLedger;
+use App\Models\EncashmentPayoutMethod;
 use App\Models\EncashmentRequest;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Schema;
@@ -182,6 +183,13 @@ class EncashmentController extends Controller
 
         return response()->json([
             'requests' => collect($rows->items())->map(fn (EncashmentRequest $row) => $this->transform($row, $customer))->values(),
+            'payout_methods' => EncashmentPayoutMethod::query()
+                ->where('epm_customer_id', (int) $customer->c_userid)
+                ->orderByDesc('epm_is_default')
+                ->orderByDesc('created_at')
+                ->get()
+                ->map(fn (EncashmentPayoutMethod $row) => $this->transformPayoutMethod($row))
+                ->values(),
             'meta' => [
                 'current_page' => $rows->currentPage(),
                 'last_page' => $rows->lastPage(),
@@ -194,6 +202,112 @@ class EncashmentController extends Controller
             'policy' => $this->policyMeta($rules),
             'verification' => $this->verificationMeta($customer),
         ]);
+    }
+
+    public function storePayoutMethod(Request $request)
+    {
+        $customer = $request->user();
+        if (!$customer instanceof Customer) {
+            return response()->json(['message' => 'Only customer accounts can manage payout methods.'], 403);
+        }
+
+        $validated = $request->validate([
+            'label' => 'required|string|min:2|max:120',
+            'method_type' => 'required|in:gcash,maya,online_banking,card',
+            'account_name' => 'nullable|string|max:255',
+            'account_number' => 'nullable|string|max:120',
+            'mobile_number' => 'nullable|string|max:40',
+            'email_address' => 'nullable|email|max:255',
+            'bank_name' => 'nullable|string|max:120',
+            'bank_code' => 'nullable|string|max:50',
+            'account_type' => 'nullable|in:savings,checking',
+            'card_holder_name' => 'nullable|string|max:255',
+            'card_brand' => 'nullable|in:visa,mastercard,jcb,amex,other',
+            'card_last4' => 'nullable|string|max:4',
+            'is_default' => 'nullable|boolean',
+        ]);
+
+        $methodType = (string) $validated['method_type'];
+        $channel = $this->mapMethodTypeToChannel($methodType);
+
+        $accountName = trim((string) ($validated['account_name'] ?? ''));
+        $accountNumber = trim((string) ($validated['account_number'] ?? ''));
+        $mobileNumber = trim((string) ($validated['mobile_number'] ?? ''));
+        $bankName = trim((string) ($validated['bank_name'] ?? ''));
+        $cardHolderName = trim((string) ($validated['card_holder_name'] ?? ''));
+        $cardLast4 = preg_replace('/\D/', '', (string) ($validated['card_last4'] ?? ''));
+
+        if (in_array($methodType, ['gcash', 'maya'], true)) {
+            if ($accountName === '' || $mobileNumber === '') {
+                return response()->json(['message' => 'Account name and mobile number are required for e-wallet methods.'], 422);
+            }
+            $accountNumber = $mobileNumber;
+        }
+
+        if ($methodType === 'online_banking') {
+            if ($accountName === '' || $accountNumber === '' || $bankName === '') {
+                return response()->json(['message' => 'Bank name, account name, and account number are required for online banking.'], 422);
+            }
+        }
+
+        if ($methodType === 'card') {
+            if ($cardHolderName === '' || strlen($cardLast4) !== 4 || empty($validated['card_brand'])) {
+                return response()->json(['message' => 'Card holder, card brand, and 4-digit card suffix are required for card method.'], 422);
+            }
+            $accountName = $cardHolderName;
+            $accountNumber = '****' . $cardLast4;
+        }
+
+        $isDefault = (bool) ($validated['is_default'] ?? false);
+        if ($isDefault) {
+            EncashmentPayoutMethod::query()
+                ->where('epm_customer_id', (int) $customer->c_userid)
+                ->update(['epm_is_default' => false]);
+        }
+
+        $row = EncashmentPayoutMethod::create([
+            'epm_customer_id' => (int) $customer->c_userid,
+            'epm_label' => trim((string) $validated['label']),
+            'epm_method_type' => $methodType,
+            'epm_channel' => $channel,
+            'epm_account_name' => $accountName !== '' ? $accountName : null,
+            'epm_account_number' => $accountNumber !== '' ? $accountNumber : null,
+            'epm_mobile_number' => $mobileNumber !== '' ? $mobileNumber : null,
+            'epm_email' => isset($validated['email_address']) ? trim((string) $validated['email_address']) : null,
+            'epm_bank_name' => $bankName !== '' ? $bankName : null,
+            'epm_bank_code' => isset($validated['bank_code']) ? trim((string) $validated['bank_code']) : null,
+            'epm_account_type' => $validated['account_type'] ?? null,
+            'epm_card_holder_name' => $cardHolderName !== '' ? $cardHolderName : null,
+            'epm_card_brand' => $validated['card_brand'] ?? null,
+            'epm_card_last4' => strlen($cardLast4) === 4 ? $cardLast4 : null,
+            'epm_is_default' => $isDefault,
+        ]);
+
+        return response()->json([
+            'message' => 'Payout method saved.',
+            'method' => $this->transformPayoutMethod($row),
+        ], 201);
+    }
+
+    public function destroyPayoutMethod(Request $request, int $id)
+    {
+        $customer = $request->user();
+        if (!$customer instanceof Customer) {
+            return response()->json(['message' => 'Only customer accounts can manage payout methods.'], 403);
+        }
+
+        $row = EncashmentPayoutMethod::query()
+            ->where('epm_id', $id)
+            ->where('epm_customer_id', (int) $customer->c_userid)
+            ->first();
+
+        if (!$row) {
+            return response()->json(['message' => 'Payout method not found.'], 404);
+        }
+
+        $row->delete();
+
+        return response()->json(['message' => 'Payout method deleted.']);
     }
 
     public function submitVerificationRequest(Request $request)
@@ -368,6 +482,41 @@ class EncashmentController extends Controller
             'created_at' => optional($row->created_at)->toDateTimeString(),
             'updated_at' => optional($row->updated_at)->toDateTimeString(),
         ];
+    }
+
+    private function transformPayoutMethod(EncashmentPayoutMethod $row): array
+    {
+        return [
+            'id' => (int) $row->epm_id,
+            'label' => (string) $row->epm_label,
+            'method_type' => (string) $row->epm_method_type,
+            'channel' => (string) $row->epm_channel,
+            'account_name' => $row->epm_account_name,
+            'account_number' => $row->epm_account_number,
+            'mobile_number' => $row->epm_mobile_number,
+            'email_address' => $row->epm_email,
+            'bank_name' => $row->epm_bank_name,
+            'bank_code' => $row->epm_bank_code,
+            'account_type' => $row->epm_account_type,
+            'card_holder_name' => $row->epm_card_holder_name,
+            'card_brand' => $row->epm_card_brand,
+            'card_last4' => $row->epm_card_last4,
+            'is_default' => (bool) $row->epm_is_default,
+            'created_at' => optional($row->created_at)->toDateTimeString(),
+            'updated_at' => optional($row->updated_at)->toDateTimeString(),
+        ];
+    }
+
+    private function mapMethodTypeToChannel(string $methodType): string
+    {
+        if ($methodType === 'gcash') {
+            return 'gcash';
+        }
+        if ($methodType === 'maya') {
+            return 'maya';
+        }
+
+        return 'bank';
     }
 
     private function generateReferenceNo(): string

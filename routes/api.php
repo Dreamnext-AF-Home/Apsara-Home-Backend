@@ -12,6 +12,7 @@ use App\Http\Controllers\Api\EncashmentController;
 use App\Http\Controllers\Api\AdminEncashmentController;
 use App\Http\Controllers\Api\AdminUserController;
 use App\Http\Controllers\Api\AdminMemberKycController;
+use App\Http\Controllers\Api\CustomerNotificationController;
 
 
 // Public auth routes
@@ -45,9 +46,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/orders/history', [PaymentController::class, 'checkoutHistory']);
     Route::post('/encashment/requests', [EncashmentController::class, 'store']);
     Route::get('/encashment/requests', [EncashmentController::class, 'myRequests']);
+    Route::post('/encashment/payout-methods', [EncashmentController::class, 'storePayoutMethod']);
+    Route::delete('/encashment/payout-methods/{id}', [EncashmentController::class, 'destroyPayoutMethod']);
     Route::get('/encashment/wallet', [EncashmentController::class, 'walletOverview']);
     Route::post('/encashment/verification-request', [EncashmentController::class, 'submitVerificationRequest']);
+    Route::get('/notifications/customer', [CustomerNotificationController::class, 'index']);
     Route::get('/admin/orders', [AdminOrderController::class, 'index']);
+    Route::get('/admin/orders/notifications', [AdminOrderController::class, 'notifications']);
     Route::patch('/admin/orders/{id}/approve', [AdminOrderController::class, 'approve']);
     Route::patch('/admin/orders/{id}/reject', [AdminOrderController::class, 'reject']);
     Route::patch('/admin/orders/{id}/status', [AdminOrderController::class, 'updateStatus']);
