@@ -17,7 +17,7 @@ class CheckoutCompletedMail extends Mailable
     public function build(): self
     {
         return $this
-            ->subject('Checkout Completed - AF Home')
+            ->subject('Purchase Order Confirmation - AF Home')
             ->view('emails.checkout.completed')
             ->with([
                 'payload' => $this->payload,

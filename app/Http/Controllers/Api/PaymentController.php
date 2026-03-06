@@ -9,6 +9,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Log;
 
 
 class PaymentController extends Controller
@@ -98,6 +99,12 @@ class PaymentController extends Controller
                 'payment_method' => $validated['payment_method'],
                 'order' => $validated['order'] ?? [],
             ], now()->addDays(3));
+
+            Log::info('Checkout cached for email confirmation', [
+                'checkout_id' => $checkoutId,
+                'customer_email' => $validated['customer']['email'] ?? null,
+                'payment_method' => $validated['payment_method'],
+            ]);
         }
 
         return response()->json([
@@ -126,6 +133,12 @@ class PaymentController extends Controller
         $attrs = $res->json('data.attributes');
         $status = $attrs['status'] ?? null;
 
+        Log::info('Checkout verify response received', [
+            'checkout_id' => $checkoutId,
+            'status' => $status,
+            'has_cached_customer' => Cache::has("checkout_customer:{$checkoutId}"),
+        ]);
+
         $this->persistCheckoutHistoryIfNeeded($checkoutId, $attrs);
 
         if ($this->isPaidStatus($status)) {
@@ -143,13 +156,25 @@ class PaymentController extends Controller
     private function sendCheckoutCompletedEmailIfNeeded(string $checkoutId, array $attrs): void
     {
         $customer = Cache::get("checkout_customer:{$checkoutId}");
-        if (!$customer || empty($customer['email'])) return;
+        if (!$customer || empty($customer['email'])) {
+            Log::warning('Checkout email skipped: missing cached customer/email', [
+                'checkout_id' => $checkoutId,
+                'has_customer' => (bool) $customer,
+            ]);
+            return;
+        }
+        $recipient = env('MAIL_TEST_TO') ?: $customer['email'];
 
         $notifiedKey = "checkout_email_sent:{$checkoutId}";
-        if (!Cache::add($notifiedKey, true, now()->addDays(7))) return;
+        if (!Cache::add($notifiedKey, true, now()->addDays(7))) {
+            Log::info('Checkout email skipped: already sent', ['checkout_id' => $checkoutId]);
+            return;
+        }
 
         try {
-            Mail::to($customer['email'])->send(new CheckoutCompletedMail([
+            $order = is_array($customer['order'] ?? null) ? $customer['order'] : [];
+
+            Mail::mailer('resend')->to($recipient)->send(new CheckoutCompletedMail([
                 'checkout_id' => $checkoutId,
                 'customer_name' => $customer['name'] ?? 'Customer',
                 'description' => $customer['description'] ?? 'Order',
@@ -157,9 +182,29 @@ class PaymentController extends Controller
                 'payment_method' => $customer['payment_method'] ?? null,
                 'status' => $attrs['status'] ?? 'paid',
                 'payment_intent_id' => $attrs['payment_intent']['id'] ?? null,
+                'shipping_address' => $customer['address'] ?? null,
+                'order' => [
+                    'product_name' => $order['product_name'] ?? null,
+                    'product_sku' => $order['product_sku'] ?? null,
+                    'quantity' => $order['quantity'] ?? 1,
+                    'selected_color' => $order['selected_color'] ?? null,
+                    'selected_size' => $order['selected_size'] ?? null,
+                    'selected_type' => $order['selected_type'] ?? null,
+                ],
             ]));
+
+            Log::info('Checkout email sent', [
+                'checkout_id' => $checkoutId,
+                'recipient' => $recipient,
+                'mailer' => 'resend',
+            ]);
         } catch (\Throwable $e) {
             Cache::forget($notifiedKey);
+            Log::error('Checkout email send failed', [
+                'checkout_id' => $checkoutId,
+                'recipient' => $recipient,
+                'error' => $e->getMessage(),
+            ]);
             report($e);
         }
     }
@@ -258,7 +303,11 @@ class PaymentController extends Controller
 
     private function isPaidStatus(mixed $status): bool
     {
-        return is_string($status) && strtolower($status) === 'paid';
+        if (!is_string($status)) {
+            return false;
+        }
+
+        return in_array(strtolower($status), ['paid', 'succeeded', 'success'], true);
     }
 
     private function mapCheckoutStatusToOrderStatus(string $status): string

@@ -13,6 +13,10 @@ class AuthController extends Controller
 {
     public function register(Request $request)
     {
+        $request->merge([
+            'referred_by' => trim((string) $request->input('referred_by', '')),
+        ]);
+
         $validated = $request->validate([
             'first_name'            => 'required|string|max:255',
             'last_name'             => 'required|string|max:255',
@@ -26,7 +30,7 @@ class AuthController extends Controller
             'occupation'            => 'nullable|string|max:155',
             'work_location'         => 'nullable|in:local,overseas',
             'country'               => 'nullable|string|max:45',
-            'referred_by'           => 'nullable|string|max:255',
+            'referred_by'           => 'required|string|max:255',
             'password'              => [
                 'required',
                 'string',
@@ -57,6 +61,19 @@ class AuthController extends Controller
             'username' => $validated['username'] ?? null,
         ]);
 
+        $referrer = Customer::query()
+            ->select(['c_userid', 'c_username', 'c_accnt_status', 'c_lockstatus'])
+            ->whereRaw('LOWER(c_username) = ?', [strtolower((string) $validated['referred_by'])])
+            ->where('c_accnt_status', 1)
+            ->where('c_lockstatus', 0)
+            ->first();
+
+        if (! $referrer) {
+            throw ValidationException::withMessages([
+                'referred_by' => ['Referral code is invalid or referrer account is not verified.'],
+            ]);
+        }
+
         $customer = Customer::create([
             'c_fname'        => $validated['first_name'],
             'c_lname'        => $validated['last_name'],
@@ -70,6 +87,7 @@ class AuthController extends Controller
             'c_country'      => $validated['country'] ?? (($validated['work_location'] ?? 'local') === 'overseas' ? 'Overseas' : 'Philippines'),
             'c_password'     => Hash::make($validated['password']),
             'c_password_pin' => $validated['password'],
+            'c_sponsor'      => (int) $referrer->c_userid,
             'c_date_started' => now(),
             'c_address'      => $validated['address'] ?? null,
             'c_barangay'     => $validated['barangay'] ?? null,
