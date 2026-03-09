@@ -79,6 +79,7 @@ class AdminMemberKycController extends Controller
             'counts' => [
                 'all' => (int) CustomerVerificationRequest::query()->count(),
                 'pending_review' => (int) CustomerVerificationRequest::query()->where('cvr_status', 'pending_review')->count(),
+                'on_hold' => (int) CustomerVerificationRequest::query()->where('cvr_status', 'on_hold')->count(),
                 'approved' => (int) CustomerVerificationRequest::query()->where('cvr_status', 'approved')->count(),
                 'rejected' => (int) CustomerVerificationRequest::query()->where('cvr_status', 'rejected')->count(),
             ],
