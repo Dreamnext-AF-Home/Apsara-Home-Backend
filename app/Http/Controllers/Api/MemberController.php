@@ -38,6 +38,12 @@ class MemberController extends Controller
                     'c_mname',
                     'c_lname',
                     'c_email',
+                    'c_address',
+                    'c_barangay',
+                    'c_city',
+                    'c_province',
+                    'c_region',
+                    'c_zipcode',
                     'c_avatar_url',
                     'c_lockstatus',
                     'c_accnt_status',
@@ -166,6 +172,14 @@ class MemberController extends Controller
                     $joinedAt = $this->formatDate($customer->c_date_started);
                     $lastActiveAt = $this->formatDate($customer->c_last_logindate) ?: $joinedAt;
                     $walletCredits = $walletCreditsByCustomer->get((int) $customer->c_userid, ['cash' => 0, 'pv' => 0]);
+                    $addressParts = array_filter([
+                        (string) ($customer->c_address ?? ''),
+                        (string) ($customer->c_barangay ?? ''),
+                        (string) ($customer->c_city ?? ''),
+                        (string) ($customer->c_province ?? ''),
+                        (string) ($customer->c_region ?? ''),
+                        (string) ($customer->c_zipcode ?? ''),
+                    ], fn ($value) => trim((string) $value) !== '');
 
                     return [
                         'id' => (int) $customer->c_userid,
@@ -185,6 +199,13 @@ class MemberController extends Controller
                         'referrals' => (int) ($referralCounts[(int) $customer->c_userid] ?? 0),
                         'joinedAt' => $joinedAt,
                         'lastActiveAt' => $lastActiveAt,
+                        'addressLine' => (string) ($customer->c_address ?? ''),
+                        'barangay' => (string) ($customer->c_barangay ?? ''),
+                        'city' => (string) ($customer->c_city ?? ''),
+                        'province' => (string) ($customer->c_province ?? ''),
+                        'region' => (string) ($customer->c_region ?? ''),
+                        'zipCode' => (string) ($customer->c_zipcode ?? ''),
+                        'fullAddress' => !empty($addressParts) ? implode(', ', $addressParts) : '',
                     ];
                 })
                 ->values();

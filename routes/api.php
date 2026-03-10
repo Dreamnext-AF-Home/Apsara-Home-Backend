@@ -16,6 +16,7 @@ use App\Http\Controllers\Api\CustomerNotificationController;
 use App\Http\Controllers\Api\WishlistController;
 use App\Http\Controllers\Api\WebPageController;
 use App\Http\Controllers\Api\XdeShippingController;
+use App\Http\Controllers\Api\AddressController;
 
 
 // Public auth routes
@@ -33,6 +34,10 @@ Route::get('/products/slug/{slug}', [ProductController::class, 'showBySlug']);
 Route::get('/products/{id}', [ProductController::class, 'show']);
 Route::get('/products', [ProductController::class, 'index']);
 Route::get('/web-pages/home', [WebPageController::class, 'home']);
+Route::get('/address/regions', [AddressController::class, 'regions']);
+Route::get('/address/provinces', [AddressController::class, 'provinces']);
+Route::get('/address/cities', [AddressController::class, 'cities']);
+Route::get('/address/barangays', [AddressController::class, 'barangays']);
 
 
 // Protected routes (requires Sanctum token)
