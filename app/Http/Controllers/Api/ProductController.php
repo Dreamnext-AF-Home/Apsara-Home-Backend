@@ -562,7 +562,13 @@ class ProductController extends Controller
                     $product->pd_image = $request->pd_image;
                 }
 
-                if ($request->has('pd_variants')) {
+                $shouldSyncVariants = $request->has('pd_variants')
+                    && (
+                        $request->input('pd_type', $product->pd_type) == 1
+                        || !empty($request->input('pd_variants', []))
+                    );
+
+                if ($shouldSyncVariants) {
                     try {
                         $this->syncVariants($product, $request->input('pd_variants', []), now());
                     } catch (\Throwable $e) {
