@@ -341,53 +341,68 @@ class ProductController extends Controller
 
         try {
         $product = DB::transaction(function () use ($request, $now, $images) {
-            $product = Product::create([
-                'pd_name'        => $request->pd_name,
-                'pd_catid'       => $request->pd_catid ?? 0,
-                'pd_catsubid'    => $request->pd_catsubid ?? 0,
-                'pd_catsubid2'   => 0,
-                'pd_shopid'      => 0,
-                'pd_description'       => $request->pd_description ?? '',
-                'pd_specifications'    => $request->pd_specifications ?? null,
-                'pd_material'          => $request->filled('pd_material') ? (string) $request->pd_material : '',
-                'pd_warranty'          => $request->filled('pd_warranty') ? (string) $request->pd_warranty : '',
-                'pd_supplier'    => 0,
-                'pd_price_srp'   => $request->pd_price_srp ?? 0,
-                'pd_price_dp'    => $request->pd_price_dp ?? 0,
-                'pd_prodpv'      => $request->pd_prodpv ?? 0,
-                'pd_qty'         => $request->pd_qty ?? 0,
-                'pd_weight'      => $request->pd_weight ?? 0,
-                'pd_psweight'    => $request->pd_psweight ?? 0,
-                'pd_pswidth'     => $request->pd_pswidth ?? 0,
-                'pd_pslenght'    => $request->pd_pslenght ?? 0,
-                'pd_psheight'    => $request->pd_psheight ?? 0,
-                'pd_assembly_required' => $request->boolean('pd_assembly_required') ? 1 : 0,
-                'pd_preorder'    => '',
-                'pd_preorder_value' => 0,
-                'pd_parent_sku'  => $request->pd_parent_sku ?? '',
-                'pd_type'        => $request->pd_type ?? 0,
-                'pd_shoptype'    => 0,
-                'pd_musthave'    => $request->boolean('pd_musthave') ? 1 : 0,
-                'pd_bestseller'  => $request->boolean('pd_bestseller') ? 1 : 0,
-                'pd_salespromo'  => $request->boolean('pd_salespromo') ? 1 : 0,
-                'pd_user'        => 0,
-                'pd_usertype'    => 0,
-                'pd_date'        => $now,
-                'pd_last_update' => $now,
-                'pd_status'      => $request->pd_status ?? 0,
-                'pd_image'       => $images[0] ?? ($request->pd_image ?? null),
-            ]);
-
-            foreach ($images as $url) {
-                ProductPhoto::create([
-                    'pp_pdid'     => $product->pd_id,
-                    'pp_filename' => $url,
-                    'pp_varone'   => '',
-                    'pp_date'     => $now,
+            try {
+                $product = Product::create([
+                    'pd_name'        => $request->pd_name,
+                    'pd_catid'       => $request->pd_catid ?? 0,
+                    'pd_catsubid'    => $request->pd_catsubid ?? 0,
+                    'pd_catsubid2'   => 0,
+                    'pd_shopid'      => 0,
+                    'pd_description'       => $request->pd_description ?? '',
+                    'pd_specifications'    => $request->pd_specifications ?? null,
+                    'pd_material'          => $request->filled('pd_material') ? (string) $request->pd_material : '',
+                    'pd_warranty'          => $request->filled('pd_warranty') ? (string) $request->pd_warranty : '',
+                    'pd_supplier'    => 0,
+                    'pd_price_srp'   => $request->pd_price_srp ?? 0,
+                    'pd_price_dp'    => $request->pd_price_dp ?? 0,
+                    'pd_prodpv'      => $request->pd_prodpv ?? 0,
+                    'pd_qty'         => $request->pd_qty ?? 0,
+                    'pd_weight'      => $request->pd_weight ?? 0,
+                    'pd_psweight'    => $request->pd_psweight ?? 0,
+                    'pd_pswidth'     => $request->pd_pswidth ?? 0,
+                    'pd_pslenght'    => $request->pd_pslenght ?? 0,
+                    'pd_psheight'    => $request->pd_psheight ?? 0,
+                    'pd_assembly_required' => $request->boolean('pd_assembly_required') ? 1 : 0,
+                    'pd_preorder'    => '',
+                    'pd_preorder_value' => 0,
+                    'pd_parent_sku'  => $request->pd_parent_sku ?? '',
+                    'pd_type'        => $request->pd_type ?? 0,
+                    'pd_shoptype'    => 0,
+                    'pd_musthave'    => $request->boolean('pd_musthave') ? 1 : 0,
+                    'pd_bestseller'  => $request->boolean('pd_bestseller') ? 1 : 0,
+                    'pd_salespromo'  => $request->boolean('pd_salespromo') ? 1 : 0,
+                    'pd_user'        => 0,
+                    'pd_usertype'    => 0,
+                    'pd_date'        => $now,
+                    'pd_last_update' => $now,
+                    'pd_status'      => $request->pd_status ?? 0,
+                    'pd_image'       => $images[0] ?? ($request->pd_image ?? null),
                 ]);
+            } catch (\Throwable $e) {
+                Log::error('Product store stage failed | stage=product_create | exception=' . $e::class . ' | message=' . $e->getMessage());
+                throw $e;
             }
 
-            $this->syncVariants($product, $request->input('pd_variants', []), $now);
+            foreach ($images as $url) {
+                try {
+                    ProductPhoto::create([
+                        'pp_pdid'     => $product->pd_id,
+                        'pp_filename' => $url,
+                        'pp_varone'   => '',
+                        'pp_date'     => $now,
+                    ]);
+                } catch (\Throwable $e) {
+                    Log::error('Product store stage failed | stage=photo_insert | product_id=' . $product->pd_id . ' | image_url=' . $url . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
+                    throw $e;
+                }
+            }
+
+            try {
+                $this->syncVariants($product, $request->input('pd_variants', []), $now);
+            } catch (\Throwable $e) {
+                Log::error('Product store stage failed | stage=variant_sync | product_id=' . $product->pd_id . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
+                throw $e;
+            }
 
             return $product;
         });
