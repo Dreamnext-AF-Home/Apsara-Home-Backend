@@ -124,14 +124,22 @@ class ProductController extends Controller
         return [
             'id'          => (int)   $p->pd_id,
             'name'        => (string) ($p->pd_name ?? ''),
-            'description' => $p->pd_description ?? null,
-            'catid'       => (int)   $p->pd_catid,
-            'catsubid'    => (int)   $p->pd_catsubid,
-            'priceSrp'    => $this->toNumber($p->pd_price_srp),
-            'priceDp'     => $this->toNumber($p->pd_price_dp),
-            'prodpv'      => $this->toNumber($p->pd_prodpv),
-            'qty'         => $this->toNumber($p->pd_qty),
-            'weight'      => (int)   $p->pd_weight,
+            'description'       => $p->pd_description ?? null,
+            'specifications'    => $p->pd_specifications ?? null,
+            'material'          => $p->pd_material ?? null,
+            'warranty'          => $p->pd_warranty ?? null,
+            'catid'             => (int)   $p->pd_catid,
+            'catsubid'          => (int)   $p->pd_catsubid,
+            'priceSrp'          => $this->toNumber($p->pd_price_srp),
+            'priceDp'           => $this->toNumber($p->pd_price_dp),
+            'prodpv'            => $this->toNumber($p->pd_prodpv),
+            'qty'               => $this->toNumber($p->pd_qty),
+            'weight'            => (int)   $p->pd_weight,
+            'psweight'          => $this->toNumber($p->pd_psweight),
+            'pswidth'           => $this->toNumber($p->pd_pswidth),
+            'pslenght'          => $this->toNumber($p->pd_pslenght),
+            'psheight'          => $this->toNumber($p->pd_psheight),
+            'assemblyRequired'  => (bool) $p->pd_assembly_required,
             'type'        => (int)   $p->pd_type,
             'musthave'    => (bool)  $p->pd_musthave,
             'bestseller'  => (bool)  $p->pd_bestseller,
@@ -157,10 +165,12 @@ class ProductController extends Controller
 
         $product = Product::query()
             ->select([
-                'pd_id', 'pd_name', 'pd_description', 'pd_catid', 'pd_catsubid',
+                'pd_id', 'pd_name', 'pd_description', 'pd_specifications', 'pd_material', 'pd_warranty',
+                'pd_catid', 'pd_catsubid',
                 'pd_price_srp', 'pd_price_dp', 'pd_qty',
                 'pd_prodpv',
-                'pd_weight', 'pd_type', 'pd_musthave',
+                'pd_weight', 'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
+                'pd_assembly_required', 'pd_type', 'pd_musthave',
                 'pd_bestseller', 'pd_salespromo', 'pd_status', 'pd_date',
                 'pd_last_update', 'pd_parent_sku', 'pd_image',
             ])
@@ -187,10 +197,12 @@ class ProductController extends Controller
     {
         $product = Product::query()
             ->select([
-                'pd_id', 'pd_name', 'pd_description', 'pd_catid', 'pd_catsubid',
+                'pd_id', 'pd_name', 'pd_description', 'pd_specifications', 'pd_material', 'pd_warranty',
+                'pd_catid', 'pd_catsubid',
                 'pd_price_srp', 'pd_price_dp', 'pd_qty',
                 'pd_prodpv',
-                'pd_weight', 'pd_type', 'pd_musthave',
+                'pd_weight', 'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
+                'pd_assembly_required', 'pd_type', 'pd_musthave',
                 'pd_bestseller', 'pd_salespromo', 'pd_status', 'pd_date',
                 'pd_last_update', 'pd_parent_sku', 'pd_image',
             ])
@@ -221,10 +233,12 @@ class ProductController extends Controller
 
         $query = Product::query()
             ->select([
-                'pd_id', 'pd_name', 'pd_description', 'pd_catid', 'pd_catsubid',
+                'pd_id', 'pd_name', 'pd_description', 'pd_specifications', 'pd_material', 'pd_warranty',
+                'pd_catid', 'pd_catsubid',
                 'pd_price_srp', 'pd_price_dp', 'pd_qty',
                 'pd_prodpv',
-                'pd_weight', 'pd_type', 'pd_musthave',
+                'pd_weight', 'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
+                'pd_assembly_required', 'pd_type', 'pd_musthave',
                 'pd_bestseller', 'pd_salespromo', 'pd_status', 'pd_date',
                 'pd_last_update', 'pd_parent_sku', 'pd_image',
             ])
@@ -281,7 +295,12 @@ class ProductController extends Controller
             'pd_psweight'  => 'nullable|numeric|min:0',
             'pd_pslenght'  => 'nullable|numeric|min:0',
             'pd_psheight'  => 'nullable|numeric|min:0',
-            'pd_description' => 'nullable|string',
+            'pd_description'       => 'nullable|string',
+            'pd_specifications'    => 'nullable|string',
+            'pd_material'          => 'nullable|string|max:255',
+            'pd_warranty'          => 'nullable|string|max:255',
+            'pd_pswidth'           => 'nullable|numeric|min:0',
+            'pd_assembly_required' => 'nullable|boolean',
             'pd_parent_sku'  => 'nullable|string|max:50',
             'pd_type'      => 'nullable|integer',
             'pd_musthave'    => 'nullable|boolean',
@@ -326,7 +345,10 @@ class ProductController extends Controller
                 'pd_catsubid'    => $request->pd_catsubid ?? 0,
                 'pd_catsubid2'   => 0,
                 'pd_shopid'      => 0,
-                'pd_description' => $request->pd_description ?? '',
+                'pd_description'       => $request->pd_description ?? '',
+                'pd_specifications'    => $request->pd_specifications ?? null,
+                'pd_material'          => $request->pd_material ?? null,
+                'pd_warranty'          => $request->pd_warranty ?? null,
                 'pd_supplier'    => 0,
                 'pd_price_srp'   => $request->pd_price_srp ?? 0,
                 'pd_price_dp'    => $request->pd_price_dp ?? 0,
@@ -334,8 +356,10 @@ class ProductController extends Controller
                 'pd_qty'         => $request->pd_qty ?? 0,
                 'pd_weight'      => $request->pd_weight ?? 0,
                 'pd_psweight'    => $request->pd_psweight ?? 0,
+                'pd_pswidth'     => $request->pd_pswidth ?? 0,
                 'pd_pslenght'    => $request->pd_pslenght ?? 0,
                 'pd_psheight'    => $request->pd_psheight ?? 0,
+                'pd_assembly_required' => $request->boolean('pd_assembly_required') ? 1 : 0,
                 'pd_preorder'    => '',
                 'pd_preorder_value' => 0,
                 'pd_parent_sku'  => $request->pd_parent_sku ?? '',
@@ -397,7 +421,12 @@ class ProductController extends Controller
             'pd_psweight'    => 'nullable|numeric|min:0',
             'pd_pslenght'    => 'nullable|numeric|min:0',
             'pd_psheight'    => 'nullable|numeric|min:0',
-            'pd_description' => 'nullable|string',
+            'pd_description'       => 'nullable|string',
+            'pd_specifications'    => 'nullable|string',
+            'pd_material'          => 'nullable|string|max:255',
+            'pd_warranty'          => 'nullable|string|max:255',
+            'pd_pswidth'           => 'nullable|numeric|min:0',
+            'pd_assembly_required' => 'nullable|boolean',
             'pd_parent_sku'  => 'nullable|string|max:50',
             'pd_type'        => 'nullable|integer',
             'pd_musthave'    => 'nullable|boolean',
@@ -425,9 +454,10 @@ class ProductController extends Controller
         }
 
         $fields = [
-            'pd_name', 'pd_catid', 'pd_catsubid', 'pd_description',
+            'pd_name', 'pd_catid', 'pd_catsubid', 'pd_description', 'pd_specifications',
+            'pd_material', 'pd_warranty',
             'pd_price_srp', 'pd_price_dp', 'pd_prodpv', 'pd_qty', 'pd_weight',
-            'pd_psweight', 'pd_pslenght', 'pd_psheight',
+            'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
             'pd_parent_sku', 'pd_type', 'pd_status', 'pd_image',
         ];
 
@@ -446,6 +476,9 @@ class ProductController extends Controller
             }
             if ($request->has('pd_salespromo')) {
                 $product->pd_salespromo = $request->boolean('pd_salespromo') ? 1 : 0;
+            }
+            if ($request->has('pd_assembly_required')) {
+                $product->pd_assembly_required = $request->boolean('pd_assembly_required') ? 1 : 0;
             }
 
             if ($request->has('pd_images')) {

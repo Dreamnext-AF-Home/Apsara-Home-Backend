@@ -5,16 +5,21 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Customer;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Str;
+use App\Mail\Auth\RegistrationOtpMail;
 
 class AuthController extends Controller
 {
     public function register(Request $request)
     {
         $request->merge([
-            'referred_by' => trim((string) $request->input('referred_by', '')),
+            'referred_by' => $this->normalizeReferralValue((string) $request->input('referred_by', '')),
         ]);
 
         $validated = $request->validate([
@@ -74,36 +79,129 @@ class AuthController extends Controller
             ]);
         }
 
-        $customer = Customer::create([
-            'c_fname'        => $validated['first_name'],
-            'c_lname'        => $validated['last_name'],
-            'c_mname'        => $validated['middle_name'] ?? null,
-            'c_username'     => $validated['username'],
-            'c_email'        => $validated['email'],
-            'c_mobile'       => $validated['phone'] ?? '0',
-            'c_bdate'        => $validated['birth_date'] ?? null,
-            'c_gender'       => $this->mapGenderToInt($validated['gender'] ?? null),
-            'c_occupation'   => $validated['occupation'] ?? 'None',
-            'c_country'      => $validated['country'] ?? (($validated['work_location'] ?? 'local') === 'overseas' ? 'Overseas' : 'Philippines'),
-            'c_password'     => Hash::make($validated['password']),
-            'c_password_pin' => $validated['password'],
-            'c_sponsor'      => (int) $referrer->c_userid,
-            'c_date_started' => now(),
-            'c_address'      => $validated['address'] ?? null,
-            'c_barangay'     => $validated['barangay'] ?? null,
-            'c_city'         => $validated['city'] ?? null,
-            'c_province'     => $validated['province'] ?? null,
-            'c_region'       => $validated['region'] ?? null,
-            'c_zipcode'      => $validated['zip_code'] ?? null,
-        ]);
+        $verificationToken = (string) Str::uuid();
+        $otp = (string) random_int(1000, 9999);
 
-        $token = $customer->createToken('auth_token')->plainTextToken;
+        Cache::put($this->registrationOtpCacheKey($verificationToken), [
+            'otp_hash' => Hash::make($otp),
+            'payload' => Crypt::encryptString(json_encode([
+                'validated' => $validated,
+                'referrer_user_id' => (int) $referrer->c_userid,
+            ], JSON_THROW_ON_ERROR)),
+            'email' => (string) $validated['email'],
+        ], now()->addMinutes(10));
+
+        $this->sendRegistrationOtpEmail((string) $validated['email'], $otp);
 
         return response()->json([
-            'message' => 'Registration successful.',
+            'message' => 'A 4-digit verification code has been sent to your email.',
+            'requires_otp' => true,
+            'verification_token' => $verificationToken,
+            'email' => (string) $validated['email'],
+        ]);
+    }
+
+    public function verifyRegistrationOtp(Request $request)
+    {
+        $validated = $request->validate([
+            'verification_token' => 'required|string',
+            'otp' => 'required|string|size:4',
+        ]);
+
+        $cached = Cache::get($this->registrationOtpCacheKey($validated['verification_token']));
+
+        if (!is_array($cached) || empty($cached['otp_hash']) || empty($cached['payload'])) {
+            throw ValidationException::withMessages([
+                'otp' => ['The verification code has expired. Please register again.'],
+            ]);
+        }
+
+        if (!Hash::check((string) $validated['otp'], (string) $cached['otp_hash'])) {
+            throw ValidationException::withMessages([
+                'otp' => ['Invalid verification code.'],
+            ]);
+        }
+
+        $payload = json_decode(Crypt::decryptString((string) $cached['payload']), true, 512, JSON_THROW_ON_ERROR);
+        $registration = $payload['validated'] ?? [];
+        $referrerUserId = (int) ($payload['referrer_user_id'] ?? 0);
+
+        if (empty($registration['email']) || empty($registration['username'])) {
+            throw ValidationException::withMessages([
+                'otp' => ['The verification payload is invalid. Please register again.'],
+            ]);
+        }
+
+        if (Customer::query()->where('c_email', (string) $registration['email'])->exists()) {
+            throw ValidationException::withMessages([
+                'email' => ['This email is already registered.'],
+            ]);
+        }
+
+        if (Customer::query()->where('c_username', (string) $registration['username'])->exists()) {
+            throw ValidationException::withMessages([
+                'username' => ['This username is already taken.'],
+            ]);
+        }
+
+        $customer = Customer::create([
+            'c_fname'        => $registration['first_name'],
+            'c_lname'        => $registration['last_name'],
+            'c_mname'        => $registration['middle_name'] ?? null,
+            'c_username'     => $registration['username'],
+            'c_email'        => $registration['email'],
+            'c_mobile'       => $registration['phone'] ?? '0',
+            'c_bdate'        => $registration['birth_date'] ?? null,
+            'c_gender'       => $this->mapGenderToInt($registration['gender'] ?? null),
+            'c_occupation'   => $registration['occupation'] ?? 'None',
+            'c_country'      => $registration['country'] ?? (($registration['work_location'] ?? 'local') === 'overseas' ? 'Overseas' : 'Philippines'),
+            'c_password'     => Hash::make($registration['password']),
+            'c_password_pin' => $registration['password'],
+            'c_sponsor'      => $referrerUserId,
+            'c_date_started' => now(),
+            'c_address'      => $registration['address'] ?? null,
+            'c_barangay'     => $registration['barangay'] ?? null,
+            'c_city'         => $registration['city'] ?? null,
+            'c_province'     => $registration['province'] ?? null,
+            'c_region'       => $registration['region'] ?? null,
+            'c_zipcode'      => $registration['zip_code'] ?? null,
+        ]);
+
+        Cache::forget($this->registrationOtpCacheKey($validated['verification_token']));
+
+        return response()->json([
+            'message' => 'Registration complete. You can now sign in.',
             'user' => $this->transformCustomer($customer),
-            'token' => $token,
         ], 201);
+    }
+
+    public function resendRegistrationOtp(Request $request)
+    {
+        $validated = $request->validate([
+            'verification_token' => 'required|string',
+        ]);
+
+        $cached = Cache::get($this->registrationOtpCacheKey($validated['verification_token']));
+
+        if (!is_array($cached) || empty($cached['payload']) || empty($cached['email'])) {
+            throw ValidationException::withMessages([
+                'verification_token' => ['The verification session has expired. Please register again.'],
+            ]);
+        }
+
+        $otp = (string) random_int(1000, 9999);
+
+        Cache::put($this->registrationOtpCacheKey($validated['verification_token']), [
+            'otp_hash' => Hash::make($otp),
+            'payload' => $cached['payload'],
+            'email' => (string) $cached['email'],
+        ], now()->addMinutes(10));
+
+        $this->sendRegistrationOtpEmail((string) $cached['email'], $otp);
+
+        return response()->json([
+            'message' => 'A new verification code has been sent.',
+        ]);
     }
 
     public function login(Request $request)
@@ -294,6 +392,7 @@ class AuthController extends Controller
             'account_status' => $accountStatus,
             'lock_status' => $lockStatus,
             'verification_status' => $verificationStatus,
+            'email_verified' => true,
         ];
     }
 
@@ -445,6 +544,43 @@ class AuthController extends Controller
             'porn',
             'sex',
         ];
+    }
+
+    private function registrationOtpCacheKey(string $verificationToken): string
+    {
+        return "registration_otp:{$verificationToken}";
+    }
+
+    private function sendRegistrationOtpEmail(string $email, string $otp): void
+    {
+        Mail::mailer('resend')->to($email)->send(new RegistrationOtpMail($otp, $email));
+    }
+
+    private function normalizeReferralValue(string $value): string
+    {
+        $trimmed = trim($value);
+
+        if ($trimmed === '') {
+            return '';
+        }
+
+        if (filter_var($trimmed, FILTER_VALIDATE_URL)) {
+            $parts = parse_url($trimmed);
+            parse_str($parts['query'] ?? '', $query);
+
+            $fromQuery = trim((string) ($query['ref'] ?? $query['referred_by'] ?? ''));
+            if ($fromQuery !== '') {
+                return $fromQuery;
+            }
+
+            $path = trim((string) ($parts['path'] ?? ''), '/');
+            if ($path !== '') {
+                $segments = explode('/', $path);
+                return trim((string) end($segments));
+            }
+        }
+
+        return $trimmed;
     }
 
 }
