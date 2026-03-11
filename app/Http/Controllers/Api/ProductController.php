@@ -509,24 +509,36 @@ class ProductController extends Controller
                         ->values()
                         ->all();
 
-                    try {
-                        ProductPhoto::query()->where('pp_pdid', $product->pd_id)->delete();
-                    } catch (\Throwable $e) {
-                        Log::error('Product update stage failed | stage=photo_delete | product_id=' . $product->pd_id . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
-                        throw $e;
-                    }
+                    $existingImages = ProductPhoto::query()
+                        ->where('pp_pdid', $product->pd_id)
+                        ->orderBy('pp_id')
+                        ->pluck('pp_filename')
+                        ->filter(fn ($url) => is_string($url) && trim($url) !== '')
+                        ->values()
+                        ->all();
 
-                    foreach ($images as $url) {
+                    $imagesChanged = $existingImages !== $images;
+
+                    if ($imagesChanged) {
                         try {
-                            ProductPhoto::create([
-                                'pp_pdid'     => $product->pd_id,
-                                'pp_filename' => $url,
-                                'pp_varone'   => '',
-                                'pp_date'     => now(),
-                            ]);
+                            ProductPhoto::query()->where('pp_pdid', $product->pd_id)->delete();
                         } catch (\Throwable $e) {
-                            Log::error('Product update stage failed | stage=photo_insert | product_id=' . $product->pd_id . ' | image_url=' . $url . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
+                            Log::error('Product update stage failed | stage=photo_delete | product_id=' . $product->pd_id . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
                             throw $e;
+                        }
+
+                        foreach ($images as $url) {
+                            try {
+                                ProductPhoto::create([
+                                    'pp_pdid'     => $product->pd_id,
+                                    'pp_filename' => $url,
+                                    'pp_varone'   => '',
+                                    'pp_date'     => now(),
+                                ]);
+                            } catch (\Throwable $e) {
+                                Log::error('Product update stage failed | stage=photo_insert | product_id=' . $product->pd_id . ' | image_url=' . $url . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
+                                throw $e;
+                            }
                         }
                     }
 
