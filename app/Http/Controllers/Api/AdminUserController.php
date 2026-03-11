@@ -3,13 +3,20 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Mail\Admin\AdminInviteMail;
 use App\Models\Admin;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class AdminUserController extends Controller
 {
+    private const INVITE_TTL_MINUTES = 1440;
+
     public function index(Request $request)
     {
         $actor = $this->resolveAdmin($request);
@@ -67,22 +74,71 @@ class AdminUserController extends Controller
             'name' => 'required|string|max:255',
             'username' => 'required|string|max:120|unique:tbl_admin,username',
             'email' => 'required|email|max:255|unique:tbl_admin,user_email',
-            'password' => 'required|string|min:8',
             'user_level_id' => ['required', 'integer', Rule::in([1, 2, 3, 4, 5, 6])],
         ]);
 
-        $admin = Admin::query()->create([
-            'fname' => trim((string) $validated['name']),
-            'username' => trim((string) $validated['username']),
-            'user_email' => trim((string) $validated['email']),
-            'passworde' => Hash::make((string) $validated['password']),
-            'user_level_id' => (int) $validated['user_level_id'],
-        ]);
+        return response()->json([
+            'message' => $this->createAndSendInvite($validated, (int) $actor->id),
+        ], 201);
+    }
+
+    public function showInvite(string $token)
+    {
+        $payload = $this->getInvitePayload($token);
+        if (!$payload) {
+            return response()->json(['message' => 'Invite link is invalid or expired.'], 404);
+        }
 
         return response()->json([
-            'message' => 'Admin account created successfully.',
+            'invite' => [
+                'name' => (string) $payload['name'],
+                'username' => (string) $payload['username'],
+                'email' => (string) $payload['email'],
+                'role' => $this->roleFromLevel((int) $payload['user_level_id']),
+                'expires_at' => (string) $payload['expires_at'],
+            ],
+        ]);
+    }
+
+    public function acceptInvite(Request $request)
+    {
+        $validated = $request->validate([
+            'token' => 'required|string',
+            'password' => 'required|string|min:8|confirmed',
+        ]);
+
+        $payload = $this->getInvitePayload((string) $validated['token']);
+        if (!$payload) {
+            throw ValidationException::withMessages([
+                'token' => ['Invite link is invalid or expired.'],
+            ]);
+        }
+
+        $email = trim((string) $payload['email']);
+        $username = trim((string) $payload['username']);
+
+        if (Admin::query()->where('user_email', $email)->orWhere('username', $username)->exists()) {
+            Cache::forget($this->inviteCacheKey((string) $validated['token']));
+
+            return response()->json([
+                'message' => 'This admin account has already been created or is no longer available.',
+            ], 409);
+        }
+
+        $admin = Admin::query()->create([
+            'fname' => trim((string) $payload['name']),
+            'username' => $username,
+            'user_email' => $email,
+            'passworde' => Hash::make((string) $validated['password']),
+            'user_level_id' => (int) $payload['user_level_id'],
+        ]);
+
+        Cache::forget($this->inviteCacheKey((string) $validated['token']));
+
+        return response()->json([
+            'message' => 'Your admin account is now active. You may sign in.',
             'user' => $this->transform($admin),
-        ], 201);
+        ]);
     }
 
     public function update(Request $request, int $id)
@@ -195,5 +251,53 @@ class AdminUserController extends Controller
             'user_level_id' => (int) $admin->user_level_id,
             'role' => $this->roleFromLevel((int) $admin->user_level_id),
         ];
+    }
+
+    private function createAndSendInvite(array $validated, int $actorId): string
+    {
+        $token = Str::random(64);
+        $expiresAt = now()->addMinutes(self::INVITE_TTL_MINUTES);
+        $payload = [
+            'name' => trim((string) $validated['name']),
+            'username' => trim((string) $validated['username']),
+            'email' => trim((string) $validated['email']),
+            'user_level_id' => (int) $validated['user_level_id'],
+            'created_by' => $actorId,
+            'expires_at' => $expiresAt->toIso8601String(),
+        ];
+
+        Cache::put($this->inviteCacheKey($token), $payload, $expiresAt);
+
+        $setupUrl = sprintf(
+            '%s/admin-setup?token=%s',
+            rtrim((string) env('FRONTEND_URL', config('app.url')), '/'),
+            urlencode($token)
+        );
+
+        Mail::to($payload['email'])->send(new AdminInviteMail(
+            name: $payload['name'],
+            email: $payload['email'],
+            roleLabel: $this->roleLabel((int) $payload['user_level_id']),
+            setupUrl: $setupUrl,
+            expiresAt: $expiresAt->toDayDateTimeString(),
+        ));
+
+        return 'Admin invite sent successfully.';
+    }
+
+    private function getInvitePayload(string $token): ?array
+    {
+        $payload = Cache::get($this->inviteCacheKey($token));
+        return is_array($payload) ? $payload : null;
+    }
+
+    private function inviteCacheKey(string $token): string
+    {
+        return 'admin:invite:' . $token;
+    }
+
+    private function roleLabel(int $level): string
+    {
+        return str_replace('_', ' ', Str::title($this->roleFromLevel($level)));
     }
 }

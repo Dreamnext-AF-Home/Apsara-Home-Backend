@@ -102,6 +102,11 @@ Route::prefix('admin/auth')->group(function () {
     Route::post('/login', [AdminAuthController::class, 'login']);
 });
 
+Route::prefix('admin/invites')->group(function () {
+    Route::get('/{token}', [AdminUserController::class, 'showInvite']);
+    Route::post('/accept', [AdminUserController::class, 'acceptInvite']);
+});
+
 Route::middleware('auth:sanctum')->prefix('admin/auth')->group(function () {
     Route::post('/logout', [AdminAuthController::class, 'logout']);
     Route::get('/me', [AdminAuthController::class, 'me']);
