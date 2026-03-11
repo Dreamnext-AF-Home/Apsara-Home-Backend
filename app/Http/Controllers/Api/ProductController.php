@@ -382,7 +382,7 @@ class ProductController extends Controller
                 ProductPhoto::create([
                     'pp_pdid'     => $product->pd_id,
                     'pp_filename' => $url,
-                    'pp_varone'   => null,
+                    'pp_varone'   => '',
                     'pp_date'     => $now,
                 ]);
             }
@@ -507,7 +507,7 @@ class ProductController extends Controller
                         ProductPhoto::create([
                             'pp_pdid'     => $product->pd_id,
                             'pp_filename' => $url,
-                            'pp_varone'   => null,
+                            'pp_varone'   => '',
                             'pp_date'     => now(),
                         ]);
                     }
