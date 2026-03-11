@@ -482,7 +482,7 @@ class ProductController extends Controller
             'pd_material', 'pd_warranty',
             'pd_price_srp', 'pd_price_dp', 'pd_prodpv', 'pd_qty', 'pd_weight',
             'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
-            'pd_parent_sku', 'pd_type', 'pd_status', 'pd_image',
+            'pd_parent_sku', 'pd_type', 'pd_status',
         ];
 
         try {
@@ -524,13 +524,18 @@ class ProductController extends Controller
                         ->values()
                         ->all();
 
-                    $existingImages = ProductPhoto::query()
-                        ->where('pp_pdid', $product->pd_id)
-                        ->orderBy('pp_id')
-                        ->pluck('pp_filename')
-                        ->filter(fn ($url) => is_string($url) && trim($url) !== '')
-                        ->values()
-                        ->all();
+                    try {
+                        $existingImages = ProductPhoto::query()
+                            ->where('pp_pdid', $product->pd_id)
+                            ->orderBy('pp_id')
+                            ->pluck('pp_filename')
+                            ->filter(fn ($url) => is_string($url) && trim($url) !== '')
+                            ->values()
+                            ->all();
+                    } catch (\Throwable $e) {
+                        Log::error('Product update stage failed | stage=photo_select | product_id=' . $product->pd_id . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
+                        throw $e;
+                    }
 
                     $imagesChanged = $existingImages !== $images;
 
