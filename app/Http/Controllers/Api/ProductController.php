@@ -10,6 +10,7 @@ use App\Models\ProductVariantPhoto;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 
 class ProductController extends Controller
@@ -469,59 +470,75 @@ class ProductController extends Controller
             'pd_parent_sku', 'pd_type', 'pd_status', 'pd_image',
         ];
 
-        DB::transaction(function () use ($request, $product, $fields) {
-            foreach ($fields as $field) {
-                if ($request->has($field)) {
-                    if (in_array($field, ['pd_material', 'pd_warranty'], true)) {
-                        $product->$field = $request->filled($field) ? (string) $request->$field : '';
-                    } else {
-                        $product->$field = $request->$field;
+        try {
+            DB::transaction(function () use ($request, $product, $fields) {
+                foreach ($fields as $field) {
+                    if ($request->has($field)) {
+                        if (in_array($field, ['pd_material', 'pd_warranty'], true)) {
+                            $product->$field = $request->filled($field) ? (string) $request->$field : '';
+                        } else {
+                            $product->$field = $request->$field;
+                        }
                     }
                 }
-            }
 
-            if ($request->has('pd_musthave')) {
-                $product->pd_musthave = $request->boolean('pd_musthave') ? 1 : 0;
-            }
-            if ($request->has('pd_bestseller')) {
-                $product->pd_bestseller = $request->boolean('pd_bestseller') ? 1 : 0;
-            }
-            if ($request->has('pd_salespromo')) {
-                $product->pd_salespromo = $request->boolean('pd_salespromo') ? 1 : 0;
-            }
-            if ($request->has('pd_assembly_required')) {
-                $product->pd_assembly_required = $request->boolean('pd_assembly_required') ? 1 : 0;
-            }
-
-            if ($request->has('pd_images')) {
-                $images = collect($request->input('pd_images', []))
-                    ->filter(fn ($url) => is_string($url) && trim($url) !== '')
-                    ->values()
-                    ->all();
-
-                ProductPhoto::query()->where('pp_pdid', $product->pd_id)->delete();
-
-                foreach ($images as $url) {
-                    ProductPhoto::create([
-                        'pp_pdid'     => $product->pd_id,
-                        'pp_filename' => $url,
-                        'pp_varone'   => null,
-                        'pp_date'     => now(),
-                    ]);
+                if ($request->has('pd_musthave')) {
+                    $product->pd_musthave = $request->boolean('pd_musthave') ? 1 : 0;
+                }
+                if ($request->has('pd_bestseller')) {
+                    $product->pd_bestseller = $request->boolean('pd_bestseller') ? 1 : 0;
+                }
+                if ($request->has('pd_salespromo')) {
+                    $product->pd_salespromo = $request->boolean('pd_salespromo') ? 1 : 0;
+                }
+                if ($request->has('pd_assembly_required')) {
+                    $product->pd_assembly_required = $request->boolean('pd_assembly_required') ? 1 : 0;
                 }
 
-                $product->pd_image = $images[0] ?? null;
-            } elseif ($request->has('pd_image')) {
-                $product->pd_image = $request->pd_image;
-            }
+                if ($request->has('pd_images')) {
+                    $images = collect($request->input('pd_images', []))
+                        ->filter(fn ($url) => is_string($url) && trim($url) !== '')
+                        ->values()
+                        ->all();
 
-            if ($request->has('pd_variants')) {
-                $this->syncVariants($product, $request->input('pd_variants', []), now());
-            }
+                    ProductPhoto::query()->where('pp_pdid', $product->pd_id)->delete();
 
-            $product->pd_last_update = now();
-            $product->save();
-        });
+                    foreach ($images as $url) {
+                        ProductPhoto::create([
+                            'pp_pdid'     => $product->pd_id,
+                            'pp_filename' => $url,
+                            'pp_varone'   => null,
+                            'pp_date'     => now(),
+                        ]);
+                    }
+
+                    $product->pd_image = $images[0] ?? null;
+                } elseif ($request->has('pd_image')) {
+                    $product->pd_image = $request->pd_image;
+                }
+
+                if ($request->has('pd_variants')) {
+                    $this->syncVariants($product, $request->input('pd_variants', []), now());
+                }
+
+                $product->pd_last_update = now();
+                $product->save();
+            });
+        } catch (\Throwable $e) {
+            Log::error('Product update failed', [
+                'product_id' => $id,
+                'message' => $e->getMessage(),
+                'exception' => $e::class,
+                'file' => $e->getFile() . ':' . $e->getLine(),
+                'sql' => method_exists($e, 'getSql') ? $e->getSql() : null,
+                'bindings' => method_exists($e, 'getBindings') ? $e->getBindings() : null,
+                'payload' => $request->except([]),
+            ]);
+
+            return response()->json([
+                'message' => 'Server error: ' . $e->getMessage(),
+            ], 500);
+        }
 
         return response()->json(['message' => 'Product updated successfully.']);
     }
