@@ -383,25 +383,32 @@ class ProductController extends Controller
                 throw $e;
             }
 
-            foreach ($images as $url) {
-                try {
-                    ProductPhoto::create([
-                        'pp_pdid'     => $product->pd_id,
-                        'pp_filename' => $url,
-                        'pp_varone'   => '',
-                        'pp_date'     => $now,
-                    ]);
-                } catch (\Throwable $e) {
-                    Log::error('Product store stage failed | stage=photo_insert | product_id=' . $product->pd_id . ' | image_url=' . $url . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
-                    throw $e;
+            if (count($images) > 1) {
+                foreach ($images as $url) {
+                    try {
+                        ProductPhoto::create([
+                            'pp_pdid'     => $product->pd_id,
+                            'pp_filename' => $url,
+                            'pp_varone'   => '',
+                            'pp_date'     => $now,
+                        ]);
+                    } catch (\Throwable $e) {
+                        Log::error('Product store stage failed | stage=photo_insert | product_id=' . $product->pd_id . ' | image_url=' . $url . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
+                        throw $e;
+                    }
                 }
             }
 
-            try {
-                $this->syncVariants($product, $request->input('pd_variants', []), $now);
-            } catch (\Throwable $e) {
-                Log::error('Product store stage failed | stage=variant_sync | product_id=' . $product->pd_id . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
-                throw $e;
+            $shouldSyncVariants = (int) $request->input('pd_type', 0) === 1
+                || !empty($request->input('pd_variants', []));
+
+            if ($shouldSyncVariants) {
+                try {
+                    $this->syncVariants($product, $request->input('pd_variants', []), $now);
+                } catch (\Throwable $e) {
+                    Log::error('Product store stage failed | stage=variant_sync | product_id=' . $product->pd_id . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
+                    throw $e;
+                }
             }
 
             return $product;
@@ -524,45 +531,49 @@ class ProductController extends Controller
                         ->values()
                         ->all();
 
-                    try {
-                        $existingImages = ProductPhoto::query()
-                            ->where('pp_pdid', $product->pd_id)
-                            ->orderBy('pp_id')
-                            ->pluck('pp_filename')
-                            ->filter(fn ($url) => is_string($url) && trim($url) !== '')
-                            ->values()
-                            ->all();
-                    } catch (\Throwable $e) {
-                        Log::error('Product update stage failed | stage=photo_select | product_id=' . $product->pd_id . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
-                        throw $e;
-                    }
-
-                    $imagesChanged = $existingImages !== $images;
-
-                    if ($imagesChanged) {
+                    if (count($images) <= 1) {
+                        $product->pd_image = $images[0] ?? null;
+                    } else {
                         try {
-                            ProductPhoto::query()->where('pp_pdid', $product->pd_id)->delete();
+                            $existingImages = ProductPhoto::query()
+                                ->where('pp_pdid', $product->pd_id)
+                                ->orderBy('pp_id')
+                                ->pluck('pp_filename')
+                                ->filter(fn ($url) => is_string($url) && trim($url) !== '')
+                                ->values()
+                                ->all();
                         } catch (\Throwable $e) {
-                            Log::error('Product update stage failed | stage=photo_delete | product_id=' . $product->pd_id . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
+                            Log::error('Product update stage failed | stage=photo_select | product_id=' . $product->pd_id . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
                             throw $e;
                         }
 
-                        foreach ($images as $url) {
+                        $imagesChanged = $existingImages !== $images;
+
+                        if ($imagesChanged) {
                             try {
-                                ProductPhoto::create([
-                                    'pp_pdid'     => $product->pd_id,
-                                    'pp_filename' => $url,
-                                    'pp_varone'   => '',
-                                    'pp_date'     => now(),
-                                ]);
+                                ProductPhoto::query()->where('pp_pdid', $product->pd_id)->delete();
                             } catch (\Throwable $e) {
-                                Log::error('Product update stage failed | stage=photo_insert | product_id=' . $product->pd_id . ' | image_url=' . $url . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
+                                Log::error('Product update stage failed | stage=photo_delete | product_id=' . $product->pd_id . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
                                 throw $e;
                             }
-                        }
-                    }
 
-                    $product->pd_image = $images[0] ?? null;
+                            foreach ($images as $url) {
+                                try {
+                                    ProductPhoto::create([
+                                        'pp_pdid'     => $product->pd_id,
+                                        'pp_filename' => $url,
+                                        'pp_varone'   => '',
+                                        'pp_date'     => now(),
+                                    ]);
+                                } catch (\Throwable $e) {
+                                    Log::error('Product update stage failed | stage=photo_insert | product_id=' . $product->pd_id . ' | image_url=' . $url . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
+                                    throw $e;
+                                }
+                            }
+                        }
+
+                        $product->pd_image = $images[0] ?? null;
+                    }
                 } elseif ($request->has('pd_image')) {
                     $product->pd_image = $request->pd_image;
                 }
