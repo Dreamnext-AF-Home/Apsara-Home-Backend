@@ -111,6 +111,9 @@ Route::prefix('admin/auth')->group(function () {
 
 Route::prefix('supplier/auth')->group(function () {
     Route::post('/login', [SupplierAuthController::class, 'login']);
+    Route::post('/forgot-password', [SupplierAuthController::class, 'forgotPassword']);
+    Route::get('/reset-password/{token}', [SupplierAuthController::class, 'showResetToken']);
+    Route::post('/reset-password', [SupplierAuthController::class, 'resetPassword']);
 });
 
 Route::prefix('admin/invites')->group(function () {
