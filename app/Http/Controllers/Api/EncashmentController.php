@@ -4,12 +4,15 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\AdminNotification;
+use App\Models\CheckoutHistory;
 use App\Models\Customer;
 use App\Models\CustomerVerificationRequest;
 use App\Models\CustomerWalletLedger;
 use App\Models\EncashmentPayoutMethod;
 use App\Models\EncashmentRequest;
 use Illuminate\Http\Request;
+use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Pusher\Pusher;
@@ -26,7 +29,7 @@ class EncashmentController extends Controller
         $validated = $request->validate([
             'page' => 'nullable|integer|min:1',
             'per_page' => 'nullable|integer|min:1|max:100',
-            'wallet_type' => 'nullable|in:all,cash,pv',
+            'wallet_type' => 'nullable|in:all,cash,pv,rewards',
         ]);
 
         $walletType = (string) ($validated['wallet_type'] ?? 'all');
@@ -73,16 +76,134 @@ class EncashmentController extends Controller
             ->whereIn('er_status', ['pending', 'approved_by_admin', 'on_hold'])
             ->sum('er_amount');
 
+        $pendingPv = (float) CheckoutHistory::query()
+            ->where('ch_customer_id', (int) $customer->c_userid)
+            ->where('ch_earned_pv', '>', 0)
+            ->whereNull('ch_pv_posted_at')
+            ->whereNotIn('ch_status', ['failed', 'cancelled', 'expired'])
+            ->sum('ch_earned_pv');
+
+        $lifetimePv = 0.0;
+        if (Schema::hasTable('tbl_customer_wallet_ledger')) {
+            $lifetimePv = (float) CustomerWalletLedger::query()
+                ->where('wl_customer_id', (int) $customer->c_userid)
+                ->where('wl_wallet_type', 'pv')
+                ->where('wl_entry_type', 'credit')
+                ->sum('wl_amount');
+        }
+
+        $totalReferrals = (int) Customer::query()
+            ->where('c_sponsor', (int) $customer->c_userid)
+            ->count();
+
+        $verifiedReferrals = (int) Customer::query()
+            ->where('c_sponsor', (int) $customer->c_userid)
+            ->where('c_lockstatus', 0)
+            ->where('c_accnt_status', 1)
+            ->count();
+
+        $activeReferrals = $verifiedReferrals;
+
+        $isVerifiedAffiliate = (int) ($customer->c_accnt_status ?? 0) === 1
+            && (int) ($customer->c_lockstatus ?? 0) === 0;
+
+        $reservedAffiliateVoucherAmount = 0.0;
+        $affiliateVouchers = collect();
+        if (Schema::hasTable('tbl_affiliate_voucher_issuances')) {
+            $reservedAffiliateVoucherAmount = (float) DB::table('tbl_affiliate_voucher_issuances')
+                ->where('avi_customer_id', (int) $customer->c_userid)
+                ->where('avi_status', 'active')
+                ->sum('avi_amount');
+
+            $affiliateVouchers = DB::table('tbl_affiliate_voucher_issuances')
+                ->where('avi_customer_id', (int) $customer->c_userid)
+                ->orderByDesc('created_at')
+                ->limit(20)
+                ->get([
+                    'avi_id',
+                    'avi_code',
+                    'avi_amount',
+                    'avi_status',
+                    'avi_redeemed_by_customer_id',
+                    'avi_redeemed_at',
+                    'avi_expires_at',
+                    'created_at',
+                    'updated_at',
+                ]);
+        }
+
+        $afVoucherSourceBalance = 0.0;
+        if (Schema::hasTable('tbl_vouchers')) {
+            $today = now()->toDateString();
+
+            $afVoucherSourceBalance = (float) DB::table('tbl_vouchers')
+                ->where('v_cid', (int) $customer->c_userid)
+                ->where('v_active', 0)
+                ->where(function ($query) use ($today) {
+                    $query->whereNull('v_valid_from')
+                        ->orWhereDate('v_valid_from', '<=', $today);
+                })
+                ->where(function ($query) use ($today) {
+                    $query->whereNull('v_valid_to')
+                        ->orWhereDate('v_valid_to', '>=', $today);
+                })
+                ->sum('v_value');
+        }
+
+        $cashbackSourceBalance = 0.0;
+        if (Schema::hasTable('tbl_transaction')) {
+            $cashbackSourceBalance += (float) DB::table('tbl_transaction')
+                ->where('t_receiver', (int) $customer->c_userid)
+                ->where('t_rebate', '>', 0)
+                ->sum('t_rebate');
+        }
+        if (Schema::hasTable('tbl_vows_transaction')) {
+            $cashbackSourceBalance += (float) DB::table('tbl_vows_transaction')
+                ->where('t_receiver', (int) $customer->c_userid)
+                ->where('t_status', 1)
+                ->where('t_rebate', '>', 0)
+                ->sum('t_rebate');
+        }
+
+        $afVoucherBalance = max(0, $afVoucherSourceBalance);
+        $cashbackBalance = max(0, $cashbackSourceBalance - $reservedAffiliateVoucherAmount);
+
+        $cashbackRate = 0.0;
+        if (Schema::hasTable('tbl_control_panel')) {
+            $cashbackRate = (float) (DB::table('tbl_control_panel')->value('cashback_percentage') ?? 0);
+        }
+
         return response()->json([
             'summary' => [
                 'cash_balance' => round((float) ($customer->c_totalincome ?? 0), 2),
                 'pv_balance' => round((float) ($customer->c_gpv ?? 0), 2),
+                'current_pv' => round((float) ($customer->c_pv ?? 0), 2),
+                'personal_purchase_pv' => round((float) ($customer->c_ppv ?? 0), 2),
+                'group_pv' => round((float) ($customer->c_gpv ?? 0), 2),
+                'current_month_group_pv' => round((float) ($customer->c_gpv_cmonth ?? 0), 2),
+                'current_cv' => round((float) ($customer->c_cv ?? 0), 2),
+                'pending_pv' => round($pendingPv, 2),
+                'lifetime_pv' => round($lifetimePv, 2),
                 'cash_credits' => round($cashCredits, 2),
                 'cash_debits' => round($cashDebits, 2),
                 'pv_credits' => round($pvCredits, 2),
                 'pv_debits' => round($pvDebits, 2),
                 'encashment_locked' => round($encashmentPendingLocked, 2),
                 'encashment_available' => round(max(0, ((float) ($customer->c_totalincome ?? 0)) - $encashmentPendingLocked), 2),
+                'af_voucher_balance' => round($afVoucherBalance, 2),
+                'available_egc_balance' => 0,
+                'cashback_balance' => round($cashbackBalance, 2),
+                'cashback_rate' => round($cashbackRate, 2),
+                'af_voucher_source_balance' => round($afVoucherSourceBalance, 2),
+                'af_voucher_reserved_balance' => round($reservedAffiliateVoucherAmount, 2),
+                'cashback_source_balance' => round($cashbackSourceBalance, 2),
+                'cashback_reserved_balance' => round($reservedAffiliateVoucherAmount, 2),
+                'can_create_affiliate_voucher' => $isVerifiedAffiliate,
+                'referrals' => [
+                    'total' => $totalReferrals,
+                    'verified' => $verifiedReferrals,
+                    'active' => $activeReferrals,
+                ],
             ],
             'ledger' => collect($ledgerRows?->items() ?? [])->map(function (CustomerWalletLedger $row) {
                 return [
@@ -107,7 +228,121 @@ class EncashmentController extends Controller
                 'from' => $ledgerRows?->firstItem() ?? null,
                 'to' => $ledgerRows?->lastItem() ?? null,
             ],
+            'affiliate_vouchers' => $affiliateVouchers->map(function ($row) {
+                return [
+                    'id' => (int) $row->avi_id,
+                    'code' => (string) $row->avi_code,
+                    'amount' => (float) $row->avi_amount,
+                    'status' => (string) $row->avi_status,
+                    'redeemed_by_customer_id' => $row->avi_redeemed_by_customer_id ? (int) $row->avi_redeemed_by_customer_id : null,
+                    'redeemed_at' => $row->avi_redeemed_at,
+                    'expires_at' => $row->avi_expires_at,
+                    'created_at' => $row->created_at,
+                    'updated_at' => $row->updated_at,
+                ];
+            })->values(),
         ]);
+    }
+
+    public function createAffiliateVoucher(Request $request)
+    {
+        $customer = $request->user();
+        if (!$customer instanceof Customer) {
+            return response()->json(['message' => 'Only customer accounts can create affiliate vouchers.'], 403);
+        }
+
+        $isVerifiedAffiliate = (int) ($customer->c_accnt_status ?? 0) === 1
+            && (int) ($customer->c_lockstatus ?? 0) === 0;
+
+        if (!$isVerifiedAffiliate) {
+            return response()->json([
+                'message' => 'Only verified affiliate accounts can create vouchers.',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'amount' => 'required|numeric|min:1|max:999999.99',
+        ]);
+
+        if (!Schema::hasTable('tbl_affiliate_voucher_issuances')) {
+            return response()->json([
+                'message' => 'Affiliate voucher issuance table is not available.',
+            ], 422);
+        }
+
+        $voucher = DB::transaction(function () use ($customer, $validated) {
+            $requestedAmount = round((float) $validated['amount'], 2);
+
+            $sourceBalance = 0.0;
+            if (Schema::hasTable('tbl_transaction')) {
+                $sourceBalance += (float) DB::table('tbl_transaction')
+                    ->where('t_receiver', (int) $customer->c_userid)
+                    ->where('t_rebate', '>', 0)
+                    ->sum('t_rebate');
+            }
+            if (Schema::hasTable('tbl_vows_transaction')) {
+                $sourceBalance += (float) DB::table('tbl_vows_transaction')
+                    ->where('t_receiver', (int) $customer->c_userid)
+                    ->where('t_status', 1)
+                    ->where('t_rebate', '>', 0)
+                    ->sum('t_rebate');
+            }
+
+            $reservedAmount = (float) DB::table('tbl_affiliate_voucher_issuances')
+                ->where('avi_customer_id', (int) $customer->c_userid)
+                ->where('avi_status', 'active')
+                ->sum('avi_amount');
+
+            $availableAmount = max(0, $sourceBalance - $reservedAmount);
+            if ($requestedAmount > $availableAmount) {
+                throw new HttpResponseException(response()->json([
+                    'message' => 'Requested voucher amount exceeds your available cashback balance.',
+                    'available_balance' => round($availableAmount, 2),
+                ], 422));
+            }
+
+            $nextId = ((int) DB::table('tbl_affiliate_voucher_issuances')->max('avi_id')) + 1;
+            $code = sprintf('AFV-AFF-%06d', $nextId);
+
+            $id = DB::table('tbl_affiliate_voucher_issuances')->insertGetId([
+                'avi_customer_id' => (int) $customer->c_userid,
+                'avi_code' => $code,
+                'avi_amount' => $requestedAmount,
+                'avi_status' => 'active',
+                'avi_expires_at' => now()->addYear(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ], 'avi_id');
+
+            return DB::table('tbl_affiliate_voucher_issuances')
+                ->where('avi_id', $id)
+                ->first([
+                    'avi_id',
+                    'avi_code',
+                    'avi_amount',
+                    'avi_status',
+                    'avi_redeemed_by_customer_id',
+                    'avi_redeemed_at',
+                    'avi_expires_at',
+                    'created_at',
+                    'updated_at',
+                ]);
+        });
+
+        return response()->json([
+            'message' => 'Affiliate voucher created successfully.',
+            'voucher' => [
+                'id' => (int) $voucher->avi_id,
+                'code' => (string) $voucher->avi_code,
+                'amount' => (float) $voucher->avi_amount,
+                'status' => (string) $voucher->avi_status,
+                'redeemed_by_customer_id' => $voucher->avi_redeemed_by_customer_id ? (int) $voucher->avi_redeemed_by_customer_id : null,
+                'redeemed_at' => $voucher->avi_redeemed_at,
+                'expires_at' => $voucher->avi_expires_at,
+                'created_at' => $voucher->created_at,
+                'updated_at' => $voucher->updated_at,
+            ],
+        ], 201);
     }
 
     public function store(Request $request)

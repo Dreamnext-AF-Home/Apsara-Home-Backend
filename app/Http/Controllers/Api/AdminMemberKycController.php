@@ -123,6 +123,8 @@ class AdminMemberKycController extends Controller
                     'c_accnt_status' => 1,
                     'c_lockstatus' => 0,
                 ]);
+
+            $this->createVerifiedAffiliateVoucher((int) $locked->cvr_customer_id);
         });
 
         return response()->json(['message' => 'KYC request approved successfully.']);
@@ -235,5 +237,36 @@ class AdminMemberKycController extends Controller
     private function canManageKyc(Admin $admin): bool
     {
         return in_array((int) $admin->user_level_id, [1, 2, 3], true);
+    }
+
+    private function createVerifiedAffiliateVoucher(int $customerId): void
+    {
+        if (!DB::getSchemaBuilder()->hasTable('tbl_vouchers')) {
+            return;
+        }
+
+        $voucherCode = sprintf('AFV-KYC-%06d', $customerId);
+        $voucherValue = (float) env('AFFILIATE_VERIFIED_VOUCHER_VALUE', 500);
+
+        $existing = DB::table('tbl_vouchers')
+            ->where('v_cid', $customerId)
+            ->where('v_code', $voucherCode)
+            ->exists();
+
+        if ($existing) {
+            return;
+        }
+
+        DB::table('tbl_vouchers')->insert([
+            'v_cid' => $customerId,
+            'v_code' => $voucherCode,
+            'v_valid_from' => now(),
+            'v_valid_to' => now()->addYear(),
+            'v_value' => $voucherValue,
+            'v_uses' => now(),
+            // Old migrated data uses 0 as active.
+            'v_active' => 0,
+            'v_pid' => 0,
+        ]);
     }
 }

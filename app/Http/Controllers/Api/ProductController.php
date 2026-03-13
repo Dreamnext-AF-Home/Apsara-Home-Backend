@@ -531,49 +531,45 @@ class ProductController extends Controller
                         ->values()
                         ->all();
 
-                    if (count($images) <= 1) {
-                        $product->pd_image = $images[0] ?? null;
-                    } else {
+                    try {
+                        $existingImages = ProductPhoto::query()
+                            ->where('pp_pdid', $product->pd_id)
+                            ->orderBy('pp_id')
+                            ->pluck('pp_filename')
+                            ->filter(fn ($url) => is_string($url) && trim($url) !== '')
+                            ->values()
+                            ->all();
+                    } catch (\Throwable $e) {
+                        Log::error('Product update stage failed | stage=photo_select | product_id=' . $product->pd_id . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
+                        throw $e;
+                    }
+
+                    $imagesChanged = $existingImages !== $images;
+
+                    if ($imagesChanged) {
                         try {
-                            $existingImages = ProductPhoto::query()
-                                ->where('pp_pdid', $product->pd_id)
-                                ->orderBy('pp_id')
-                                ->pluck('pp_filename')
-                                ->filter(fn ($url) => is_string($url) && trim($url) !== '')
-                                ->values()
-                                ->all();
+                            ProductPhoto::query()->where('pp_pdid', $product->pd_id)->delete();
                         } catch (\Throwable $e) {
-                            Log::error('Product update stage failed | stage=photo_select | product_id=' . $product->pd_id . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
+                            Log::error('Product update stage failed | stage=photo_delete | product_id=' . $product->pd_id . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
                             throw $e;
                         }
 
-                        $imagesChanged = $existingImages !== $images;
-
-                        if ($imagesChanged) {
+                        foreach ($images as $url) {
                             try {
-                                ProductPhoto::query()->where('pp_pdid', $product->pd_id)->delete();
+                                ProductPhoto::create([
+                                    'pp_pdid'     => $product->pd_id,
+                                    'pp_filename' => $url,
+                                    'pp_varone'   => null,
+                                    'pp_date'     => now(),
+                                ]);
                             } catch (\Throwable $e) {
-                                Log::error('Product update stage failed | stage=photo_delete | product_id=' . $product->pd_id . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
+                                Log::error('Product update stage failed | stage=photo_insert | product_id=' . $product->pd_id . ' | image_url=' . $url . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
                                 throw $e;
                             }
-
-                            foreach ($images as $url) {
-                                try {
-                                    ProductPhoto::create([
-                                        'pp_pdid'     => $product->pd_id,
-                                        'pp_filename' => $url,
-                                        'pp_varone'   => null,
-                                        'pp_date'     => now(),
-                                    ]);
-                                } catch (\Throwable $e) {
-                                    Log::error('Product update stage failed | stage=photo_insert | product_id=' . $product->pd_id . ' | image_url=' . $url . ' | exception=' . $e::class . ' | message=' . $e->getMessage());
-                                    throw $e;
-                                }
-                            }
                         }
-
-                        $product->pd_image = $images[0] ?? null;
                     }
+
+                    $product->pd_image = $images[0] ?? null;
                 } elseif ($request->has('pd_image')) {
                     $product->pd_image = $request->pd_image;
                 }

@@ -64,6 +64,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/encashment/payout-methods', [EncashmentController::class, 'storePayoutMethod']);
     Route::delete('/encashment/payout-methods/{id}', [EncashmentController::class, 'destroyPayoutMethod']);
     Route::get('/encashment/wallet', [EncashmentController::class, 'walletOverview']);
+    Route::post('/encashment/vouchers', [EncashmentController::class, 'createAffiliateVoucher']);
     Route::post('/encashment/verification-request', [EncashmentController::class, 'submitVerificationRequest']);
     Route::get('/notifications/customer', [CustomerNotificationController::class, 'index']);
     Route::get('/admin/orders', [AdminOrderController::class, 'index']);
