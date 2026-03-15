@@ -297,73 +297,92 @@ class ProductController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $admin = $this->resolveAdmin($request);
-        $supplierUser = $this->resolveSupplierUser($request);
-        $perPage = max(1, min((int) $request->integer('per_page', 25), 100));
-        $search  = trim((string) $request->query('q', ''));
-        $status  = $request->query('status', '');
-        $catId   = $request->query('cat_id', '');
-        $requestedSupplierId = (int) $request->query('supplier_id', 0);
+        try {
+            $admin = $this->resolveAdmin($request);
+            $supplierUser = $this->resolveSupplierUser($request);
+            $perPage = max(1, min((int) $request->integer('per_page', 25), 100));
+            $search  = trim((string) $request->query('q', ''));
+            $status  = $request->query('status', '');
+            $catId   = $request->query('cat_id', '');
+            $requestedSupplierId = (int) $request->query('supplier_id', 0);
 
-        $query = Product::query()
-            ->select([
-                'pd_id', 'pd_name', 'pd_description', 'pd_specifications', 'pd_material', 'pd_warranty',
-                'pd_catid', 'pd_catsubid',
-                'pd_price_srp', 'pd_price_dp', 'pd_price_member', 'pd_qty',
-                'pd_prodpv',
-                'pd_weight', 'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
-                'pd_assembly_required', 'pd_type', 'pd_musthave',
-                'pd_bestseller', 'pd_salespromo', 'pd_status', 'pd_date',
-                'pd_last_update', 'pd_parent_sku', 'pd_image',
-            ])
-            ->with([
-                'photos:pp_id,pp_pdid,pp_filename,pp_varone,pp_date',
-                'variants:pv_id,pv_pdid,pv_sku,pv_color,pv_color_hex,pv_size,pv_price_srp,pv_price_dp,pv_price_member,pv_qty,pv_status,pv_date',
-                'variants.photos:pvp_id,pvp_pvid,pvp_filename,pvp_sort,pvp_date',
-            ])
-            ->when($search !== '', function ($q) use ($search) {
-                $like = '%' . $search . '%';
-                $q->where(function ($inner) use ($like) {
-                    $inner->where('pd_name', 'ilike', $like)
-                          ->orWhere('pd_parent_sku', 'ilike', $like);
-                });
-            })
-            ->when($status !== '', function ($q) use ($status) {
-                $q->where('pd_status', (int) $status);
-            })
-            ->when($catId !== '', function ($q) use ($catId) {
-                $q->where('pd_catid', (int) $catId);
-            })
-            ->orderByDesc('pd_id');
+            $query = Product::query()
+                ->select([
+                    'pd_id', 'pd_name', 'pd_description', 'pd_specifications', 'pd_material', 'pd_warranty',
+                    'pd_catid', 'pd_catsubid',
+                    'pd_price_srp', 'pd_price_dp', 'pd_price_member', 'pd_qty',
+                    'pd_prodpv',
+                    'pd_weight', 'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
+                    'pd_assembly_required', 'pd_type', 'pd_musthave',
+                    'pd_bestseller', 'pd_salespromo', 'pd_status', 'pd_date',
+                    'pd_last_update', 'pd_parent_sku', 'pd_image',
+                ])
+                ->with([
+                    'photos:pp_id,pp_pdid,pp_filename,pp_varone,pp_date',
+                    'variants:pv_id,pv_pdid,pv_sku,pv_color,pv_color_hex,pv_size,pv_price_srp,pv_price_dp,pv_price_member,pv_qty,pv_status,pv_date',
+                    'variants.photos:pvp_id,pvp_pvid,pvp_filename,pvp_sort,pvp_date',
+                ])
+                ->when($search !== '', function ($q) use ($search) {
+                    $like = '%' . $search . '%';
+                    $q->where(function ($inner) use ($like) {
+                        $inner->where('pd_name', 'ilike', $like)
+                              ->orWhere('pd_parent_sku', 'ilike', $like);
+                    });
+                })
+                ->when($status !== '', function ($q) use ($status) {
+                    $q->where('pd_status', (int) $status);
+                })
+                ->when($catId !== '', function ($q) use ($catId) {
+                    $q->where('pd_catid', (int) $catId);
+                })
+                ->orderByDesc('pd_id');
 
-        $this->scopeQueryToActor($query, $admin, $supplierUser);
+            $this->scopeQueryToActor($query, $admin, $supplierUser);
 
-        if ($supplierUser) {
-            $query->where('pd_supplier', (int) $supplierUser->su_supplier);
-        } elseif ($admin && $this->roleFromLevel((int) $admin->user_level_id) === 'supplier_admin') {
-            $supplierId = (int) ($admin->supplier_id ?? 0);
-            $query->where('pd_supplier', $supplierId > 0 ? $supplierId : -1);
-        } elseif ($requestedSupplierId > 0 && $admin) {
-            $query->where('pd_supplier', $requestedSupplierId);
+            if ($supplierUser) {
+                $query->where('pd_supplier', (int) $supplierUser->su_supplier);
+            } elseif ($admin && $this->roleFromLevel((int) $admin->user_level_id) === 'supplier_admin') {
+                $supplierId = (int) ($admin->supplier_id ?? 0);
+                $query->where('pd_supplier', $supplierId > 0 ? $supplierId : -1);
+            } elseif ($requestedSupplierId > 0 && $admin) {
+                $query->where('pd_supplier', $requestedSupplierId);
+            }
+
+            $paginator = $query->paginate($perPage);
+
+            $products = collect($paginator->items())
+                ->map(fn (Product $p) => $this->mapProduct($p))
+                ->values();
+
+            return response()->json([
+                'products' => $products,
+                'meta' => [
+                    'current_page' => $paginator->currentPage(),
+                    'last_page'    => $paginator->lastPage(),
+                    'per_page'     => $paginator->perPage(),
+                    'total'        => $paginator->total(),
+                    'from'         => $paginator->firstItem(),
+                    'to'           => $paginator->lastItem(),
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Product index failed', [
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+                'file' => $e->getFile() . ':' . $e->getLine(),
+                'sql' => method_exists($e, 'getSql') ? $e->getSql() : null,
+                'bindings' => method_exists($e, 'getBindings') ? $e->getBindings() : null,
+                'query' => $request->query(),
+                'actor_id' => $request->user()?->getAuthIdentifier(),
+                'actor_type' => $request->user() ? $request->user()::class : null,
+            ]);
+
+            return response()->json([
+                'message' => config('app.debug')
+                    ? 'Failed to load products: ' . $e->getMessage()
+                    : 'Failed to load products.',
+            ], 500);
         }
-
-        $paginator = $query->paginate($perPage);
-
-        $products = collect($paginator->items())
-            ->map(fn (Product $p) => $this->mapProduct($p))
-            ->values();
-
-        return response()->json([
-            'products' => $products,
-            'meta' => [
-                'current_page' => $paginator->currentPage(),
-                'last_page'    => $paginator->lastPage(),
-                'per_page'     => $paginator->perPage(),
-                'total'        => $paginator->total(),
-                'from'         => $paginator->firstItem(),
-                'to'           => $paginator->lastItem(),
-            ],
-        ]);
     }
 
     public function store(Request $request): JsonResponse
