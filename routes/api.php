@@ -38,6 +38,7 @@ Route::post('/payments/checkout-session', [PaymentController::class, 'createChec
 Route::get('/payments/checkout-session/{checkoutId}', [PaymentController::class, 'verifyCheckoutSession']);
 Route::post('/payments/webhooks/paymongo', [PaymentController::class, 'handlePaymongoWebhook']);
 Route::post('/payments/webhooks/test-paid', [PaymentController::class, 'handleTestPaidWebhook']);
+Route::get('/orders/track', [PaymentController::class, 'trackGuestOrder']);
 Route::get('/categories', [CategoryController::class, 'index']);
 Route::get('/products/slug/{slug}', [ProductController::class, 'showBySlug']);
 Route::get('/products/{id}', [ProductController::class, 'show']);

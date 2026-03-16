@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Mail\Checkout\OrderStatusUpdatedMail;
 use App\Models\Admin;
 use App\Models\AdminNotification;
 use App\Models\AdminNotificationRead;
@@ -12,8 +13,10 @@ use App\Models\CustomerWalletLedger;
 use App\Services\Shipping\XdeShippingService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -390,6 +393,8 @@ class AdminOrderController extends Controller
             $this->postPvIfNeeded($order, $admin);
         });
 
+        $this->sendCustomerOrderStatusEmail($order, 'approval_approved');
+
         return response()->json(['message' => 'Order approved.']);
     }
 
@@ -417,6 +422,8 @@ class AdminOrderController extends Controller
             'ch_fulfillment_status' => 'cancelled',
         ])->save();
 
+        $this->sendCustomerOrderStatusEmail($order, 'approval_rejected');
+
         return response()->json(['message' => 'Order rejected.']);
     }
 
@@ -438,9 +445,14 @@ class AdminOrderController extends Controller
         if (($order->ch_approval_status ?? 'pending_approval') !== 'approved') {
             return response()->json(['message' => 'Order must be approved before fulfillment tracking updates.'], 422);
         }
+        $previousStatus = (string) ($order->ch_fulfillment_status ?? 'pending');
         $order->ch_fulfillment_status = $validated['status'];
         $order->save();
         $shippingResult = $this->bookXdeShipmentOnShipped($order, (string) $validated['status']);
+
+        if ($previousStatus !== (string) $order->ch_fulfillment_status) {
+            $this->sendCustomerOrderStatusEmail($order, 'fulfillment_status');
+        }
 
         $message = 'Order status updated.';
         if (($shippingResult['state'] ?? '') === 'booked') {
@@ -475,6 +487,7 @@ class AdminOrderController extends Controller
         }
 
         $shipmentStatus = (string) $validated['shipment_status'];
+        $previousShipmentStatus = (string) ($order->ch_shipment_status ?? '');
         $order->ch_courier = $order->ch_courier ?: 'xde';
         $order->ch_shipment_status = $shipmentStatus;
 
@@ -492,6 +505,10 @@ class AdminOrderController extends Controller
         }
 
         $order->save();
+
+        if ($previousShipmentStatus !== (string) $order->ch_shipment_status) {
+            $this->sendCustomerOrderStatusEmail($order, 'shipment_status');
+        }
 
         return response()->json([
             'message' => 'Shipment status updated.',
@@ -833,5 +850,132 @@ class AdminOrderController extends Controller
 
         $order->ch_pv_posted_at = now();
         $order->save();
+    }
+
+    private function sendCustomerOrderStatusEmail(CheckoutHistory $order, string $eventType): void
+    {
+        $recipient = trim((string) ($order->ch_customer_email ?? ''));
+        if ($recipient === '' || !filter_var($recipient, FILTER_VALIDATE_EMAIL)) {
+            return;
+        }
+
+        $statusKey = $this->buildOrderNotificationKey($order, $eventType);
+        if ($statusKey === '') {
+            return;
+        }
+
+        $cacheKey = sprintf('order_status_email_sent:%d:%s', (int) $order->ch_id, $statusKey);
+        if (!Cache::add($cacheKey, true, now()->addDays(30))) {
+            return;
+        }
+
+        $payload = $this->buildOrderStatusEmailPayload($order, $eventType);
+        if ($payload === null) {
+            Cache::forget($cacheKey);
+            return;
+        }
+
+        $mailRecipient = env('MAIL_TEST_TO') ?: $recipient;
+
+        try {
+            Mail::mailer('resend')->to($mailRecipient)->send(new OrderStatusUpdatedMail($payload));
+        } catch (\Throwable $e) {
+            Cache::forget($cacheKey);
+            Log::error('Order status email send failed.', [
+                'order_id' => (int) $order->ch_id,
+                'checkout_id' => (string) $order->ch_checkout_id,
+                'recipient' => $mailRecipient,
+                'event_type' => $eventType,
+                'error' => $e->getMessage(),
+            ]);
+            report($e);
+        }
+    }
+
+    private function buildOrderNotificationKey(CheckoutHistory $order, string $eventType): string
+    {
+        return match ($eventType) {
+            'approval_approved' => 'approval:approved',
+            'approval_rejected' => 'approval:rejected',
+            'fulfillment_status' => 'fulfillment:' . strtolower((string) ($order->ch_fulfillment_status ?? '')),
+            'shipment_status' => 'shipment:' . strtolower((string) ($order->ch_shipment_status ?? '')),
+            default => '',
+        };
+    }
+
+    private function buildOrderStatusEmailPayload(CheckoutHistory $order, string $eventType): ?array
+    {
+        $customerName = trim((string) ($order->ch_customer_name ?? 'Customer')) ?: 'Customer';
+        $fulfillmentStatus = strtolower((string) ($order->ch_fulfillment_status ?? 'pending'));
+        $shipmentStatus = strtolower((string) ($order->ch_shipment_status ?? ''));
+        $trackingNo = trim((string) ($order->ch_tracking_no ?? ''));
+        $courier = trim((string) ($order->ch_courier ?? ''));
+
+        $title = 'Order Update';
+        $subtitle = 'There is a new update for your AF Home order.';
+        $badge = strtoupper(str_replace('_', ' ', $fulfillmentStatus));
+        $badgeColor = 'background:#ffedd5;color:#c2410c;';
+        $nextStep = 'You can keep your order number handy and track your delivery progress anytime.';
+
+        if ($eventType === 'approval_approved') {
+            $title = 'Order Approved';
+            $subtitle = 'Your payment has been confirmed and your order is now being prepared.';
+            $badge = 'APPROVED';
+            $badgeColor = 'background:#dcfce7;color:#15803d;';
+            $nextStep = 'Our team is now preparing your order for packing and shipment.';
+        } elseif ($eventType === 'approval_rejected') {
+            $title = 'Order Update';
+            $subtitle = 'Your order was not approved. Please contact AF Home support for assistance.';
+            $badge = 'REJECTED';
+            $badgeColor = 'background:#fee2e2;color:#b91c1c;';
+            $nextStep = 'If you need help reviewing this order, please contact the AF Home support team.';
+        } elseif ($eventType === 'fulfillment_status') {
+            [$title, $subtitle, $badgeColor, $nextStep] = match ($fulfillmentStatus) {
+                'processing' => ['Order Is Processing', 'Your order is now in our active processing queue.', 'background:#dbeafe;color:#1d4ed8;', 'Our team is preparing your items and will notify you once shipment begins.'],
+                'packed' => ['Order Packed', 'Good news. Your items are packed and almost ready to leave our warehouse.', 'background:#e0e7ff;color:#4338ca;', 'The next update you receive should be your shipment or delivery progress.'],
+                'shipped' => ['Order Shipped', 'Your order is already on the way.', 'background:#ede9fe;color:#6d28d9;', 'Keep an eye on your tracking number for courier movement updates.'],
+                'out_for_delivery' => ['Out for Delivery', 'Your order is already out for delivery and should arrive soon.', 'background:#ffedd5;color:#c2410c;', 'Please keep your line open in case the rider or courier needs to contact you.'],
+                'delivered' => ['Order Delivered', 'Your AF Home order has been marked as delivered.', 'background:#dcfce7;color:#15803d;', 'If anything looks incorrect with the delivery, please contact support right away.'],
+                'cancelled' => ['Order Cancelled', 'Your order has been cancelled.', 'background:#fee2e2;color:#b91c1c;', 'Please contact support if you think this cancellation was made in error.'],
+                'refunded' => ['Order Refunded', 'Your order has been marked as refunded.', 'background:#e5e7eb;color:#374151;', 'Please allow additional time for the refund to reflect depending on your payment channel.'],
+                default => ['Order Update', 'Your order status has changed.', 'background:#fef3c7;color:#92400e;', 'You can track your order anytime using your checkout details.'],
+            };
+            $badge = strtoupper(str_replace('_', ' ', $fulfillmentStatus));
+        } elseif ($eventType === 'shipment_status') {
+            [$title, $subtitle, $badgeColor, $nextStep] = match ($shipmentStatus) {
+                'for_pickup' => ['Shipment Scheduled', 'Your parcel is scheduled for courier pickup.', 'background:#ede9fe;color:#6d28d9;', 'We will notify you again once the courier has picked up your order.'],
+                'picked_up' => ['Shipment Picked Up', 'The courier has already picked up your order.', 'background:#ede9fe;color:#6d28d9;', 'Your order is now moving through the delivery network.'],
+                'in_transit' => ['Shipment In Transit', 'Your package is currently in transit.', 'background:#ede9fe;color:#6d28d9;', 'The next update should be once your parcel is out for delivery.'],
+                'out_for_delivery' => ['Shipment Out for Delivery', 'Your package is with the courier and arriving soon.', 'background:#ffedd5;color:#c2410c;', 'Please be ready to receive the order today if delivery is successful.'],
+                'delivered' => ['Shipment Delivered', 'The courier marked your shipment as delivered.', 'background:#dcfce7;color:#15803d;', 'If you have any concern about the received items, contact AF Home support.'],
+                'failed_delivery' => ['Delivery Attempt Failed', 'The courier was not able to complete the delivery attempt.', 'background:#fee2e2;color:#b91c1c;', 'Please wait for the next courier instruction or contact support for help.'],
+                'returned_to_sender' => ['Shipment Returned', 'The shipment was returned to sender.', 'background:#e5e7eb;color:#374151;', 'Please contact AF Home support so the order can be reviewed with you.'],
+                default => ['Shipment Update', 'There is a new courier update for your order.', 'background:#fef3c7;color:#92400e;', 'You can check your latest tracking details using your order reference.'],
+            };
+            $badge = strtoupper(str_replace('_', ' ', $shipmentStatus !== '' ? $shipmentStatus : $fulfillmentStatus));
+        }
+
+        return [
+            'customer_name' => $customerName,
+            'title' => $title,
+            'subtitle' => $subtitle,
+            'badge' => $badge,
+            'badge_color' => $badgeColor,
+            'next_step' => $nextStep,
+            'checkout_id' => (string) ($order->ch_checkout_id ?? '-'),
+            'order_number' => (string) ($order->ch_checkout_id ?? '-'),
+            'product_name' => (string) ($order->ch_product_name ?: ($order->ch_description ?? 'Order Item')),
+            'quantity' => max(1, (int) ($order->ch_quantity ?? 1)),
+            'amount' => (float) ($order->ch_amount ?? 0),
+            'payment_method' => (string) ($order->ch_payment_method ?? '-'),
+            'shipping_address' => (string) ($order->ch_customer_address ?? '-'),
+            'fulfillment_status' => $fulfillmentStatus,
+            'shipment_status' => $shipmentStatus,
+            'tracking_no' => $trackingNo !== '' ? $trackingNo : null,
+            'courier' => $courier !== '' ? strtoupper($courier) : null,
+            'shipped_at' => optional($order->ch_shipped_at)->toDateTimeString(),
+            'paid_at' => optional($order->ch_paid_at)->toDateTimeString(),
+            'approval_notes' => (string) ($order->ch_approval_notes ?? ''),
+        ];
     }
 }

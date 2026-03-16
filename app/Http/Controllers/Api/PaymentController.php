@@ -45,6 +45,7 @@ class PaymentController extends Controller
             'customer.email' => 'nullable|email|max:255',
             'customer.phone' => 'nullable|string|max:50',
             'customer.address' => 'nullable|string|max:500',
+            'customer.referred_by' => 'nullable|string|max:255',
             'order' => 'nullable|array',
             'order.product_name' => 'nullable|string|max:255',
             'order.product_id' => 'nullable|integer|min:1',
@@ -56,6 +57,27 @@ class PaymentController extends Controller
             'order.selected_size' => 'nullable|string|max:100',
             'order.selected_type' => 'nullable|string|max:100',
         ]);
+
+        $normalizedReferral = $this->normalizeReferralValue((string) data_get($validated, 'customer.referred_by', ''));
+
+        if ($normalizedReferral === '') {
+            return response()->json([
+                'message' => 'The referred by field is required.',
+                'errors' => [
+                    'customer.referred_by' => ['The referred by field is required.'],
+                ],
+            ], 422);
+        }
+
+        $referrer = $this->resolveValidReferrer($normalizedReferral);
+        if (!$referrer) {
+            return response()->json([
+                'message' => 'Referral code is invalid or referrer account is not verified.',
+                'errors' => [
+                    'customer.referred_by' => ['Referral code is invalid or referrer account is not verified.'],
+                ],
+            ], 422);
+        }
 
         $secretKey = config('services.paymongo.secret_key');
         if (!$secretKey) {
@@ -102,6 +124,8 @@ class PaymentController extends Controller
                 'email' => $validated['customer']['email'] ?? null,
                 'phone' => $validated['customer']['phone'] ?? null,
                 'address' => $validated['customer']['address'] ?? null,
+                'referred_by' => $normalizedReferral,
+                'referrer_user_id' => (int) $referrer->c_userid,
                 'description' => $validated['description'],
                 'amount' => (float) $validated['amount'],
                 'payment_method' => $validated['payment_method'],
@@ -361,13 +385,45 @@ class PaymentController extends Controller
         ]);
     }
 
+    public function trackGuestOrder(Request $request)
+    {
+        $validated = $request->validate([
+            'order_number' => 'required|string|max:255',
+            'contact' => 'required|string|max:255',
+        ]);
+
+        $orderNumber = trim((string) $validated['order_number']);
+        $contact = trim((string) $validated['contact']);
+
+        $order = CheckoutHistory::query()
+            ->where('ch_checkout_id', $orderNumber)
+            ->orderByDesc('ch_id')
+            ->first();
+
+        if (!$order) {
+            return response()->json(['message' => 'No order found for the provided reference.'], 404);
+        }
+
+        $normalizedContact = $this->normalizeContact($contact);
+        $storedEmail = $this->normalizeContact((string) ($order->ch_customer_email ?? ''));
+        $storedPhone = $this->normalizeContact((string) ($order->ch_customer_phone ?? ''));
+
+        if ($normalizedContact === '' || ($normalizedContact !== $storedEmail && $normalizedContact !== $storedPhone)) {
+            return response()->json(['message' => 'The order reference and contact details do not match.'], 404);
+        }
+
+        return response()->json([
+            'order' => $this->transformCheckoutHistoryOrder($order, true),
+        ]);
+    }
+
     private function persistCheckoutHistoryIfNeeded(string $checkoutId, array $attrs): void
     {
         $normalizedIncomingStatus = $this->normalizeCheckoutStatusForStorage($attrs['status'] ?? null);
         $attrs['status'] = $normalizedIncomingStatus;
 
         $cached = Cache::get("checkout_customer:{$checkoutId}");
-        if (!$cached || empty($cached['customer_id'])) {
+        if (!$cached) {
             $history = CheckoutHistory::query()
                 ->where('ch_checkout_id', $checkoutId)
                 ->first();
@@ -412,7 +468,8 @@ class PaymentController extends Controller
         $history = CheckoutHistory::updateOrCreate(
             ['ch_checkout_id' => $checkoutId],
             [
-                'ch_customer_id' => (int) $cached['customer_id'],
+                // Guest checkouts do not have a member account, so store 0 as a sentinel.
+                'ch_customer_id' => (int) ($cached['customer_id'] ?? 0),
                 'ch_payment_intent_id' => data_get($attrs, 'payment_intent.id'),
                 'ch_status' => (string) ($attrs['status'] ?? 'paid'),
                 'ch_description' => (string) ($cached['description'] ?? ''),
@@ -674,5 +731,94 @@ class PaymentController extends Controller
         }
 
         return false;
+    }
+
+    private function transformCheckoutHistoryOrder(CheckoutHistory $order, bool $includeGuestFields = false): array
+    {
+        $quantity = max(1, (int) $order->ch_quantity);
+        $itemName = $order->ch_product_name ?: ($order->ch_description ?: 'Order Item');
+        $status = $order->ch_fulfillment_status
+            ? (string) $order->ch_fulfillment_status
+            : $this->mapCheckoutStatusToOrderStatus((string) $order->ch_status);
+
+        $payload = [
+            'id' => (int) $order->ch_id,
+            'order_number' => $order->ch_checkout_id,
+            'status' => $status,
+            'items' => [[
+                'id' => (int) $order->ch_id,
+                'name' => $itemName,
+                'image' => $order->ch_product_image ?: '/Images/HeroSection/sofas.jpg',
+                'quantity' => $quantity,
+                'price' => $quantity > 0 ? ((float) $order->ch_amount / $quantity) : (float) $order->ch_amount,
+            ]],
+            'total' => (float) $order->ch_amount,
+            'shipping_fee' => 0,
+            'payment_method' => $this->formatPaymentMethod((string) $order->ch_payment_method),
+            'shipping_address' => $order->ch_customer_address ?: 'No address provided',
+            'created_at' => optional($order->ch_paid_at ?? $order->created_at)->toDateTimeString(),
+            'estimated_delivery' => null,
+        ];
+
+        if ($includeGuestFields) {
+            $payload['customer_name'] = (string) ($order->ch_customer_name ?? 'Customer');
+            $payload['courier'] = $order->ch_courier ?: null;
+            $payload['tracking_no'] = $order->ch_tracking_no ?: null;
+            $payload['shipment_status'] = $order->ch_shipment_status ?: null;
+            $payload['shipped_at'] = optional($order->ch_shipped_at)->toDateTimeString();
+        }
+
+        return $payload;
+    }
+
+    private function normalizeContact(string $value): string
+    {
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            return '';
+        }
+
+        if (filter_var($trimmed, FILTER_VALIDATE_EMAIL)) {
+            return strtolower($trimmed);
+        }
+
+        return preg_replace('/\D+/', '', $trimmed) ?? '';
+    }
+
+    private function normalizeReferralValue(string $value): string
+    {
+        $trimmed = trim($value);
+
+        if ($trimmed === '') {
+            return '';
+        }
+
+        if (filter_var($trimmed, FILTER_VALIDATE_URL)) {
+            $parts = parse_url($trimmed);
+            parse_str($parts['query'] ?? '', $query);
+
+            $fromQuery = trim((string) ($query['ref'] ?? $query['referred_by'] ?? ''));
+            if ($fromQuery !== '') {
+                return $fromQuery;
+            }
+
+            $path = trim((string) ($parts['path'] ?? ''), '/');
+            if ($path !== '') {
+                $segments = explode('/', $path);
+                return trim((string) end($segments));
+            }
+        }
+
+        return $trimmed;
+    }
+
+    private function resolveValidReferrer(string $referral): ?\App\Models\Customer
+    {
+        return \App\Models\Customer::query()
+            ->select(['c_userid', 'c_username', 'c_accnt_status', 'c_lockstatus'])
+            ->whereRaw('LOWER(c_username) = ?', [strtolower($referral)])
+            ->where('c_accnt_status', 1)
+            ->where('c_lockstatus', 0)
+            ->first();
     }
 }
