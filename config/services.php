@@ -66,6 +66,7 @@ return [
         'api_account' => env('JNT_API_ACCOUNT', env('JT_API_ACCOUNT')),
         'password' => env('JNT_PASSWORD', env('JT_API_PASSWORD')),
         'private_key' => env('JNT_PRIVATE_KEY', env('JT_PRIVATE_KEY')),
+        'header_digest_override' => env('JNT_HEADER_DIGEST_OVERRIDE'),
         'is_sandbox' => filter_var(env('JNT_IS_SANDBOX', env('JT_IS_SANDBOX', true)), FILTER_VALIDATE_BOOL),
         'password_suffix' => env('JNT_PASSWORD_SUFFIX', 'jadata236t2'),
         'network' => env('JNT_NETWORK', ''),

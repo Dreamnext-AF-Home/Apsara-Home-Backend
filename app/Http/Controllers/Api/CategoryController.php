@@ -20,6 +20,7 @@ class CategoryController extends Controller
 
         $productCounts = DB::table('tbl_product')
             ->selectRaw('pd_catid as category_id, COUNT(*) as total')
+            ->whereIn('pd_status', [1, 2])
             ->when($supplierId > 0, function ($query) use ($supplierId) {
                 $query->where('pd_supplier', $supplierId);
             })

@@ -319,6 +319,17 @@ class AdminOrderController extends Controller
 
         $items = collect($paginated->items())->map(function (CheckoutHistory $order) {
             $sla = $this->computeSla($order);
+            $shipmentPayload = $order->ch_shipment_payload;
+            if (is_string($shipmentPayload) && trim($shipmentPayload) !== '') {
+                $decodedPayload = json_decode($shipmentPayload, true);
+                $shipmentPayload = is_array($decodedPayload) ? $decodedPayload : [];
+            }
+            if (!is_array($shipmentPayload)) {
+                $shipmentPayload = [];
+            }
+
+            $trackingNo = $order->ch_tracking_no ?: $this->extractTrackingNoFromShipment($shipmentPayload);
+            $shipmentStatus = $order->ch_shipment_status ?: $this->extractShipmentStatus($shipmentPayload);
 
             return [
                 'id' => (int) $order->ch_id,
@@ -331,8 +342,9 @@ class AdminOrderController extends Controller
                 'approved_at' => optional($order->ch_approved_at)->toDateTimeString(),
                 'fulfillment_status' => $order->ch_fulfillment_status ?? 'pending',
                 'courier' => $order->ch_courier,
-                'tracking_no' => $order->ch_tracking_no,
-                'shipment_status' => $order->ch_shipment_status,
+                'tracking_no' => $trackingNo,
+                'shipment_status' => $shipmentStatus,
+                'shipment_payload' => !empty($shipmentPayload) ? $shipmentPayload : null,
                 'shipped_at' => optional($order->ch_shipped_at)->toDateTimeString(),
                 'product_name' => $order->ch_product_name ?? ($order->ch_description ?? 'Order Item'),
                 'product_id' => $order->ch_product_id ? (int) $order->ch_product_id : null,
@@ -645,12 +657,26 @@ class AdminOrderController extends Controller
             data_get($response, 'tracking_no'),
             data_get($response, 'tracking_number'),
             data_get($response, 'waybill_no'),
+            data_get($response, 'waybillNo'),
+            data_get($response, 'billCode'),
+            data_get($response, 'txlogisticId'),
             data_get($response, 'awb'),
             data_get($response, 'data.tracking_no'),
             data_get($response, 'data.tracking_number'),
             data_get($response, 'data.waybill_no'),
+            data_get($response, 'data.waybillNo'),
+            data_get($response, 'data.billCode'),
+            data_get($response, 'data.txlogisticId'),
+            data_get($response, 'data.data.tracking_no'),
+            data_get($response, 'data.data.tracking_number'),
+            data_get($response, 'data.data.waybillNo'),
+            data_get($response, 'data.data.billCode'),
+            data_get($response, 'data.data.txlogisticId'),
             data_get($response, 'result.tracking_no'),
             data_get($response, 'result.tracking_number'),
+            data_get($response, 'result.waybillNo'),
+            data_get($response, 'result.billCode'),
+            data_get($response, 'result.txlogisticId'),
         ];
 
         foreach ($candidates as $candidate) {

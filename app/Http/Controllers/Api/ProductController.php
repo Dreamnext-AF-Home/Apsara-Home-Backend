@@ -17,6 +17,11 @@ use Illuminate\Support\Facades\Validator;
 
 class ProductController extends Controller
 {
+    private function applyPublicVisibility($query)
+    {
+        return $query->whereIn('pd_status', [1, 2]);
+    }
+
     private function resolveAdmin(Request $request): ?Admin
     {
         $user = $request->user();
@@ -264,7 +269,7 @@ class ProductController extends Controller
                 'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_price_srp,pv_price_dp,pv_price_member,pv_qty,pv_status,pv_date',
                 'variants.photos:pvp_id,pvp_pvid,pvp_filename,pvp_sort,pvp_date',
             ])
-            ->where('pd_status', 1)
+            ->tap(fn ($query) => $this->applyPublicVisibility($query))
             ->whereRaw("{$slugExpr} = ?", [$normalizedSlug])
             ->orderByDesc('pd_id')
             ->first();
@@ -296,7 +301,7 @@ class ProductController extends Controller
                 'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_price_srp,pv_price_dp,pv_price_member,pv_qty,pv_status,pv_date',
                 'variants.photos:pvp_id,pvp_pvid,pvp_filename,pvp_sort,pvp_date',
             ])
-            ->where('pd_status', 1)
+            ->tap(fn ($query) => $this->applyPublicVisibility($query))
             ->where('pd_id', $id)
             ->first();
 
@@ -344,7 +349,13 @@ class ProductController extends Controller
                     });
                 })
                 ->when($status !== '', function ($q) use ($status) {
-                    $q->where('pd_status', (int) $status);
+                    $normalizedStatus = (int) $status;
+                    if ($normalizedStatus === 1) {
+                        $q->whereIn('pd_status', [1, 2]);
+                        return;
+                    }
+
+                    $q->where('pd_status', $normalizedStatus);
                 })
                 ->when($catId !== '', function ($q) use ($catId) {
                     $q->where('pd_catid', (int) $catId);

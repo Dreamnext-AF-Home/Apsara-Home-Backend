@@ -52,8 +52,11 @@ class JntShippingService
         }
 
         $encryptedPassword = $this->encryptPassword($password);
-        $businessDigest = $this->generateBusinessDigest($customerCode, $encryptedPassword, $privateKey);
-        $headerDigest = $this->generateHeaderDigest($bizContent, $privateKey);
+        $businessDigest = $this->generateBusinessDigest($customerCode, $password, $privateKey);
+        $headerDigestOverride = trim((string) config('services.jnt.header_digest_override', ''));
+        $headerDigest = $headerDigestOverride !== ''
+            ? $headerDigestOverride
+            : $this->generateHeaderDigest($bizContent, $privateKey);
         $timestamp = (string) now()->valueOf();
 
         $formPayload = [
@@ -89,6 +92,9 @@ class JntShippingService
                 ],
                 'form' => $formPayload,
                 'biz_payload' => $bizPayload,
+                'header_digest_override_used' => $headerDigestOverride !== '',
+                'header_digest_override_value' => $headerDigestOverride !== '' ? $headerDigestOverride : null,
+                'header_digest_candidates' => $this->debugHeaderDigestCandidates($bizContent, $privateKey),
             ],
         ]);
     }
@@ -135,14 +141,30 @@ class JntShippingService
         return md5($password . $suffix);
     }
 
-    private function generateBusinessDigest(string $customerCode, string $encryptedPassword, string $privateKey): string
+    private function generateBusinessDigest(string $customerCode, string $password, string $privateKey): string
     {
-        return base64_encode(md5($customerCode . $encryptedPassword . $privateKey, true));
+        return base64_encode(md5($customerCode . $password . $privateKey, true));
     }
 
     private function generateHeaderDigest(string $bizContent, string $privateKey): string
     {
-        return base64_encode(md5($bizContent . $privateKey, true));
+        return base64_encode(md5($privateKey . $bizContent, true));
+    }
+
+    private function debugHeaderDigestCandidates(string $bizContent, string $privateKey): array
+    {
+        $urlEncodedBizContent = urlencode($bizContent);
+
+        return [
+            'current_privateKey_plus_bizContent_raw_md5' => base64_encode(md5($privateKey . $bizContent, true)),
+            'bizContent_plus_privateKey_raw_md5' => base64_encode(md5($bizContent . $privateKey, true)),
+            'current_privateKey_plus_bizContent_hex_md5' => base64_encode(md5($privateKey . $bizContent, false)),
+            'bizContent_plus_privateKey_hex_md5' => base64_encode(md5($bizContent . $privateKey, false)),
+            'privateKey_plus_urlencoded_bizContent_raw_md5' => base64_encode(md5($privateKey . $urlEncodedBizContent, true)),
+            'urlencoded_bizContent_plus_privateKey_raw_md5' => base64_encode(md5($urlEncodedBizContent . $privateKey, true)),
+            'privateKey_plus_urlencoded_bizContent_hex_md5' => base64_encode(md5($privateKey . $urlEncodedBizContent, false)),
+            'urlencoded_bizContent_plus_privateKey_hex_md5' => base64_encode(md5($urlEncodedBizContent . $privateKey, false)),
+        ];
     }
 
     private function normalizeBizPayload(array $payload): array
@@ -153,9 +175,8 @@ class JntShippingService
             $privateKey = trim((string) config('services.jnt.private_key', ''));
 
             if ($customerCode !== '' && $password !== '' && $privateKey !== '' && !Arr::has($payload, ['customerCode', 'digest'])) {
-                $encryptedPassword = $this->encryptPassword($password);
                 $payload['customerCode'] = $customerCode;
-                $payload['digest'] = $this->generateBusinessDigest($customerCode, $encryptedPassword, $privateKey);
+                $payload['digest'] = $this->generateBusinessDigest($customerCode, $password, $privateKey);
             }
 
             return $payload;
@@ -170,9 +191,8 @@ class JntShippingService
         $customerCode = trim((string) config('services.jnt.customer_code', ''));
         $password = trim((string) config('services.jnt.password', ''));
         $privateKey = trim((string) config('services.jnt.private_key', ''));
-        $encryptedPassword = $password !== '' ? $this->encryptPassword($password) : '';
-        $businessDigest = ($customerCode !== '' && $encryptedPassword !== '' && $privateKey !== '')
-            ? $this->generateBusinessDigest($customerCode, $encryptedPassword, $privateKey)
+        $businessDigest = ($customerCode !== '' && $password !== '' && $privateKey !== '')
+            ? $this->generateBusinessDigest($customerCode, $password, $privateKey)
             : null;
 
         return array_filter([
