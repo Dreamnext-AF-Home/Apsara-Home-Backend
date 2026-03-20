@@ -603,7 +603,7 @@ class PaymentController extends Controller
 
         $normalized = strtolower(trim($status));
         if (in_array($normalized, ['active', 'unpaid', 'pending'], true)) {
-            return 'paid';
+            return 'pending';
         }
 
         return $normalized;

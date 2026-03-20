@@ -68,21 +68,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/auth/addresses', [CustomerAddressController::class, 'index']);
     Route::post('/auth/addresses', [CustomerAddressController::class, 'store']);
     Route::patch('/auth/addresses/{id}/default', [CustomerAddressController::class, 'setDefault']);
-    Route::get('/admin/members', [MemberController::class, 'index']);
-    Route::get('/admin/members/stats', [MemberController::class, 'stats']);
-    Route::get('/admin/products', [ProductController::class, 'index']);
-    Route::post('/admin/products', [ProductController::class, 'store']);
-    Route::put('/admin/products/{id}', [ProductController::class, 'update']);
-    Route::delete('/admin/products/{id}', [ProductController::class, 'destroy']);
-    Route::get('/admin/categories', [CategoryController::class, 'index']);
-    Route::get('/admin/suppliers', [SupplierController::class, 'index']);
-    Route::post('/admin/suppliers', [SupplierController::class, 'store']);
-    Route::put('/admin/suppliers/{id}', [SupplierController::class, 'update']);
-    Route::delete('/admin/suppliers/{id}', [SupplierController::class, 'destroy']);
-    Route::post('/admin/supplier-users', [SupplierUserController::class, 'store']);
-    Route::post('/admin/categories', [CategoryController::class, 'store']);
-    Route::put('/admin/categories/{id}', [CategoryController::class, 'update']);
-    Route::delete('/admin/categories/{id}', [CategoryController::class, 'destroy']);
     Route::get('/orders/history', [PaymentController::class, 'checkoutHistory']);
     Route::post('/encashment/requests', [EncashmentController::class, 'store']);
     Route::get('/encashment/requests', [EncashmentController::class, 'myRequests']);
@@ -95,6 +80,42 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/interior-requests', [InteriorRequestController::class, 'store']);
     Route::get('/interior-requests', [InteriorRequestController::class, 'myRequests']);
     Route::get('/interior-requests/{id}', [InteriorRequestController::class, 'show']);
+    Route::get('/wishlist', [WishlistController::class, 'index']);
+    Route::post('/wishlist', [WishlistController::class, 'store']);
+    Route::delete('/wishlist/{productId}', [WishlistController::class, 'destroy']);
+});
+
+Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,csr'])->group(function () {
+    Route::get('/admin/members', [MemberController::class, 'index']);
+    Route::get('/admin/members/stats', [MemberController::class, 'stats']);
+    Route::get('/admin/members/kyc', [AdminMemberKycController::class, 'index']);
+    Route::patch('/admin/members/kyc/{id}/approve', [AdminMemberKycController::class, 'approve']);
+    Route::patch('/admin/members/kyc/{id}/reject', [AdminMemberKycController::class, 'reject']);
+});
+
+Route::middleware(['auth:sanctum', 'admin.or_supplier'])->group(function () {
+    Route::get('/admin/products', [ProductController::class, 'index']);
+    Route::post('/admin/products', [ProductController::class, 'store']);
+    Route::put('/admin/products/{id}', [ProductController::class, 'update']);
+    Route::delete('/admin/products/{id}', [ProductController::class, 'destroy']);
+    Route::get('/admin/suppliers', [SupplierController::class, 'index']);
+});
+
+Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,merchant_admin,web_content'])->group(function () {
+    Route::get('/admin/categories', [CategoryController::class, 'index']);
+    Route::post('/admin/categories', [CategoryController::class, 'store']);
+    Route::put('/admin/categories/{id}', [CategoryController::class, 'update']);
+    Route::delete('/admin/categories/{id}', [CategoryController::class, 'destroy']);
+});
+
+Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin'])->group(function () {
+    Route::post('/admin/suppliers', [SupplierController::class, 'store']);
+    Route::put('/admin/suppliers/{id}', [SupplierController::class, 'update']);
+    Route::delete('/admin/suppliers/{id}', [SupplierController::class, 'destroy']);
+    Route::post('/admin/supplier-users', [SupplierUserController::class, 'store']);
+});
+
+Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,csr,merchant_admin'])->group(function () {
     Route::get('/admin/interior-requests', [InteriorRequestController::class, 'adminIndex']);
     Route::patch('/admin/interior-requests/{id}', [InteriorRequestController::class, 'adminUpdate']);
     Route::post('/admin/interior-requests/{id}/updates', [InteriorRequestController::class, 'adminStoreUpdate']);
@@ -116,20 +137,23 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/admin/orders/{id}/shipping/jnt/book', [JntShippingController::class, 'bookForOrder']);
     Route::get('/admin/orders/{id}/shipping/jnt/track', [JntShippingController::class, 'trackByOrder']);
     Route::get('/admin/shipping/jnt/track/{trackingNo}', [JntShippingController::class, 'trackByTrackingNo']);
+});
+
+Route::middleware(['auth:sanctum', 'admin.role:super_admin,accounting,finance_officer'])->group(function () {
     Route::get('/admin/encashment', [AdminEncashmentController::class, 'index']);
     Route::patch('/admin/encashment/{id}/approve', [AdminEncashmentController::class, 'approve']);
     Route::patch('/admin/encashment/{id}/reject', [AdminEncashmentController::class, 'reject']);
     Route::patch('/admin/encashment/{id}/release', [AdminEncashmentController::class, 'release']);
+});
+
+Route::middleware(['auth:sanctum', 'admin.role:super_admin'])->group(function () {
     Route::get('/admin/users', [AdminUserController::class, 'index']);
     Route::post('/admin/users', [AdminUserController::class, 'store']);
     Route::put('/admin/users/{id}', [AdminUserController::class, 'update']);
     Route::delete('/admin/users/{id}', [AdminUserController::class, 'destroy']);
-    Route::get('/admin/members/kyc', [AdminMemberKycController::class, 'index']);
-    Route::patch('/admin/members/kyc/{id}/approve', [AdminMemberKycController::class, 'approve']);
-    Route::patch('/admin/members/kyc/{id}/reject', [AdminMemberKycController::class, 'reject']);
-    Route::get('/wishlist', [WishlistController::class, 'index']);
-    Route::post('/wishlist', [WishlistController::class, 'store']);
-    Route::delete('/wishlist/{productId}', [WishlistController::class, 'destroy']);
+});
+
+Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,web_content'])->group(function () {
     Route::get('/admin/web-pages/{type}', [WebPageController::class, 'adminIndex']);
     Route::post('/admin/web-pages/{type}', [WebPageController::class, 'adminStore']);
     Route::put('/admin/web-pages/{type}/{id}', [WebPageController::class, 'adminUpdate']);
@@ -157,12 +181,12 @@ Route::prefix('supplier/invites')->group(function () {
     Route::post('/accept', [SupplierUserController::class, 'acceptInvite']);
 });
 
-Route::middleware('auth:sanctum')->prefix('admin/auth')->group(function () {
+Route::middleware(['auth:sanctum', 'admin.actor'])->prefix('admin/auth')->group(function () {
     Route::post('/logout', [AdminAuthController::class, 'logout']);
     Route::get('/me', [AdminAuthController::class, 'me']);
 });
 
-Route::middleware('auth:sanctum')->prefix('supplier/auth')->group(function () {
+Route::middleware(['auth:sanctum', 'supplier.actor'])->prefix('supplier/auth')->group(function () {
     Route::post('/logout', [SupplierAuthController::class, 'logout']);
     Route::get('/me', [SupplierAuthController::class, 'me']);
 });

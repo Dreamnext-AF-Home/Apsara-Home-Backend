@@ -3,6 +3,10 @@
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use App\Http\Middleware\EnsureAdminActor;
+use App\Http\Middleware\EnsureAdminOrSupplierActor;
+use App\Http\Middleware\EnsureAdminRole;
+use App\Http\Middleware\EnsureSupplierActor;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -12,7 +16,12 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        //
+        $middleware->alias([
+            'admin.actor' => EnsureAdminActor::class,
+            'admin.or_supplier' => EnsureAdminOrSupplierActor::class,
+            'admin.role' => EnsureAdminRole::class,
+            'supplier.actor' => EnsureSupplierActor::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //

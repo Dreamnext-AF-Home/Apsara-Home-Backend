@@ -160,7 +160,7 @@ class AuthController extends Controller
             'c_occupation'   => $registration['occupation'] ?? 'None',
             'c_country'      => $registration['country'] ?? (($registration['work_location'] ?? 'local') === 'overseas' ? 'Overseas' : 'Philippines'),
             'c_password'     => Hash::make($registration['password']),
-            'c_password_pin' => $registration['password'],
+            'c_password_pin' => '',
             'c_sponsor'      => $referrerUserId,
             'c_date_started' => now(),
             'c_address'      => $registration['address'] ?? null,
@@ -236,9 +236,7 @@ class AuthController extends Controller
             : false;
         $legacyDirectMatch = $this->matchesLegacyCustomerPassword($customer, $password, false);
         $legacyCaseInsensitiveMatch = $this->matchesLegacyCustomerPassword($customer, $password, true);
-        $pinMatch = hash_equals((string) $customer->c_password_pin, $password);
-
-        if (! $hashMatch && ! $legacyDirectMatch && ! $legacyCaseInsensitiveMatch && ! $pinMatch) {
+        if (! $hashMatch && ! $legacyDirectMatch && ! $legacyCaseInsensitiveMatch) {
             throw ValidationException::withMessages([
                 'email' => ['The provided credentials are incorrect.'],
             ]);
@@ -360,7 +358,7 @@ class AuthController extends Controller
 
         $plainPassword = (string) $validated['password'];
         $customer->c_password = Hash::make($plainPassword);
-        $customer->c_password_pin = $plainPassword;
+        $customer->c_password_pin = '';
         $customer->save();
 
         Cache::forget($this->passwordResetCacheKey((string) $validated['token']));
@@ -567,7 +565,7 @@ class AuthController extends Controller
         }
 
         $customer->c_password = Hash::make($newPassword);
-        $customer->c_password_pin = $newPassword;
+        $customer->c_password_pin = '';
         $customer->c_password_change_required = false;
         $customer->save();
 
@@ -647,8 +645,7 @@ class AuthController extends Controller
 
         return $hashMatch
             || $this->matchesLegacyCustomerPassword($customer, $password, false)
-            || $this->matchesLegacyCustomerPassword($customer, $password, true)
-            || hash_equals((string) ($customer->c_password_pin ?? ''), $password);
+            || $this->matchesLegacyCustomerPassword($customer, $password, true);
     }
 
     private function passwordMeetsModernRequirements(string $password): bool
