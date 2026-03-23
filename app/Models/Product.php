@@ -22,6 +22,7 @@ class Product extends Model
         'pd_warranty',
         'pd_supplier',
         'pd_room_type',
+        'pd_brand_type',
         'pd_price_srp',
         'pd_price_dp',
         'pd_price_member',
@@ -62,6 +63,7 @@ class Product extends Model
         'pd_psheight'           => 'float',
         'pd_assembly_required'  => 'integer',
         'pd_room_type'          => 'integer',
+        'pd_brand_type'         => 'integer',
         'pd_type'               => 'integer',
         'pd_musthave'    => 'integer',
         'pd_bestseller'  => 'integer',
@@ -81,5 +83,10 @@ class Product extends Model
     {
         return $this->hasMany(ProductVariant::class, 'pv_pdid', 'pd_id')
             ->orderBy('pv_id');
+    }
+
+    public function brand()
+    {
+        return $this->belongsTo(ProductBrand::class, 'pd_brand_type', 'pb_id');
     }
 }

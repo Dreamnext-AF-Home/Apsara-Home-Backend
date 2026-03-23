@@ -9,6 +9,7 @@ use App\Models\Product;
 use App\Models\ProductPhoto;
 use App\Models\ProductVariant;
 use App\Models\ProductVariantPhoto;
+use App\Models\ProductBrand;
 use App\Models\SupplierCategoryAccess;
 use App\Models\SupplierUser;
 use Illuminate\Http\JsonResponse;
@@ -316,6 +317,8 @@ class ProductController extends Controller
             'catid'             => (int)   $p->pd_catid,
             'catsubid'          => (int)   $p->pd_catsubid,
             'roomType'          => (int)   ($p->pd_room_type ?? 0),
+            'brandType'         => (int)   ($p->pd_brand_type ?? 0),
+            'brand'             => $p->brand?->pb_name ? (string) $p->brand->pb_name : null,
             'priceSrp'          => $this->toNumber($p->pd_price_srp),
             'priceDp'           => $this->toNumber($p->pd_price_dp),
             'priceMember'       => $this->toNumber($p->pd_price_member),
@@ -353,7 +356,7 @@ class ProductController extends Controller
         $product = Product::query()
             ->select([
                 'pd_id', 'pd_name', 'pd_description', 'pd_specifications', 'pd_material', 'pd_warranty',
-                'pd_catid', 'pd_catsubid', 'pd_room_type',
+                'pd_catid', 'pd_catsubid', 'pd_room_type', 'pd_brand_type',
                 'pd_price_srp', 'pd_price_dp', 'pd_price_member', 'pd_qty',
                 'pd_prodpv',
                 'pd_weight', 'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
@@ -363,6 +366,7 @@ class ProductController extends Controller
             ])
             ->with([
                 'photos:pp_id,pp_pdid,pp_filename,pp_varone,pp_date',
+                'brand:pb_id,pb_name,pb_status',
                 'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_width,pv_dimension,pv_height,pv_price_srp,pv_price_dp,pv_price_member,pv_prodpv,pv_qty,pv_status,pv_date',
                 'variants.photos:pvp_id,pvp_pvid,pvp_filename,pvp_sort,pvp_date',
             ])
@@ -426,7 +430,7 @@ class ProductController extends Controller
             $query = Product::query()
                 ->select([
                     'pd_id', 'pd_name', 'pd_description', 'pd_specifications', 'pd_material', 'pd_warranty',
-                    'pd_catid', 'pd_catsubid', 'pd_room_type',
+                    'pd_catid', 'pd_catsubid', 'pd_room_type', 'pd_brand_type',
                     'pd_price_srp', 'pd_price_dp', 'pd_price_member', 'pd_qty',
                     'pd_prodpv',
                     'pd_weight', 'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
@@ -436,6 +440,7 @@ class ProductController extends Controller
                 ])
                 ->with([
                     'photos:pp_id,pp_pdid,pp_filename,pp_varone,pp_date',
+                    'brand:pb_id,pb_name,pb_status',
                     'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_width,pv_dimension,pv_height,pv_price_srp,pv_price_dp,pv_price_member,pv_prodpv,pv_qty,pv_status,pv_date',
                     'variants.photos:pvp_id,pvp_pvid,pvp_filename,pvp_sort,pvp_date',
                 ])
@@ -525,6 +530,7 @@ class ProductController extends Controller
             'pd_name'      => 'required|string|max:255',
             'pd_catid'     => 'required|integer',
             'pd_room_type' => 'nullable|integer|min:0|max:8',
+            'pd_brand_type' => 'nullable|integer|min:0',
             'pd_catsubid'  => 'nullable|integer',
             'pd_price_srp' => 'required|numeric|min:0',
             'pd_price_dp'  => 'nullable|numeric|min:0',
@@ -583,6 +589,16 @@ class ProductController extends Controller
             ], 422);
         }
 
+        $brandType = (int) $request->input('pd_brand_type', 0);
+        if ($brandType > 0 && ! ProductBrand::query()->where('pb_id', $brandType)->exists()) {
+            return response()->json([
+                'message' => 'Validation failed.',
+                'errors' => [
+                    'pd_brand_type' => ['The selected brand does not exist.'],
+                ],
+            ], 422);
+        }
+
         $now = now();
 
         $images = collect($request->input('pd_images', []))
@@ -602,6 +618,7 @@ class ProductController extends Controller
                     'pd_name'        => $request->pd_name,
                     'pd_catid'       => $request->pd_catid ?? 0,
                     'pd_room_type'   => $this->resolveRoomType($request),
+                    'pd_brand_type'  => $brandType ?: 0,
                     'pd_catsubid'    => $request->pd_catsubid ?? 0,
                     'pd_catsubid2'   => 0,
                     'pd_shopid'      => 0,
@@ -709,6 +726,7 @@ class ProductController extends Controller
             'pd_name'        => 'sometimes|required|string|max:255',
             'pd_catid'       => 'sometimes|required|integer',
             'pd_room_type'   => 'nullable|integer|min:0|max:8',
+            'pd_brand_type'  => 'nullable|integer|min:0',
             'pd_catsubid'    => 'nullable|integer',
             'pd_price_srp'   => 'sometimes|required|numeric|min:0',
             'pd_price_dp'    => 'nullable|numeric|min:0',
@@ -769,8 +787,20 @@ class ProductController extends Controller
             }
         }
 
+        if ($request->exists('pd_brand_type')) {
+            $brandType = (int) $request->input('pd_brand_type', 0);
+            if ($brandType > 0 && ! ProductBrand::query()->where('pb_id', $brandType)->exists()) {
+                return response()->json([
+                    'message' => 'Validation failed.',
+                    'errors' => [
+                        'pd_brand_type' => ['The selected brand does not exist.'],
+                    ],
+                ], 422);
+            }
+        }
+
         $fields = [
-            'pd_name', 'pd_catid', 'pd_room_type', 'pd_catsubid', 'pd_description', 'pd_specifications',
+            'pd_name', 'pd_catid', 'pd_room_type', 'pd_brand_type', 'pd_catsubid', 'pd_description', 'pd_specifications',
             'pd_material', 'pd_warranty',
             'pd_price_srp', 'pd_price_dp', 'pd_price_member', 'pd_prodpv', 'pd_qty', 'pd_weight',
             'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',

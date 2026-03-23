@@ -4,6 +4,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\MemberController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\CategoryController;
+use App\Http\Controllers\Api\ProductBrandController;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\PaymentController;
 use App\Http\Controllers\Api\AdminAuthController;
@@ -98,6 +99,7 @@ Route::middleware(['auth:sanctum', 'admin.or_supplier'])->group(function () {
     Route::post('/admin/products', [ProductController::class, 'store']);
     Route::put('/admin/products/{id}', [ProductController::class, 'update']);
     Route::delete('/admin/products/{id}', [ProductController::class, 'destroy']);
+    Route::get('/admin/product-brands', [ProductBrandController::class, 'index']);
     Route::get('/admin/suppliers', [SupplierController::class, 'index']);
     Route::get('/admin/suppliers/{id}/categories', [SupplierController::class, 'categories']);
     Route::get('/admin/supplier-users', [SupplierUserController::class, 'index']);
@@ -117,6 +119,9 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin'])->group(funct
     Route::put('/admin/suppliers/{id}', [SupplierController::class, 'update']);
     Route::delete('/admin/suppliers/{id}', [SupplierController::class, 'destroy']);
     Route::put('/admin/suppliers/{id}/categories', [SupplierController::class, 'syncCategories']);
+    Route::post('/admin/product-brands', [ProductBrandController::class, 'store']);
+    Route::put('/admin/product-brands/{id}', [ProductBrandController::class, 'update']);
+    Route::delete('/admin/product-brands/{id}', [ProductBrandController::class, 'destroy']);
 });
 
 Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,csr,merchant_admin'])->group(function () {
