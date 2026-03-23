@@ -220,8 +220,11 @@ class AuthController extends Controller
 
         $identifier = trim($request->email);
         $customer = Customer::query()
-            ->where('c_email', $identifier)
-            ->orWhere('c_username', $identifier)
+            ->where(function ($query) use ($identifier) {
+                $query
+                    ->whereRaw('LOWER(c_email) = ?', [mb_strtolower($identifier, 'UTF-8')])
+                    ->orWhereRaw('LOWER(c_username) = ?', [mb_strtolower($identifier, 'UTF-8')]);
+            })
             ->first();
 
         if (! $customer) {
@@ -231,10 +234,7 @@ class AuthController extends Controller
         }
 
         $password = (string) $request->password;
-        $storedPassword = (string) ($customer->c_password ?? '');
-        $hashMatch = $storedPassword !== '' && password_get_info($storedPassword)['algo'] !== null
-            ? Hash::check($password, $storedPassword)
-            : false;
+        $hashMatch = $this->matchesHashedCustomerPassword($customer, $password);
         $legacyDirectMatch = $this->matchesLegacyCustomerPassword($customer, $password, false);
         $legacyCaseInsensitiveMatch = $this->matchesLegacyCustomerPassword($customer, $password, true);
         if (! $hashMatch && ! $legacyDirectMatch && ! $legacyCaseInsensitiveMatch) {
@@ -248,8 +248,22 @@ class AuthController extends Controller
             || $legacyCaseInsensitiveMatch
             || ! $this->passwordMeetsModernRequirements($password);
 
+        // Once the member is successfully using the modern hashed password,
+        // legacy plain-password storage should be cleared automatically.
+        if (
+            $hashMatch
+            && ! $legacyDirectMatch
+            && ! $legacyCaseInsensitiveMatch
+            && trim((string) ($customer->c_password_pin ?? '')) !== ''
+        ) {
+            $customer->c_password_pin = '';
+        }
+
         if ($mustChangePassword && ! $this->customerRequiresPasswordChange($customer)) {
             $customer->c_password_change_required = true;
+        }
+
+        if ($customer->isDirty(['c_password_pin', 'c_password_change_required'])) {
             $customer->save();
         }
 
@@ -617,34 +631,54 @@ class AuthController extends Controller
         return (bool) ($customer->c_password_change_required ?? false);
     }
 
-    private function customerUsesLegacyPlainPassword(Customer $customer): bool
+    private function getCustomerPasswordCandidates(Customer $customer): array
     {
-        $stored = (string) ($customer->c_password ?? '');
-        return $stored !== '' && password_get_info($stored)['algo'] === null;
+        return array_values(array_filter(array_unique([
+            trim((string) ($customer->c_password ?? '')),
+            trim((string) ($customer->c_password_pin ?? '')),
+        ]), static fn (string $value): bool => $value !== ''));
     }
 
     private function matchesLegacyCustomerPassword(Customer $customer, string $password, bool $ignoreCase): bool
     {
-        if (! $this->customerUsesLegacyPlainPassword($customer)) {
-            return false;
+        foreach ($this->getCustomerPasswordCandidates($customer) as $stored) {
+            if (password_get_info($stored)['algo'] !== null) {
+                continue;
+            }
+
+            if (! $ignoreCase && hash_equals($stored, $password)) {
+                return true;
+            }
+
+            if (
+                $ignoreCase
+                && mb_strtolower($stored, 'UTF-8') === mb_strtolower($password, 'UTF-8')
+            ) {
+                return true;
+            }
         }
 
-        $stored = (string) $customer->c_password;
-        if (! $ignoreCase) {
-            return hash_equals($stored, $password);
+        return false;
+    }
+
+    private function matchesHashedCustomerPassword(Customer $customer, string $password): bool
+    {
+        foreach ($this->getCustomerPasswordCandidates($customer) as $stored) {
+            if (password_get_info($stored)['algo'] === null) {
+                continue;
+            }
+
+            if (Hash::check($password, $stored)) {
+                return true;
+            }
         }
 
-        return mb_strtolower($stored, 'UTF-8') === mb_strtolower($password, 'UTF-8');
+        return false;
     }
 
     private function matchesAnyCustomerPassword(Customer $customer, string $password): bool
     {
-        $stored = (string) ($customer->c_password ?? '');
-        $hashMatch = $stored !== '' && password_get_info($stored)['algo'] !== null
-            ? Hash::check($password, $stored)
-            : false;
-
-        return $hashMatch
+        return $this->matchesHashedCustomerPassword($customer, $password)
             || $this->matchesLegacyCustomerPassword($customer, $password, false)
             || $this->matchesLegacyCustomerPassword($customer, $password, true);
     }
