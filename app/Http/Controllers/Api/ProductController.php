@@ -615,7 +615,7 @@ class ProductController extends Controller
         }
 
         try {
-        $product = DB::transaction(function () use ($request, $now, $images, $admin, $supplierUser) {
+        $product = DB::transaction(function () use ($request, $now, $images, $admin, $supplierUser, $brandType) {
             try {
                 $supplierId = $this->actorSupplierId($admin, $supplierUser);
                 $product = Product::create([
