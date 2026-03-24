@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Mail\Admin\AdminPasswordResetMail;
 use App\Models\Admin;
+use App\Support\AdminAccess;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
@@ -51,7 +52,7 @@ class AdminAuthController extends Controller
         }
 
         $token = $admin->createToken('admin_auth_token')->plainTextToken;
-        $role = $this->mapRole((int) $admin->user_level_id);
+        $role = AdminAccess::roleFromLevel((int) $admin->user_level_id);
 
         return response()->json([
             'user' => [
@@ -61,6 +62,7 @@ class AdminAuthController extends Controller
                 'role' => $role,
                 'user_level_id' => (int) $admin->user_level_id,
                 'supplier_id' => $admin->supplier_id ? (int) $admin->supplier_id : null,
+                'admin_permissions' => AdminAccess::permissionsForAdmin($admin),
             ],
             'token' => $token,
         ]);
@@ -177,25 +179,11 @@ class AdminAuthController extends Controller
             'id' => (int) $admin->id,
             'name' => (string) ($admin->fname ?: $admin->username),
             'email' => (string) $admin->user_email,
-            'role' => $this->mapRole((int) $admin->user_level_id),
+            'role' => AdminAccess::roleFromLevel((int) $admin->user_level_id),
             'user_level_id' => (int) $admin->user_level_id,
             'supplier_id' => $admin->supplier_id ? (int) $admin->supplier_id : null,
+            'admin_permissions' => AdminAccess::permissionsForAdmin($admin),
         ]);
-    }
-
-    private function mapRole(int $level): string
-    {
-        return match ($level) {
-            1 => 'super_admin',
-            2 => 'admin',
-            3 => 'csr',
-            4 => 'web_content',
-            5 => 'accounting',
-            6 => 'finance_officer',
-            7 => 'merchant_admin',
-            8 => 'supplier_admin',
-            default => 'staff',
-        };
     }
 
     private function getResetPayload(string $token): ?array

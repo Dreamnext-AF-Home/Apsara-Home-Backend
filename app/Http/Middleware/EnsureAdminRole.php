@@ -3,6 +3,7 @@
 namespace App\Http\Middleware;
 
 use App\Models\Admin;
+use App\Support\AdminAccess;
 use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -21,25 +22,19 @@ class EnsureAdminRole
             return response()->json(['message' => 'Forbidden: admin access required.'], 403);
         }
 
-        if (! empty($roles) && ! in_array($this->roleFromLevel((int) $user->user_level_id), $roles, true)) {
+        if (! empty($roles) && ! in_array(AdminAccess::roleFromLevel((int) $user->user_level_id), $roles, true)) {
             return response()->json(['message' => 'Forbidden: insufficient admin privileges.'], 403);
         }
 
-        return $next($request);
-    }
+        $requiredPermission = AdminAccess::permissionForPath($request->path());
+        if (
+            $requiredPermission !== null
+            && (int) $user->user_level_id === 2
+            && ! AdminAccess::hasPermission($user, $requiredPermission)
+        ) {
+            return response()->json(['message' => 'Forbidden: this admin account does not have access to this section.'], 403);
+        }
 
-    private function roleFromLevel(int $level): string
-    {
-        return match ($level) {
-            1 => 'super_admin',
-            2 => 'admin',
-            3 => 'csr',
-            4 => 'web_content',
-            5 => 'accounting',
-            6 => 'finance_officer',
-            7 => 'merchant_admin',
-            8 => 'supplier_admin',
-            default => 'staff',
-        };
+        return $next($request);
     }
 }

@@ -15,6 +15,7 @@ class Admin extends Authenticatable
     protected $fillable = [
         'user_level_id',
         'supplier_id',
+        'admin_permissions',
         'username',
         'passworde',
         'user_email',
@@ -22,6 +23,10 @@ class Admin extends Authenticatable
     ];
 
     protected $hidden = ['passworde'];
+
+    protected $casts = [
+        'admin_permissions' => 'array',
+    ];
 
     public function supplier()
     {

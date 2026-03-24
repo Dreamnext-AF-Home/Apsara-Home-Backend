@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Mail\Admin\AdminInviteMail;
 use App\Models\Admin;
 use App\Models\Supplier;
+use App\Support\AdminAccess;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
@@ -89,7 +90,14 @@ class AdminUserController extends Controller
             ],
             'user_level_id' => ['required', 'integer', Rule::in($allowedLevels)],
             'supplier_id' => 'nullable|integer|exists:tbl_supplier,s_id',
+            'admin_permissions' => 'nullable|array',
+            'admin_permissions.*' => ['string', Rule::in(AdminAccess::availablePermissions())],
         ]);
+
+        $validated['admin_permissions'] = AdminAccess::sanitizePermissionsForLevel(
+            (int) $validated['user_level_id'],
+            $validated['admin_permissions'] ?? [],
+        );
 
         $this->ensureSupplierSelection($validated);
 
@@ -153,6 +161,10 @@ class AdminUserController extends Controller
             'passworde' => Hash::make((string) $validated['password']),
             'user_level_id' => (int) $payload['user_level_id'],
             'supplier_id' => isset($payload['supplier_id']) ? (int) $payload['supplier_id'] : null,
+            'admin_permissions' => AdminAccess::sanitizePermissionsForLevel(
+                (int) $payload['user_level_id'],
+                $payload['admin_permissions'] ?? [],
+            ),
         ]);
 
         Cache::forget($this->inviteCacheKey((string) $validated['token']));
@@ -196,6 +208,8 @@ class AdminUserController extends Controller
             'password' => 'nullable|string|min:8',
             'user_level_id' => ['nullable', 'integer', Rule::in($allowedLevels)],
             'supplier_id' => 'nullable|integer|exists:tbl_supplier,s_id',
+            'admin_permissions' => 'nullable|array',
+            'admin_permissions.*' => ['string', Rule::in(AdminAccess::availablePermissions())],
         ]);
 
         $nextLevel = array_key_exists('user_level_id', $validated)
@@ -217,6 +231,12 @@ class AdminUserController extends Controller
         }
         if (array_key_exists('user_level_id', $validated)) {
             $admin->user_level_id = (int) $validated['user_level_id'];
+        }
+        if (array_key_exists('admin_permissions', $validated) || (int) $admin->user_level_id !== 2) {
+            $admin->admin_permissions = AdminAccess::sanitizePermissionsForLevel(
+                (int) $admin->user_level_id,
+                $validated['admin_permissions'] ?? $admin->admin_permissions ?? [],
+            );
         }
         if (array_key_exists('supplier_id', $validated) || (int) $admin->user_level_id !== 8) {
             $admin->supplier_id = (int) $admin->user_level_id === 8
@@ -302,9 +322,10 @@ class AdminUserController extends Controller
             'username' => (string) $admin->username,
             'email' => (string) $admin->user_email,
             'user_level_id' => (int) $admin->user_level_id,
-            'role' => $this->roleFromLevel((int) $admin->user_level_id),
+            'role' => AdminAccess::roleFromLevel((int) $admin->user_level_id),
             'supplier_id' => $admin->supplier_id ? (int) $admin->supplier_id : null,
             'supplier_name' => $admin->supplier?->s_company ?: $admin->supplier?->s_name,
+            'admin_permissions' => AdminAccess::permissionsForAdmin($admin),
         ];
     }
 
@@ -319,6 +340,10 @@ class AdminUserController extends Controller
             'email' => $email,
             'user_level_id' => (int) $validated['user_level_id'],
             'supplier_id' => isset($validated['supplier_id']) ? (int) $validated['supplier_id'] : null,
+            'admin_permissions' => AdminAccess::sanitizePermissionsForLevel(
+                (int) $validated['user_level_id'],
+                $validated['admin_permissions'] ?? [],
+            ),
             'created_by' => $actorId,
             'expires_at' => $expiresAt->toIso8601String(),
         ];
@@ -353,8 +378,9 @@ class AdminUserController extends Controller
                 'name' => $payload['name'],
                 'username' => $payload['username'],
                 'email' => $email,
-                'role' => $this->roleFromLevel((int) $payload['user_level_id']),
+                'role' => AdminAccess::roleFromLevel((int) $payload['user_level_id']),
                 'expires_at' => $expiresAt->toIso8601String(),
+                'admin_permissions' => $payload['admin_permissions'],
             ],
         ];
     }
@@ -372,7 +398,7 @@ class AdminUserController extends Controller
 
     private function roleLabel(int $level): string
     {
-        return str_replace('_', ' ', Str::title($this->roleFromLevel($level)));
+        return str_replace('_', ' ', Str::title(AdminAccess::roleFromLevel($level)));
     }
 
     private function allowedInviteLevels(Admin $actor): array
