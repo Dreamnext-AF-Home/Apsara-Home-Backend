@@ -425,6 +425,7 @@ class ProductController extends Controller
             $status  = $request->query('status', '');
             $catId   = $request->query('cat_id', '');
             $roomType = $request->query('room_type', '');
+            $brandType = $request->query('brand_type', '');
             $requestedSupplierId = (int) $request->query('supplier_id', 0);
 
             $query = Product::query()
@@ -465,6 +466,9 @@ class ProductController extends Controller
                 })
                 ->when($roomType !== '', function ($q) use ($roomType) {
                     $q->where('pd_room_type', (int) $roomType);
+                })
+                ->when($brandType !== '', function ($q) use ($brandType) {
+                    $q->where('pd_brand_type', (int) $brandType);
                 })
                 ->orderByDesc('pd_id');
 

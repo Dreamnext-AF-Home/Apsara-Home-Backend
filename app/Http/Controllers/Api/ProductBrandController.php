@@ -12,14 +12,8 @@ use Illuminate\Support\Facades\Validator;
 
 class ProductBrandController extends Controller
 {
-    private function hasBrandImageColumn(): bool
+    private function buildBrandsResponse(string $search = '', bool $activeOnly = false): JsonResponse
     {
-        return Schema::hasColumn('tbl_product_brand', 'pb_image');
-    }
-
-    public function index(Request $request): JsonResponse
-    {
-        $search = trim((string) $request->query('q', ''));
         $hasBrandImageColumn = $this->hasBrandImageColumn();
         $columns = ['pb_id', 'pb_name', 'pb_status'];
         if ($hasBrandImageColumn) {
@@ -28,12 +22,15 @@ class ProductBrandController extends Controller
 
         $brands = ProductBrand::query()
             ->select($columns)
+            ->when($activeOnly, function ($query) {
+                $query->where('pb_status', 0);
+            })
             ->when($search !== '', function ($query) use ($search) {
                 $query->where('pb_name', 'ilike', '%' . $search . '%');
             })
             ->orderBy('pb_name')
             ->get()
-            ->map(function (ProductBrand $brand) {
+            ->map(function (ProductBrand $brand) use ($hasBrandImageColumn) {
                 return [
                     'id' => (int) $brand->pb_id,
                     'name' => (string) ($brand->pb_name ?? ''),
@@ -47,6 +44,25 @@ class ProductBrandController extends Controller
             'brands' => $brands,
             'total' => $brands->count(),
         ]);
+    }
+
+    private function hasBrandImageColumn(): bool
+    {
+        return Schema::hasColumn('tbl_product_brand', 'pb_image');
+    }
+
+    public function publicIndex(Request $request): JsonResponse
+    {
+        $search = trim((string) $request->query('q', ''));
+
+        return $this->buildBrandsResponse($search, true);
+    }
+
+    public function index(Request $request): JsonResponse
+    {
+        $search = trim((string) $request->query('q', ''));
+
+        return $this->buildBrandsResponse($search);
     }
 
     public function store(Request $request): JsonResponse
