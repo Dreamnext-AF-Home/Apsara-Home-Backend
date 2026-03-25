@@ -8,6 +8,7 @@ use App\Models\CustomerAddress;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Validation\Rule;
@@ -15,6 +16,7 @@ use Illuminate\Validation\ValidationException;
 use Illuminate\Support\Str;
 use App\Mail\Auth\RegistrationOtpMail;
 use App\Mail\Auth\CustomerPasswordResetMail;
+use App\Mail\Auth\UsernameChangeOtpMail;
 
 class AuthController extends Controller
 {
@@ -590,6 +592,188 @@ class AuthController extends Controller
         ]);
     }
 
+    public function sendUsernameChangeOtp(Request $request)
+    {
+        $customer = $request->user();
+        if (! $customer instanceof Customer) {
+            return response()->json(['message' => 'Only customer accounts can change usernames.'], 403);
+        }
+
+        $validated = $request->validate([
+            'username' => ['required', 'string', 'max:120', 'regex:/^[A-Za-z]+$/'],
+        ], [
+            'username.regex' => 'Username must contain letters only (A-Z).',
+        ]);
+
+        $nextUsername = trim((string) $validated['username']);
+        $this->validateNoBadWords(['username' => $nextUsername]);
+
+        $currentUsername = trim((string) ($customer->c_username ?? ''));
+        if ($nextUsername === '' || strcasecmp($nextUsername, $currentUsername) === 0) {
+            return response()->json(['message' => 'This is already your current username.'], 422);
+        }
+
+        $email = trim((string) ($customer->c_email ?? ''));
+        if ($email === '') {
+            return response()->json(['message' => 'Your account email is missing. Please update your profile email first.'], 422);
+        }
+
+        $duplicate = Customer::query()
+            ->whereRaw('LOWER(c_username) = ?', [mb_strtolower($nextUsername, 'UTF-8')])
+            ->where('c_userid', '!=', (int) $customer->c_userid)
+            ->exists();
+        if ($duplicate) {
+            return response()->json(['message' => 'This username is already taken.'], 422);
+        }
+
+        $existingPending = DB::table('tbl_tickets')
+            ->where('t_subject', $this->usernameChangeTicketSubject())
+            ->where('t_eid', (int) $customer->c_userid)
+            ->where('t_status', 1)
+            ->orderByDesc('t_id')
+            ->first();
+        if ($existingPending) {
+            return response()->json(['message' => 'You already have a pending username change request.'], 422);
+        }
+
+        $verificationToken = (string) Str::uuid();
+        $otp = (string) random_int(1000, 9999);
+
+        Cache::put($this->usernameChangeOtpCacheKey($verificationToken), [
+            'otp_hash' => Hash::make($otp),
+            'payload' => Crypt::encryptString(json_encode([
+                'customer_id' => (int) $customer->c_userid,
+                'requested_username' => $nextUsername,
+                'current_username' => $currentUsername,
+            ], JSON_THROW_ON_ERROR)),
+            'email' => $email,
+        ], now()->addMinutes(10));
+
+        $this->sendUsernameChangeOtpEmail($email, $otp);
+
+        return response()->json([
+            'message' => 'A 4-digit verification code has been sent to your email.',
+            'verification_token' => $verificationToken,
+            'email' => $email,
+        ]);
+    }
+
+    public function submitUsernameChangeRequest(Request $request)
+    {
+        $customer = $request->user();
+        if (! $customer instanceof Customer) {
+            return response()->json(['message' => 'Only customer accounts can change usernames.'], 403);
+        }
+
+        $validated = $request->validate([
+            'verification_token' => 'required|string',
+            'otp' => 'required|string|size:4',
+        ]);
+
+        $cached = Cache::get($this->usernameChangeOtpCacheKey((string) $validated['verification_token']));
+        if (!is_array($cached) || empty($cached['otp_hash']) || empty($cached['payload'])) {
+            throw ValidationException::withMessages([
+                'otp' => ['The verification code has expired. Please request a new code.'],
+            ]);
+        }
+
+        if (!Hash::check((string) $validated['otp'], (string) $cached['otp_hash'])) {
+            throw ValidationException::withMessages([
+                'otp' => ['Invalid verification code.'],
+            ]);
+        }
+
+        $payload = json_decode(Crypt::decryptString((string) $cached['payload']), true, 512, JSON_THROW_ON_ERROR);
+        $payloadCustomerId = (int) ($payload['customer_id'] ?? 0);
+        if ($payloadCustomerId !== (int) $customer->c_userid) {
+            return response()->json(['message' => 'The verification session is invalid.'], 403);
+        }
+
+        $requestedUsername = trim((string) ($payload['requested_username'] ?? ''));
+        if ($requestedUsername === '') {
+            throw ValidationException::withMessages([
+                'otp' => ['The verification payload is invalid. Please request a new code.'],
+            ]);
+        }
+
+        $duplicate = Customer::query()
+            ->whereRaw('LOWER(c_username) = ?', [mb_strtolower($requestedUsername, 'UTF-8')])
+            ->where('c_userid', '!=', (int) $customer->c_userid)
+            ->exists();
+        if ($duplicate) {
+            throw ValidationException::withMessages([
+                'username' => ['This username is already taken.'],
+            ]);
+        }
+
+        $existingPending = DB::table('tbl_tickets')
+            ->where('t_subject', $this->usernameChangeTicketSubject())
+            ->where('t_eid', (int) $customer->c_userid)
+            ->where('t_status', 1)
+            ->orderByDesc('t_id')
+            ->first();
+        if ($existingPending) {
+            return response()->json(['message' => 'You already have a pending username change request.'], 422);
+        }
+
+        $ticketId = DB::table('tbl_tickets')->insertGetId([
+            't_bid' => 0,
+            't_eid' => (int) $customer->c_userid,
+            't_department' => 1,
+            't_subject' => $this->usernameChangeTicketSubject(),
+            't_urgency' => 2,
+            't_related' => 0,
+            't_view_status' => 1,
+            't_status' => 1,
+            't_date' => now(),
+            't_archive' => 0,
+            't_category' => 0,
+        ], 't_id');
+
+        $requestPayload = [
+            'type' => 'username_change_request',
+            'current_username' => trim((string) ($customer->c_username ?? '')) ?: null,
+            'requested_username' => $requestedUsername,
+        ];
+
+        DB::table('tbl_tickets_details')->insert([
+            't_id' => (int) $ticketId,
+            'td_content' => json_encode($requestPayload, JSON_THROW_ON_ERROR),
+            'td_attachment' => null,
+            'td_datetime' => now(),
+            'td_rate' => 0,
+            'td_eid' => (int) $customer->c_userid,
+            'td_replystat' => 0,
+            'td_viewstat' => '1',
+            'td_ip' => (string) $request->ip(),
+        ]);
+
+        Cache::forget($this->usernameChangeOtpCacheKey((string) $validated['verification_token']));
+
+        return response()->json([
+            'message' => 'Request submitted. Please wait for admin approval.',
+            'request' => $this->transformUsernameChangeTicket((int) $ticketId),
+        ]);
+    }
+
+    public function latestUsernameChangeRequest(Request $request)
+    {
+        $customer = $request->user();
+        if (! $customer instanceof Customer) {
+            return response()->json(['request' => null]);
+        }
+
+        $latest = DB::table('tbl_tickets')
+            ->where('t_subject', $this->usernameChangeTicketSubject())
+            ->where('t_eid', (int) $customer->c_userid)
+            ->orderByDesc('t_id')
+            ->first();
+
+        return response()->json([
+            'request' => $latest ? $this->transformUsernameChangeTicket((int) $latest->t_id) : null,
+        ]);
+    }
+
     private function transformCustomer(Customer $customer): array
     {
         $fullName = $this->fullName($customer);
@@ -891,9 +1075,47 @@ class AuthController extends Controller
         ];
     }
 
+    private function transformUsernameChangeTicket(int $ticketId): array
+    {
+        $ticket = DB::table('tbl_tickets')->where('t_id', $ticketId)->first();
+        if (! $ticket) {
+            return [];
+        }
+
+        $requestDetail = DB::table('tbl_tickets_details')
+            ->where('t_id', $ticketId)
+            ->where('td_replystat', 0)
+            ->orderBy('td_id')
+            ->first();
+
+        $payload = $this->decodeUsernameChangePayload($requestDetail?->td_content ?? null);
+
+        $status = $this->mapUsernameChangeStatus((int) $ticket->t_status, $ticketId);
+
+        return [
+            'id' => (int) $ticket->t_id,
+            'reference_no' => $this->ticketReferenceNo((int) $ticket->t_id),
+            'status' => $status,
+            'requested_username' => (string) ($payload['requested_username'] ?? ''),
+            'review_notes' => $payload['review_notes'] ?? null,
+            'reviewed_at' => $payload['reviewed_at'] ?? null,
+            'created_at' => $ticket->t_date ? (string) $ticket->t_date : null,
+        ];
+    }
+
+    private function ticketReferenceNo(int $ticketId): string
+    {
+        return sprintf('TKT-%06d', $ticketId);
+    }
+
     private function registrationOtpCacheKey(string $verificationToken): string
     {
         return "registration_otp:{$verificationToken}";
+    }
+
+    private function usernameChangeOtpCacheKey(string $verificationToken): string
+    {
+        return "username_change_otp:{$verificationToken}";
     }
 
     private function passwordResetCacheKey(string $token): string
@@ -904,6 +1126,45 @@ class AuthController extends Controller
     private function sendRegistrationOtpEmail(string $email, string $otp): void
     {
         Mail::mailer('resend')->to($email)->send(new RegistrationOtpMail($otp, $email));
+    }
+
+    private function sendUsernameChangeOtpEmail(string $email, string $otp): void
+    {
+        Mail::mailer('resend')->to($email)->send(new UsernameChangeOtpMail($otp, $email));
+    }
+
+    private function usernameChangeTicketSubject(): string
+    {
+        return 'Username Change Request';
+    }
+
+    private function decodeUsernameChangePayload(?string $content): array
+    {
+        if (!is_string($content) || trim($content) === '') {
+            return [];
+        }
+
+        $decoded = json_decode($content, true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function mapUsernameChangeStatus(int $ticketStatus, int $ticketId): string
+    {
+        if ($ticketStatus === 1) {
+            return 'pending_review';
+        }
+
+        $latestDecision = DB::table('tbl_tickets_details')
+            ->where('t_id', $ticketId)
+            ->whereIn('td_replystat', [1, 2])
+            ->orderByDesc('td_id')
+            ->first();
+
+        if ($latestDecision && (int) $latestDecision->td_replystat === 2) {
+            return 'rejected';
+        }
+
+        return 'approved';
     }
 
     private function normalizeReferralValue(string $value): string

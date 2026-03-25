@@ -25,6 +25,7 @@ use App\Http\Controllers\Api\SupplierUserController;
 use App\Http\Controllers\Api\CustomerAddressController;
 use App\Http\Controllers\Api\InteriorRequestController;
 use App\Http\Controllers\Api\JntWebhookController;
+use App\Http\Controllers\Api\AdminInquiryController;
 
 
 // Public auth routes
@@ -67,6 +68,9 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::get('/auth/referral-tree', [AuthController::class, 'referralTree']);
     Route::put('/auth/me',      [AuthController::class, 'updateMe']);
     Route::patch('/auth/change-password', [AuthController::class, 'changePassword']);
+    Route::post('/auth/username-change/send-otp', [AuthController::class, 'sendUsernameChangeOtp']);
+    Route::post('/auth/username-change/submit', [AuthController::class, 'submitUsernameChangeRequest']);
+    Route::get('/auth/username-change/latest', [AuthController::class, 'latestUsernameChangeRequest']);
     Route::get('/auth/addresses', [CustomerAddressController::class, 'index']);
     Route::post('/auth/addresses', [CustomerAddressController::class, 'store']);
     Route::patch('/auth/addresses/{id}/default', [CustomerAddressController::class, 'setDefault']);
@@ -95,6 +99,9 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,csr'])->group(f
     Route::get('/admin/members/kyc', [AdminMemberKycController::class, 'index']);
     Route::patch('/admin/members/kyc/{id}/approve', [AdminMemberKycController::class, 'approve']);
     Route::patch('/admin/members/kyc/{id}/reject', [AdminMemberKycController::class, 'reject']);
+    Route::get('/admin/inquiries/username-changes', [AdminInquiryController::class, 'usernameChangeRequests']);
+    Route::patch('/admin/inquiries/username-changes/{id}/approve', [AdminInquiryController::class, 'approveUsernameChange']);
+    Route::patch('/admin/inquiries/username-changes/{id}/reject', [AdminInquiryController::class, 'rejectUsernameChange']);
 });
 
 Route::middleware(['auth:sanctum', 'admin.or_supplier'])->group(function () {
