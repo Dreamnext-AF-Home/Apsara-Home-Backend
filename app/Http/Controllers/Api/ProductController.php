@@ -125,6 +125,63 @@ class ProductController extends Controller
         return is_numeric($value) ? (float) $value : null;
     }
 
+    private function buildSearchTokens(string $search): array
+    {
+        $normalized = strtolower($search);
+        $normalized = preg_replace('/[^a-z0-9]+/i', ' ', $normalized) ?? '';
+        $parts = array_filter(explode(' ', $normalized), fn ($part) => strlen($part) >= 2);
+        $stop = [
+            'the','and','for','with','from','this','that','your','you','show','need','want','find','give','me','please',
+            'item','items','product','products','price','cost','php','peso','pesos','best','seller','recommended','recommend',
+            'cheap','low','lowest','high','highest','under','over','below','above',
+        ];
+        $filtered = array_values(array_unique(array_filter($parts, fn ($part) => ! in_array($part, $stop, true))));
+        return array_slice($filtered, 0, 6);
+    }
+
+    private function applyKeywordSearch($query, string $search): void
+    {
+        $tokens = $this->buildSearchTokens($search);
+        $like = '%' . $search . '%';
+
+        $query->where(function ($inner) use ($like, $tokens) {
+            $inner->where('pd_name', 'ilike', $like)
+                ->orWhere('pd_parent_sku', 'ilike', $like)
+                ->orWhere('pd_description', 'ilike', $like)
+                ->orWhere('pd_specifications', 'ilike', $like)
+                ->orWhere('pd_material', 'ilike', $like)
+                ->orWhereHas('brand', fn ($brand) => $brand->where('pb_name', 'ilike', $like))
+                ->orWhereIn('pd_catid', function ($sub) use ($like) {
+                    $sub->from('tbl_category')->select('cat_id')->where('cat_name', 'ilike', $like);
+                })
+                ->orWhereIn('pd_catsubid', function ($sub) use ($like) {
+                    $sub->from('tbl_categorysub')->select('subcat_id')->where('subcat_name', 'ilike', $like);
+                })
+                ->orWhereIn('pd_catsubid2', function ($sub) use ($like) {
+                    $sub->from('tbl_categoryitem')->select('item_id')->where('item_name', 'ilike', $like);
+                });
+
+            foreach ($tokens as $token) {
+                $tokenLike = '%' . $token . '%';
+                $inner->orWhere('pd_name', 'ilike', $tokenLike)
+                    ->orWhere('pd_parent_sku', 'ilike', $tokenLike)
+                    ->orWhere('pd_description', 'ilike', $tokenLike)
+                    ->orWhere('pd_specifications', 'ilike', $tokenLike)
+                    ->orWhere('pd_material', 'ilike', $tokenLike)
+                    ->orWhereHas('brand', fn ($brand) => $brand->where('pb_name', 'ilike', $tokenLike))
+                    ->orWhereIn('pd_catid', function ($sub) use ($tokenLike) {
+                        $sub->from('tbl_category')->select('cat_id')->where('cat_name', 'ilike', $tokenLike);
+                    })
+                    ->orWhereIn('pd_catsubid', function ($sub) use ($tokenLike) {
+                        $sub->from('tbl_categorysub')->select('subcat_id')->where('subcat_name', 'ilike', $tokenLike);
+                    })
+                    ->orWhereIn('pd_catsubid2', function ($sub) use ($tokenLike) {
+                        $sub->from('tbl_categoryitem')->select('item_id')->where('item_name', 'ilike', $tokenLike);
+                    });
+            }
+        });
+    }
+
     private function inferRoomTypeFromCategory(?Category $category): int
     {
         if (! $category) {
@@ -446,11 +503,7 @@ class ProductController extends Controller
                     'variants.photos:pvp_id,pvp_pvid,pvp_filename,pvp_sort,pvp_date',
                 ])
                 ->when($search !== '', function ($q) use ($search) {
-                    $like = '%' . $search . '%';
-                    $q->where(function ($inner) use ($like) {
-                        $inner->where('pd_name', 'ilike', $like)
-                              ->orWhere('pd_parent_sku', 'ilike', $like);
-                    });
+                    $this->applyKeywordSearch($q, $search);
                 })
                 ->when($status !== '', function ($q) use ($status) {
                     $normalizedStatus = (int) $status;

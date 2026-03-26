@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Admin;
 use App\Models\Customer;
+use App\Models\CustomerNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -84,6 +85,8 @@ class AdminInquiryController extends Controller
         $customer->c_username = $requestedUsername;
         $customer->save();
 
+        $reviewedAt = now('Asia/Manila');
+
         DB::table('tbl_tickets')->where('t_id', (int) $ticket->t_id)->update([
             't_status' => 2,
             't_view_status' => 2,
@@ -93,7 +96,7 @@ class AdminInquiryController extends Controller
             'type' => 'username_change_decision',
             'decision' => 'approved',
             'reviewed_by' => $admin instanceof Admin ? (int) $admin->id : null,
-            'reviewed_at' => now()->toDateTimeString(),
+            'reviewed_at' => $reviewedAt->toDateTimeString(),
         ];
 
         DB::table('tbl_tickets_details')->insert([
@@ -106,6 +109,26 @@ class AdminInquiryController extends Controller
             'td_replystat' => 1,
             'td_viewstat' => '1',
             'td_ip' => (string) $request->ip(),
+        ]);
+
+        CustomerNotification::query()->create([
+            'cn_customer_id' => (int) $customer->c_userid,
+            'cn_type' => 'username_change',
+            'cn_severity' => 'success',
+            'cn_title' => 'Username Change Request',
+            'cn_message' => sprintf(
+                'Your username request has been approved by admin (%s).',
+                $reviewedAt->format('F j, Y g:i A')
+            ),
+            'cn_href' => '/profile?tab=change-username',
+            'cn_payload' => [
+                'ticket_id' => (int) $ticket->t_id,
+                'requested_username' => $requestedUsername,
+                'approved_at' => $reviewedAt->toDateTimeString(),
+            ],
+            'cn_source_type' => 'username_change_request',
+            'cn_source_id' => (int) $ticket->t_id,
+            'cn_created_at' => $reviewedAt,
         ]);
 
         return response()->json(['message' => 'Username change approved.']);

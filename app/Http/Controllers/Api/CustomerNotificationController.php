@@ -9,6 +9,7 @@ use App\Models\CustomerNotification;
 use App\Models\CustomerVerificationRequest;
 use App\Models\EncashmentRequest;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class CustomerNotificationController extends Controller
 {
@@ -84,6 +85,8 @@ class CustomerNotificationController extends Controller
 
         $kycMeta = $this->resolveKycMeta($customer);
         $kycActionCount = $kycMeta['count'];
+        $usernameChangeMeta = $this->resolveUsernameChangeMeta($customer);
+        $usernameChangeCount = $usernameChangeMeta['count'];
 
         $items = [
             [
@@ -139,6 +142,15 @@ class CustomerNotificationController extends Controller
                 'href' => '/verification',
                 'latest_at' => $kycMeta['latest_at'],
             ],
+            [
+                'id' => 'username_change_status',
+                'title' => 'Username Change Request',
+                'description' => $usernameChangeMeta['description'],
+                'count' => $usernameChangeCount,
+                'severity' => $usernameChangeMeta['severity'],
+                'href' => '/profile?tab=change-username',
+                'latest_at' => $usernameChangeMeta['latest_at'],
+            ],
         ];
 
         $storedItems = CustomerNotification::query()
@@ -168,7 +180,7 @@ class CustomerNotificationController extends Controller
             ->values()
             ->all();
 
-        $unreadCount = count($storedItems) + $shippingUpdatesCount + $encashmentUpdatesCount + $recentReferralCount + $kycActionCount;
+        $unreadCount = count($storedItems) + $shippingUpdatesCount + $encashmentUpdatesCount + $recentReferralCount + $kycActionCount + $usernameChangeCount;
 
         return response()->json([
             'unread_count' => $unreadCount,
@@ -265,5 +277,71 @@ class CustomerNotificationController extends Controller
         }
 
         return sprintf('%s and %d more registered using your referral link.', $preview, $count - 3);
+    }
+
+    private function resolveUsernameChangeMeta(Customer $customer): array
+    {
+        $ticket = DB::table('tbl_tickets')
+            ->where('t_subject', 'Username Change Request')
+            ->where('t_eid', (int) $customer->c_userid)
+            ->orderByDesc('t_id')
+            ->first();
+
+        if (!$ticket) {
+            return [
+                'count' => 0,
+                'severity' => 'info',
+                'description' => 'No username change requests yet.',
+                'latest_at' => null,
+            ];
+        }
+
+        $decision = DB::table('tbl_tickets_details')
+            ->where('t_id', (int) $ticket->t_id)
+            ->whereIn('td_replystat', [1, 2])
+            ->orderByDesc('td_id')
+            ->first();
+
+        if (!$decision) {
+            return [
+                'count' => 0,
+                'severity' => 'warning',
+                'description' => 'Your username change request is still under review.',
+                'latest_at' => $ticket->t_date ? (string) $ticket->t_date : null,
+            ];
+        }
+
+        $payload = [];
+        if (is_string($decision->td_content ?? null) && trim((string) $decision->td_content) !== '') {
+            $decoded = json_decode((string) $decision->td_content, true);
+            if (is_array($decoded)) {
+                $payload = $decoded;
+            }
+        }
+
+        $reviewedAtRaw = $payload['reviewed_at'] ?? $decision->td_datetime ?? null;
+        $reviewedAt = $reviewedAtRaw
+            ? \Illuminate\Support\Carbon::parse($reviewedAtRaw)->setTimezone('Asia/Manila')
+            : null;
+
+        if ((int) $decision->td_replystat === 2) {
+            return [
+                'count' => 1,
+                'severity' => 'critical',
+                'description' => $reviewedAt
+                    ? sprintf('Your username request was rejected by admin (%s).', $reviewedAt->format('F j, Y g:i A'))
+                    : 'Your username request was rejected by admin.',
+                'latest_at' => $reviewedAt?->toDateTimeString(),
+            ];
+        }
+
+        return [
+            'count' => 1,
+            'severity' => 'success',
+            'description' => $reviewedAt
+                ? sprintf('Your username request has been approved by admin (%s).', $reviewedAt->format('F j, Y g:i A'))
+                : 'Your username request has been approved by admin.',
+            'latest_at' => $reviewedAt?->toDateTimeString(),
+        ];
     }
 }

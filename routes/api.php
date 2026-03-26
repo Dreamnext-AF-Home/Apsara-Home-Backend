@@ -41,6 +41,8 @@ Route::prefix('auth')->group(function () {
 
 Route::post('/payments/checkout-session', [PaymentController::class, 'createCheckoutSession']);
 Route::get('/payments/checkout-session/{checkoutId}', [PaymentController::class, 'verifyCheckoutSession']);
+Route::post('/payments/validate-voucher', [PaymentController::class, 'validateVoucher']);
+Route::post('/ai-support', [\App\Http\Controllers\Api\AiSupportController::class, 'handle']);
 Route::post('/payments/webhooks/paymongo', [PaymentController::class, 'handlePaymongoWebhook']);
 Route::post('/payments/webhooks/test-paid', [PaymentController::class, 'handleTestPaidWebhook']);
 Route::get('/orders/track', [PaymentController::class, 'trackGuestOrder']);

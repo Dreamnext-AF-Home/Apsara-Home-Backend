@@ -8,9 +8,11 @@ use App\Mail\Checkout\CheckoutCompletedMail;
 use App\Models\CheckoutHistory;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Pusher\Pusher;
 
 
@@ -39,6 +41,7 @@ class PaymentController extends Controller
             'amount' => 'required|numeric|min:1',
             'description' => 'required|string|max:255',
             'payment_method' => 'required|in:online_banking,card,gcash,maya',
+            'voucher_code' => 'nullable|string|max:80',
 
             'customer' => 'nullable|array',
             'customer.name' => 'nullable|string|max:255',
@@ -56,6 +59,8 @@ class PaymentController extends Controller
             'order.selected_color' => 'nullable|string|max:100',
             'order.selected_size' => 'nullable|string|max:100',
             'order.selected_type' => 'nullable|string|max:100',
+            'order.subtotal' => 'nullable|numeric|min:0',
+            'order.handling_fee' => 'nullable|numeric|min:0',
         ]);
 
         $normalizedReferral = $this->normalizeReferralValue((string) data_get($validated, 'customer.referred_by', ''));
@@ -86,12 +91,29 @@ class PaymentController extends Controller
 
         $frontend = env('FRONTEND_URL', 'http://localhost:3000');
 
+        $voucherCode = trim((string) ($validated['voucher_code'] ?? ''));
+        $subtotal = (float) ($validated['order']['subtotal'] ?? $validated['amount'] ?? 0);
+        $handlingFee = (float) ($validated['order']['handling_fee'] ?? 0);
+
+        $voucher = null;
+        $voucherDiscount = 0.0;
+        if ($voucherCode !== '') {
+            $voucher = $this->resolveAffiliateVoucher($voucherCode);
+            if (!$voucher) {
+                return response()->json(['message' => 'Voucher code is invalid or expired.'], 422);
+            }
+
+            $voucherDiscount = min($subtotal, (float) ($voucher->avi_amount ?? 0));
+        }
+
+        $computedAmount = max(0, $subtotal - $voucherDiscount) + $handlingFee;
+
         $payload = [
             'data' => [
                 'attributes' => [
                     'line_items' => [[
                         'currency' => 'PHP',
-                        'amount' => (int) round($validated['amount'] * 100), // centavos
+                        'amount' => (int) round($computedAmount * 100), // centavos
                         'name' => $validated['description'],
                         'quantity' => 1,
                     ]],
@@ -127,9 +149,15 @@ class PaymentController extends Controller
                 'referred_by' => $normalizedReferral,
                 'referrer_user_id' => (int) $referrer->c_userid,
                 'description' => $validated['description'],
-                'amount' => (float) $validated['amount'],
+                'amount' => (float) $computedAmount,
                 'payment_method' => $validated['payment_method'],
                 'order' => $validated['order'] ?? [],
+                'voucher' => $voucher ? [
+                    'id' => (int) $voucher->avi_id,
+                    'code' => (string) ($voucher->avi_code ?? ''),
+                    'amount' => (float) ($voucher->avi_amount ?? 0),
+                    'discount' => (float) $voucherDiscount,
+                ] : null,
             ], now()->addDays(3));
 
             Log::info('Checkout cached for email confirmation', [
@@ -142,6 +170,35 @@ class PaymentController extends Controller
         return response()->json([
             'checkout_id' => $checkoutId,
             'checkout_url' => $data['attributes']['checkout_url'] ?? null,
+        ]);
+    }
+
+    public function validateVoucher(Request $request)
+    {
+        $validated = $request->validate([
+            'code' => 'required|string|max:80',
+            'subtotal' => 'nullable|numeric|min:0',
+        ]);
+
+        $voucher = $this->resolveAffiliateVoucher((string) $validated['code']);
+        if (!$voucher) {
+            return response()->json(['message' => 'Voucher code is invalid or expired.'], 422);
+        }
+
+        $subtotal = (float) ($validated['subtotal'] ?? ($voucher->avi_amount ?? 0));
+        $discount = min($subtotal, (float) ($voucher->avi_amount ?? 0));
+
+        return response()->json([
+            'valid' => true,
+            'voucher' => [
+                'id' => (int) $voucher->avi_id,
+                'code' => (string) ($voucher->avi_code ?? ''),
+                'amount' => (float) ($voucher->avi_amount ?? 0),
+                'max_uses' => $voucher->avi_max_uses !== null ? (int) $voucher->avi_max_uses : null,
+                'used_count' => $voucher->avi_used_count !== null ? (int) $voucher->avi_used_count : null,
+                'expires_at' => $voucher->avi_expires_at,
+            ],
+            'discount' => round($discount, 2),
         ]);
     }
 
@@ -508,6 +565,107 @@ class PaymentController extends Controller
         if ($isNowPaid && (!$alreadyExists || !$wasPaidBefore)) {
             $this->notifyAdminOrderCreated($history);
         }
+
+        if ($isNowPaid) {
+            $this->markAffiliateVoucherUsedIfNeeded($checkoutId, is_array($cached) ? $cached : []);
+        }
+    }
+
+    private function resolveAffiliateVoucher(string $code): ?object
+    {
+        if (!Schema::hasTable('tbl_affiliate_voucher_issuances')) {
+            return null;
+        }
+
+        $normalized = mb_strtolower(trim($code), 'UTF-8');
+        if ($normalized === '') {
+            return null;
+        }
+
+        $voucher = DB::table('tbl_affiliate_voucher_issuances')
+            ->whereRaw('LOWER(avi_code) = ?', [$normalized])
+            ->first();
+
+        if (!$voucher || (string) ($voucher->avi_status ?? '') !== 'active') {
+            return null;
+        }
+
+        if (!empty($voucher->avi_expires_at)) {
+            $expiresAt = \Illuminate\Support\Carbon::parse($voucher->avi_expires_at, 'Asia/Manila');
+            if ($expiresAt->isPast()) {
+                return null;
+            }
+        }
+
+        $maxUses = $voucher->avi_max_uses !== null ? (int) $voucher->avi_max_uses : null;
+        $usedCount = (int) ($voucher->avi_used_count ?? 0);
+        if ($maxUses !== null && $usedCount >= $maxUses) {
+            return null;
+        }
+
+        return $voucher;
+    }
+
+    private function markAffiliateVoucherUsedIfNeeded(string $checkoutId, array $cached): void
+    {
+        $voucher = $cached['voucher'] ?? null;
+        if (!is_array($voucher) || empty($voucher['id'])) {
+            return;
+        }
+
+        $cacheKey = "checkout_voucher_applied:{$checkoutId}";
+        if (Cache::has($cacheKey)) {
+            return;
+        }
+
+        DB::transaction(function () use ($voucher, $cached) {
+            if (!Schema::hasTable('tbl_affiliate_voucher_issuances')) {
+                return;
+            }
+
+            $row = DB::table('tbl_affiliate_voucher_issuances')
+                ->where('avi_id', (int) $voucher['id'])
+                ->lockForUpdate()
+                ->first();
+
+            if (!$row || (string) ($row->avi_status ?? '') !== 'active') {
+                return;
+            }
+
+            if (!empty($row->avi_expires_at)) {
+                $expiresAt = \Illuminate\Support\Carbon::parse($row->avi_expires_at, 'Asia/Manila');
+                if ($expiresAt->isPast()) {
+                    return;
+                }
+            }
+
+            $maxUses = $row->avi_max_uses !== null ? (int) $row->avi_max_uses : null;
+            $usedCount = (int) ($row->avi_used_count ?? 0);
+            if ($maxUses !== null && $usedCount >= $maxUses) {
+                return;
+            }
+
+            $nextUsed = $usedCount + 1;
+
+            $update = [
+                'avi_used_count' => $nextUsed,
+                'avi_redeemed_at' => now('Asia/Manila'),
+            ];
+
+            if (!empty($cached['customer_id'])) {
+                $update['avi_redeemed_by_customer_id'] = (int) $cached['customer_id'];
+            }
+
+            if ($maxUses !== null && $nextUsed >= $maxUses) {
+                $update['avi_status'] = 'redeemed';
+            }
+
+            DB::table('tbl_affiliate_voucher_issuances')
+                ->where('avi_id', (int) $row->avi_id)
+                ->update($update);
+        });
+
+        Cache::put($cacheKey, true, now()->addDays(7));
     }
 
     private function notifyAdminOrderCreated(CheckoutHistory $history): void

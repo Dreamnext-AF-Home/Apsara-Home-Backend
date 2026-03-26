@@ -87,6 +87,13 @@ class EncashmentController extends Controller
             ->whereNotIn('ch_status', ['failed', 'cancelled', 'expired'])
             ->sum('ch_earned_pv');
 
+        $affiliateRetailProfit = (float) CheckoutHistory::query()
+            ->where('ch_customer_id', (int) $customer->c_userid)
+            ->where('ch_earned_pv', '>', 0)
+            ->whereNotNull('ch_pv_posted_at')
+            ->whereIn('ch_fulfillment_status', ['delivered', 'completed'])
+            ->sum('ch_earned_pv');
+
         $lifetimePv = 0.0;
         if (Schema::hasTable('tbl_customer_wallet_ledger')) {
             $lifetimePv = (float) CustomerWalletLedger::query()
@@ -94,6 +101,26 @@ class EncashmentController extends Controller
                 ->where('wl_wallet_type', 'pv')
                 ->where('wl_entry_type', 'credit')
                 ->sum('wl_amount');
+        }
+
+        $globalPurchaseBonus = 0.0;
+        $groupPurchaseBonus = 0.0;
+        $affiliatePerformanceBonus = 0.0;
+        if (Schema::hasTable('tbl_bonuses')) {
+            $globalPurchaseBonus = (float) DB::table('tbl_bonuses')
+                ->where('b_recepient', (int) $customer->c_userid)
+                ->where('b_bonustype', 5)
+                ->sum('b_amount');
+
+            $groupPurchaseBonus = (float) DB::table('tbl_bonuses')
+                ->where('b_recepient', (int) $customer->c_userid)
+                ->where('b_bonustype', 4)
+                ->sum('b_amount');
+
+            $affiliatePerformanceBonus = (float) DB::table('tbl_bonuses')
+                ->where('b_recepient', (int) $customer->c_userid)
+                ->where('b_bonustype', 2)
+                ->sum('b_amount');
         }
 
         $totalReferrals = (int) Customer::query()
@@ -117,7 +144,8 @@ class EncashmentController extends Controller
             $reservedAffiliateVoucherAmount = (float) DB::table('tbl_affiliate_voucher_issuances')
                 ->where('avi_customer_id', (int) $customer->c_userid)
                 ->where('avi_status', 'active')
-                ->sum('avi_amount');
+                ->selectRaw('SUM(avi_amount * COALESCE(avi_max_uses, 1)) as total_reserved')
+                ->value('total_reserved') ?? 0;
 
             $affiliateVouchers = DB::table('tbl_affiliate_voucher_issuances')
                 ->where('avi_customer_id', (int) $customer->c_userid)
@@ -131,61 +159,39 @@ class EncashmentController extends Controller
                     'avi_redeemed_by_customer_id',
                     'avi_redeemed_at',
                     'avi_expires_at',
+                    'avi_max_uses',
+                    'avi_used_count',
                     'created_at',
                     'updated_at',
                 ]);
         }
 
-        $afVoucherSourceBalance = 0.0;
-        if (Schema::hasTable('tbl_vouchers')) {
-            $today = now()->toDateString();
+        $afVoucherBalance = max(0, (float) ($customer->c_WP ?? $customer->c_wp ?? 0));
+        $availableEgcBalance = max(0, (float) ($customer->c_AP ?? $customer->c_ap ?? 0));
 
-            $afVoucherSourceBalance = (float) DB::table('tbl_vouchers')
-                ->where('v_cid', (int) $customer->c_userid)
-                ->where('v_active', 0)
-                ->where(function ($query) use ($today) {
-                    $query->whereNull('v_valid_from')
-                        ->orWhereDate('v_valid_from', '<=', $today);
-                })
-                ->where(function ($query) use ($today) {
-                    $query->whereNull('v_valid_to')
-                        ->orWhereDate('v_valid_to', '>=', $today);
-                })
-                ->sum('v_value');
-        }
+        $cashbackRate = 0.04;
+        $cashbackBalance = (float) CheckoutHistory::query()
+            ->where('ch_customer_id', (int) $customer->c_userid)
+            ->where('ch_earned_pv', '>', 0)
+            ->whereIn('ch_fulfillment_status', ['delivered', 'completed'])
+            ->sum(DB::raw('ch_earned_pv * ' . $cashbackRate));
 
-        $cashbackSourceBalance = 0.0;
-        if (Schema::hasTable('tbl_transaction')) {
-            $cashbackSourceBalance += (float) DB::table('tbl_transaction')
-                ->where('t_receiver', (int) $customer->c_userid)
-                ->where('t_rebate', '>', 0)
-                ->sum('t_rebate');
-        }
-        if (Schema::hasTable('tbl_vows_transaction')) {
-            $cashbackSourceBalance += (float) DB::table('tbl_vows_transaction')
-                ->where('t_receiver', (int) $customer->c_userid)
-                ->where('t_status', 1)
-                ->where('t_rebate', '>', 0)
-                ->sum('t_rebate');
-        }
-
-        $afVoucherBalance = max(0, $afVoucherSourceBalance);
+        $afVoucherSourceBalance = $afVoucherBalance;
+        $cashbackSourceBalance = $cashbackBalance;
         $cashbackBalance = max(0, $cashbackSourceBalance - $reservedAffiliateVoucherAmount);
+        $cashbackSourceBalance = $cashbackBalance;
 
-        $cashbackRate = 0.0;
-        if (Schema::hasTable('tbl_control_panel')) {
-            $cashbackRate = (float) (DB::table('tbl_control_panel')->value('cashback_percentage') ?? 0);
-        }
+        $cashbackRate = $cashbackRate * 100;
 
         return response()->json([
             'summary' => [
                 'cash_balance' => round((float) ($customer->c_totalincome ?? 0), 2),
                 'pv_balance' => round((float) ($customer->c_gpv ?? 0), 2),
-                'current_pv' => round((float) ($customer->c_pv ?? 0), 2),
-                'personal_purchase_pv' => round((float) ($customer->c_ppv ?? 0), 2),
-                'group_pv' => round((float) ($customer->c_gpv ?? 0), 2),
+                'current_pv' => round($affiliateRetailProfit, 2),
+                'personal_purchase_pv' => round($globalPurchaseBonus, 2),
+                'group_pv' => round($groupPurchaseBonus, 2),
                 'current_month_group_pv' => round((float) ($customer->c_gpv_cmonth ?? 0), 2),
-                'current_cv' => round((float) ($customer->c_cv ?? 0), 2),
+                'current_cv' => round($affiliateRetailProfit + $affiliatePerformanceBonus + $cashbackBalance + $groupPurchaseBonus + $globalPurchaseBonus, 2),
                 'pending_pv' => round($pendingPv, 2),
                 'lifetime_pv' => round($lifetimePv, 2),
                 'cash_credits' => round($cashCredits, 2),
@@ -195,7 +201,7 @@ class EncashmentController extends Controller
                 'encashment_locked' => round($encashmentPendingLocked, 2),
                 'encashment_available' => round(max(0, ((float) ($customer->c_totalincome ?? 0)) - $encashmentPendingLocked), 2),
                 'af_voucher_balance' => round($afVoucherBalance, 2),
-                'available_egc_balance' => 0,
+                'available_egc_balance' => round($availableEgcBalance, 2),
                 'cashback_balance' => round($cashbackBalance, 2),
                 'cashback_rate' => round($cashbackRate, 2),
                 'af_voucher_source_balance' => round($afVoucherSourceBalance, 2),
@@ -241,6 +247,8 @@ class EncashmentController extends Controller
                     'redeemed_by_customer_id' => $row->avi_redeemed_by_customer_id ? (int) $row->avi_redeemed_by_customer_id : null,
                     'redeemed_at' => $row->avi_redeemed_at,
                     'expires_at' => $row->avi_expires_at,
+                    'max_uses' => $row->avi_max_uses !== null ? (int) $row->avi_max_uses : null,
+                    'used_count' => $row->avi_used_count !== null ? (int) $row->avi_used_count : null,
                     'created_at' => $row->created_at,
                     'updated_at' => $row->updated_at,
                 ];
@@ -266,6 +274,8 @@ class EncashmentController extends Controller
 
         $validated = $request->validate([
             'amount' => 'required|numeric|min:1|max:999999.99',
+            'expires_at' => 'nullable|date',
+            'max_uses' => 'nullable|integer|min:1|max:999999',
         ]);
 
         if (!Schema::hasTable('tbl_affiliate_voucher_issuances')) {
@@ -277,32 +287,36 @@ class EncashmentController extends Controller
         $voucher = DB::transaction(function () use ($customer, $validated) {
             $requestedAmount = round((float) $validated['amount'], 2);
 
-            $sourceBalance = 0.0;
-            if (Schema::hasTable('tbl_transaction')) {
-                $sourceBalance += (float) DB::table('tbl_transaction')
-                    ->where('t_receiver', (int) $customer->c_userid)
-                    ->where('t_rebate', '>', 0)
-                    ->sum('t_rebate');
-            }
-            if (Schema::hasTable('tbl_vows_transaction')) {
-                $sourceBalance += (float) DB::table('tbl_vows_transaction')
-                    ->where('t_receiver', (int) $customer->c_userid)
-                    ->where('t_status', 1)
-                    ->where('t_rebate', '>', 0)
-                    ->sum('t_rebate');
-            }
+            $sourceBalance = (float) CheckoutHistory::query()
+                ->where('ch_customer_id', (int) $customer->c_userid)
+                ->where('ch_earned_pv', '>', 0)
+                ->whereIn('ch_fulfillment_status', ['delivered', 'completed'])
+                ->sum(DB::raw('ch_earned_pv * 0.04'));
 
             $reservedAmount = (float) DB::table('tbl_affiliate_voucher_issuances')
                 ->where('avi_customer_id', (int) $customer->c_userid)
                 ->where('avi_status', 'active')
-                ->sum('avi_amount');
+                ->selectRaw('SUM(avi_amount * COALESCE(avi_max_uses, 1)) as total_reserved')
+                ->value('total_reserved') ?? 0;
 
             $availableAmount = max(0, $sourceBalance - $reservedAmount);
-            if ($requestedAmount > $availableAmount) {
+            $maxUses = array_key_exists('max_uses', $validated) ? (int) $validated['max_uses'] : null;
+            $requiredBalance = $maxUses && $maxUses > 0
+                ? ($requestedAmount * $maxUses)
+                : $requestedAmount;
+
+            if ($requiredBalance > $availableAmount) {
                 throw new HttpResponseException(response()->json([
-                    'message' => 'Requested voucher amount exceeds your available cashback balance.',
+                    'message' => 'Insufficient cashback balance for the voucher amount and usage limit.',
                     'available_balance' => round($availableAmount, 2),
+                    'required_balance' => round($requiredBalance, 2),
                 ], 422));
+            }
+
+            $expiresAt = null;
+            if (!empty($validated['expires_at'])) {
+                $expiresAt = \Illuminate\Support\Carbon::parse((string) $validated['expires_at'], 'Asia/Manila')
+                    ->endOfDay();
             }
 
             $nextId = ((int) DB::table('tbl_affiliate_voucher_issuances')->max('avi_id')) + 1;
@@ -313,7 +327,9 @@ class EncashmentController extends Controller
                 'avi_code' => $code,
                 'avi_amount' => $requestedAmount,
                 'avi_status' => 'active',
-                'avi_expires_at' => now()->addYear(),
+                'avi_expires_at' => $expiresAt ?? now('Asia/Manila')->addYear(),
+                'avi_max_uses' => $maxUses,
+                'avi_used_count' => 0,
                 'created_at' => now(),
                 'updated_at' => now(),
             ], 'avi_id');
@@ -328,6 +344,8 @@ class EncashmentController extends Controller
                     'avi_redeemed_by_customer_id',
                     'avi_redeemed_at',
                     'avi_expires_at',
+                    'avi_max_uses',
+                    'avi_used_count',
                     'created_at',
                     'updated_at',
                 ]);
@@ -343,6 +361,8 @@ class EncashmentController extends Controller
                 'redeemed_by_customer_id' => $voucher->avi_redeemed_by_customer_id ? (int) $voucher->avi_redeemed_by_customer_id : null,
                 'redeemed_at' => $voucher->avi_redeemed_at,
                 'expires_at' => $voucher->avi_expires_at,
+                'max_uses' => $voucher->avi_max_uses !== null ? (int) $voucher->avi_max_uses : null,
+                'used_count' => $voucher->avi_used_count !== null ? (int) $voucher->avi_used_count : null,
                 'created_at' => $voucher->created_at,
                 'updated_at' => $voucher->updated_at,
             ],
