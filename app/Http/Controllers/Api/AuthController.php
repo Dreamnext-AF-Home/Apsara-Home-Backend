@@ -250,6 +250,13 @@ class AuthController extends Controller
             ]);
         }
 
+        if ((int) ($customer->c_lockstatus ?? 0) === 1) {
+            return response()->json([
+                'message' => 'Your account has been banned. Please contact support for assistance.',
+                'reason' => 'banned',
+            ], 403);
+        }
+
         $mustChangePassword = $this->customerRequiresPasswordChange($customer)
             || $legacyDirectMatch
             || $legacyCaseInsensitiveMatch
@@ -400,6 +407,15 @@ class AuthController extends Controller
     public function me(Request $request)
     {
         $customer = $request->user();
+
+        if ((int) ($customer->c_lockstatus ?? 0) === 1) {
+            optional($customer->currentAccessToken())->delete();
+
+            return response()->json([
+                'message' => 'Your account has been banned. Please contact support for assistance.',
+                'reason' => 'banned',
+            ], 401);
+        }
 
         return response()->json($this->transformCustomer($customer));
     }
