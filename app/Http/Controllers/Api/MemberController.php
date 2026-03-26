@@ -224,6 +224,7 @@ class MemberController extends Controller
                     return [
                         'id' => (int) $customer->c_userid,
                         'name' => $fullName,
+                        'username' => (string) ($customer->c_username ?? ''),
                         'email' => (string) ($customer->c_email ?: ''),
                         'contactNumber' => (string) ($customer->c_mobile ?: ''),
                         'avatar' => (string) ($customer->c_avatar_url ?: ''),
@@ -300,6 +301,12 @@ class MemberController extends Controller
 
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
+            'username' => [
+                'required',
+                'string',
+                'max:255',
+                Rule::unique('tbl_customer', 'c_username')->ignore($customer->c_userid, 'c_userid'),
+            ],
             'email' => [
                 'required',
                 'email',
@@ -330,6 +337,7 @@ class MemberController extends Controller
             'c_fname' => $firstName,
             'c_mname' => $middleName,
             'c_lname' => $lastName,
+            'c_username' => trim((string) $validated['username']),
             'c_email' => trim((string) $validated['email']),
             'c_mobile' => trim((string) ($validated['contactNumber'] ?? '')),
             'c_rank' => $this->mapTierToRank((string) $validated['tier']),
