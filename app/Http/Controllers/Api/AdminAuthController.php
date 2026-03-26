@@ -65,6 +65,7 @@ class AdminAuthController extends Controller
                 'supplier_id' => $admin->supplier_id ? (int) $admin->supplier_id : null,
                 'admin_permissions' => AdminAccess::permissionsForAdmin($admin),
                 'avatar_url' => (string) ($admin->avatar_url ?? ''),
+                'is_banned' => (bool) $admin->is_banned,
             ],
             'token' => $token,
         ]);

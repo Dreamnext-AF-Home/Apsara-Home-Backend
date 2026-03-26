@@ -21,6 +21,13 @@ class EnsureAdminActor
             return response()->json(['message' => 'Forbidden: admin access required.'], 403);
         }
 
+        if ($user->is_banned) {
+            return response()->json([
+                'message' => 'Your account has been suspended. Contact a Super Admin.',
+                'reason' => 'banned',
+            ], 401);
+        }
+
         return $next($request);
     }
 }

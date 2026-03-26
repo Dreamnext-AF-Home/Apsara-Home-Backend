@@ -170,6 +170,8 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin'])->group(funct
     Route::post('/admin/users', [AdminUserController::class, 'store']);
     Route::put('/admin/users/{id}', [AdminUserController::class, 'update']);
     Route::delete('/admin/users/{id}', [AdminUserController::class, 'destroy']);
+    Route::put('/admin/users/{id}/ban', [AdminUserController::class, 'ban']);
+    Route::put('/admin/users/{id}/unban', [AdminUserController::class, 'unban']);
 });
 
 Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,web_content'])->group(function () {

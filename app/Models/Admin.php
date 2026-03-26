@@ -21,12 +21,14 @@ class Admin extends Authenticatable
         'user_email',
         'fname',
         'avatar_url',
+        'is_banned',
     ];
 
     protected $hidden = ['passworde'];
 
     protected $casts = [
         'admin_permissions' => 'array',
+        'is_banned' => 'boolean',
     ];
 
     public function supplier()

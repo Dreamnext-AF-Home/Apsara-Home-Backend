@@ -348,6 +348,52 @@ class AdminUserController extends Controller
         };
     }
 
+    public function ban(Request $request, int $id)
+    {
+        $actor = $this->resolveAdmin($request);
+        if (!$actor) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+        if (!$this->isSuperAdmin($actor)) {
+            return response()->json(['message' => 'Forbidden: only Super Admins can ban accounts.'], 403);
+        }
+        if ((int) $actor->id === $id) {
+            return response()->json(['message' => 'You cannot ban your own account.'], 422);
+        }
+
+        $admin = Admin::query()->where('id', $id)->firstOrFail();
+        $this->ensureCanManageTarget($actor, $admin);
+
+        $admin->is_banned = true;
+        $admin->save();
+
+        return response()->json([
+            'message' => "Admin account {$admin->username} has been banned.",
+            'user' => $this->transform($admin),
+        ]);
+    }
+
+    public function unban(Request $request, int $id)
+    {
+        $actor = $this->resolveAdmin($request);
+        if (!$actor) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+        if (!$this->isSuperAdmin($actor)) {
+            return response()->json(['message' => 'Forbidden: only Super Admins can unban accounts.'], 403);
+        }
+
+        $admin = Admin::query()->where('id', $id)->firstOrFail();
+
+        $admin->is_banned = false;
+        $admin->save();
+
+        return response()->json([
+            'message' => "Admin account {$admin->username} has been unbanned.",
+            'user' => $this->transform($admin),
+        ]);
+    }
+
     private function transform(Admin $admin): array
     {
         return [
@@ -360,6 +406,7 @@ class AdminUserController extends Controller
             'supplier_id' => $admin->supplier_id ? (int) $admin->supplier_id : null,
             'supplier_name' => $admin->supplier?->s_company ?: $admin->supplier?->s_name,
             'admin_permissions' => AdminAccess::permissionsForAdmin($admin),
+            'is_banned' => (bool) $admin->is_banned,
         ];
     }
 
