@@ -203,6 +203,7 @@ Route::prefix('supplier/invites')->group(function () {
 Route::middleware(['auth:sanctum', 'admin.actor'])->prefix('admin/auth')->group(function () {
     Route::post('/logout', [AdminAuthController::class, 'logout']);
     Route::get('/me', [AdminAuthController::class, 'me']);
+    Route::put('/me', [AdminAuthController::class, 'updateMe']);
 });
 
 Route::middleware(['auth:sanctum', 'supplier.actor'])->prefix('supplier/auth')->group(function () {

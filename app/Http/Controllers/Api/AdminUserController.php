@@ -108,19 +108,33 @@ class AdminUserController extends Controller
 
     public function showInvite(string $token)
     {
-        $payload = $this->getInvitePayload($token);
+        $payload = $this->getRawInvitePayload($token);
         if (!$payload) {
-            return response()->json(['message' => 'Invite link is invalid or expired.'], 404);
+            return response()->json([
+                'status' => 'invalid',
+                'message' => 'Invite link is invalid.',
+            ], 404);
+        }
+
+        if ($this->isInviteExpired($payload)) {
+            return response()->json([
+                'status' => 'expired',
+                'message' => 'This invite link has expired.',
+                'invite' => $this->transformInvitePayload($payload),
+            ], 410);
+        }
+
+        if (($payload['status'] ?? 'pending') === 'accepted') {
+            return response()->json([
+                'status' => 'accepted',
+                'message' => 'This admin account has already been activated.',
+                'invite' => $this->transformInvitePayload($payload),
+            ]);
         }
 
         return response()->json([
-            'invite' => [
-                'name' => (string) $payload['name'],
-                'username' => (string) $payload['username'],
-                'email' => (string) ($payload['email'] ?? ''),
-                'role' => $this->roleFromLevel((int) $payload['user_level_id']),
-                'expires_at' => (string) $payload['expires_at'],
-            ],
+            'status' => 'pending',
+            'invite' => $this->transformInvitePayload($payload),
         ]);
     }
 
@@ -131,11 +145,24 @@ class AdminUserController extends Controller
             'password' => 'required|string|min:8|confirmed',
         ]);
 
-        $payload = $this->getInvitePayload((string) $validated['token']);
+        $token = (string) $validated['token'];
+        $payload = $this->getRawInvitePayload($token);
         if (!$payload) {
             throw ValidationException::withMessages([
-                'token' => ['Invite link is invalid or expired.'],
+                'token' => ['Invite link is invalid.'],
             ]);
+        }
+
+        if ($this->isInviteExpired($payload)) {
+            throw ValidationException::withMessages([
+                'token' => ['This invite link has expired.'],
+            ]);
+        }
+
+        if (($payload['status'] ?? 'pending') === 'accepted') {
+            return response()->json([
+                'message' => 'This admin account has already been activated. You may sign in.',
+            ], 409);
         }
 
         $email = trim((string) ($payload['email'] ?? ''));
@@ -149,10 +176,12 @@ class AdminUserController extends Controller
             ->exists();
 
         if ($alreadyExists) {
-            $this->inviteCacheStore()->forget($this->inviteCacheKey((string) $validated['token']));
+            $payload['status'] = 'accepted';
+            $payload['accepted_at'] = now()->toIso8601String();
+            $this->storeInvitePayload($token, $payload);
 
             return response()->json([
-                'message' => 'This admin account has already been created or is no longer available.',
+                'message' => 'This admin account has already been activated. You may sign in.',
             ], 409);
         }
 
@@ -169,7 +198,10 @@ class AdminUserController extends Controller
             ),
         ]);
 
-        $this->inviteCacheStore()->forget($this->inviteCacheKey((string) $validated['token']));
+        $payload['status'] = 'accepted';
+        $payload['accepted_at'] = now()->toIso8601String();
+        $payload['activated_admin_id'] = (int) $admin->id;
+        $this->storeInvitePayload($token, $payload);
 
         return response()->json([
             'message' => 'Your admin account is now active. You may sign in.',
@@ -348,9 +380,11 @@ class AdminUserController extends Controller
             ),
             'created_by' => $actorId,
             'expires_at' => $expiresAt->toIso8601String(),
+            'status' => 'pending',
+            'accepted_at' => null,
         ];
 
-        $this->inviteCacheStore()->forever($this->inviteCacheKey($token), $payload);
+        $this->storeInvitePayload($token, $payload);
 
         $setupUrl = sprintf(
             '%s/admin-setup?token=%s',
@@ -392,18 +426,42 @@ class AdminUserController extends Controller
 
     private function getInvitePayload(string $token): ?array
     {
-        $payload = $this->inviteCacheStore()->get($this->inviteCacheKey($token));
-        if (! is_array($payload)) {
-            return null;
-        }
-
-        $expiresAt = isset($payload['expires_at']) ? Carbon::parse((string) $payload['expires_at']) : null;
-        if (! $expiresAt || $expiresAt->isPast()) {
-            $this->inviteCacheStore()->forget($this->inviteCacheKey($token));
+        $payload = $this->getRawInvitePayload($token);
+        if (! $payload || $this->isInviteExpired($payload)) {
             return null;
         }
 
         return $payload;
+    }
+
+    private function getRawInvitePayload(string $token): ?array
+    {
+        $payload = $this->inviteCacheStore()->get($this->inviteCacheKey($token));
+        return is_array($payload) ? $payload : null;
+    }
+
+    private function isInviteExpired(array $payload): bool
+    {
+        $expiresAt = isset($payload['expires_at']) ? Carbon::parse((string) $payload['expires_at']) : null;
+        return ! $expiresAt || $expiresAt->isPast();
+    }
+
+    private function storeInvitePayload(string $token, array $payload): void
+    {
+        $this->inviteCacheStore()->forever($this->inviteCacheKey($token), $payload);
+    }
+
+    private function transformInvitePayload(array $payload): array
+    {
+        return [
+            'name' => (string) ($payload['name'] ?? ''),
+            'username' => (string) ($payload['username'] ?? ''),
+            'email' => (string) ($payload['email'] ?? ''),
+            'role' => $this->roleFromLevel((int) ($payload['user_level_id'] ?? 0)),
+            'expires_at' => (string) ($payload['expires_at'] ?? ''),
+            'status' => (string) ($payload['status'] ?? 'pending'),
+            'accepted_at' => isset($payload['accepted_at']) ? (string) $payload['accepted_at'] : null,
+        ];
     }
 
     private function inviteCacheKey(string $token): string

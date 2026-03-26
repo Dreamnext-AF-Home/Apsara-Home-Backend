@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
+use Illuminate\Database\QueryException;
 use Illuminate\Validation\ValidationException;
 
 class AdminAuthController extends Controller
@@ -63,6 +64,7 @@ class AdminAuthController extends Controller
                 'user_level_id' => (int) $admin->user_level_id,
                 'supplier_id' => $admin->supplier_id ? (int) $admin->supplier_id : null,
                 'admin_permissions' => AdminAccess::permissionsForAdmin($admin),
+                'avatar_url' => (string) ($admin->avatar_url ?? ''),
             ],
             'token' => $token,
         ]);
@@ -183,6 +185,57 @@ class AdminAuthController extends Controller
             'user_level_id' => (int) $admin->user_level_id,
             'supplier_id' => $admin->supplier_id ? (int) $admin->supplier_id : null,
             'admin_permissions' => AdminAccess::permissionsForAdmin($admin),
+            'avatar_url' => (string) ($admin->avatar_url ?? ''),
+        ]);
+    }
+
+    public function updateMe(Request $request)
+    {
+        /** @var Admin|null $admin */
+        $admin = $request->user();
+
+        if (! $admin) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        }
+
+        $validated = $request->validate([
+            'name' => 'sometimes|nullable|string|max:255',
+            'avatar_url' => 'sometimes|nullable|url|max:1200',
+        ]);
+
+        if (array_key_exists('name', $validated)) {
+            $admin->fname = trim((string) $validated['name']) !== '' ? trim((string) $validated['name']) : $admin->fname;
+        }
+
+        if (array_key_exists('avatar_url', $validated)) {
+            $admin->avatar_url = $validated['avatar_url'] ?: null;
+        }
+
+        try {
+            $admin->save();
+        } catch (QueryException $e) {
+            $message = $e->getMessage();
+            if (str_contains($message, 'avatar_url')) {
+                return response()->json([
+                    'message' => 'Admin profile picture support is not ready on the backend yet. Please run php artisan migrate first.',
+                ], 500);
+            }
+
+            throw $e;
+        }
+
+        return response()->json([
+            'message' => 'Admin profile updated successfully.',
+            'profile' => [
+                'id' => (int) $admin->id,
+                'name' => (string) ($admin->fname ?: $admin->username),
+                'email' => (string) $admin->user_email,
+                'role' => AdminAccess::roleFromLevel((int) $admin->user_level_id),
+                'user_level_id' => (int) $admin->user_level_id,
+                'supplier_id' => $admin->supplier_id ? (int) $admin->supplier_id : null,
+                'admin_permissions' => AdminAccess::permissionsForAdmin($admin),
+                'avatar_url' => (string) ($admin->avatar_url ?? ''),
+            ],
         ]);
     }
 
