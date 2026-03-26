@@ -18,6 +18,7 @@ use Illuminate\Validation\ValidationException;
 class SupplierUserController extends Controller
 {
     private const INVITE_TTL_MINUTES = 1440;
+    private const INVITE_CACHE_STORE = 'database';
 
     public function index(Request $request)
     {
@@ -126,7 +127,7 @@ class SupplierUserController extends Controller
         );
 
         if ($duplicateField) {
-            Cache::forget($this->inviteCacheKey((string) $validated['token']));
+            $this->inviteCacheStore()->forget($this->inviteCacheKey((string) $validated['token']));
 
             return response()->json([
                 'message' => $duplicateField === 'username'
@@ -149,7 +150,7 @@ class SupplierUserController extends Controller
             'su_last_loginloc' => '0',
         ]);
 
-        Cache::forget($this->inviteCacheKey((string) $validated['token']));
+        $this->inviteCacheStore()->forget($this->inviteCacheKey((string) $validated['token']));
 
         return response()->json([
             'message' => 'Your supplier account is now active. You may sign in.',
@@ -217,7 +218,7 @@ class SupplierUserController extends Controller
             'expires_at' => $expiresAt->toIso8601String(),
         ];
 
-        Cache::forever($this->inviteCacheKey($token), $payload);
+        $this->inviteCacheStore()->forever($this->inviteCacheKey($token), $payload);
 
         $setupUrl = sprintf(
             '%s/supplier-setup?token=%s',
@@ -276,14 +277,14 @@ class SupplierUserController extends Controller
 
     private function getInvitePayload(string $token): ?array
     {
-        $payload = Cache::get($this->inviteCacheKey($token));
+        $payload = $this->inviteCacheStore()->get($this->inviteCacheKey($token));
         if (! is_array($payload)) {
             return null;
         }
 
         $expiresAt = isset($payload['expires_at']) ? Carbon::parse((string) $payload['expires_at']) : null;
         if (! $expiresAt || $expiresAt->isPast()) {
-            Cache::forget($this->inviteCacheKey($token));
+            $this->inviteCacheStore()->forget($this->inviteCacheKey($token));
             return null;
         }
 
@@ -293,6 +294,11 @@ class SupplierUserController extends Controller
     private function inviteCacheKey(string $token): string
     {
         return 'supplier:invite:' . $token;
+    }
+
+    private function inviteCacheStore()
+    {
+        return Cache::store(self::INVITE_CACHE_STORE);
     }
 
     private function ensureUniqueSupplierCredentials(string $username, ?string $email = null): void

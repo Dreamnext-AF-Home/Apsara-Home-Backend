@@ -19,6 +19,7 @@ use Illuminate\Validation\ValidationException;
 class AdminUserController extends Controller
 {
     private const INVITE_TTL_MINUTES = 1440;
+    private const INVITE_CACHE_STORE = 'database';
 
     public function index(Request $request)
     {
@@ -148,7 +149,7 @@ class AdminUserController extends Controller
             ->exists();
 
         if ($alreadyExists) {
-            Cache::forget($this->inviteCacheKey((string) $validated['token']));
+            $this->inviteCacheStore()->forget($this->inviteCacheKey((string) $validated['token']));
 
             return response()->json([
                 'message' => 'This admin account has already been created or is no longer available.',
@@ -168,7 +169,7 @@ class AdminUserController extends Controller
             ),
         ]);
 
-        Cache::forget($this->inviteCacheKey((string) $validated['token']));
+        $this->inviteCacheStore()->forget($this->inviteCacheKey((string) $validated['token']));
 
         return response()->json([
             'message' => 'Your admin account is now active. You may sign in.',
@@ -349,7 +350,7 @@ class AdminUserController extends Controller
             'expires_at' => $expiresAt->toIso8601String(),
         ];
 
-        Cache::forever($this->inviteCacheKey($token), $payload);
+        $this->inviteCacheStore()->forever($this->inviteCacheKey($token), $payload);
 
         $setupUrl = sprintf(
             '%s/admin-setup?token=%s',
@@ -391,14 +392,14 @@ class AdminUserController extends Controller
 
     private function getInvitePayload(string $token): ?array
     {
-        $payload = Cache::get($this->inviteCacheKey($token));
+        $payload = $this->inviteCacheStore()->get($this->inviteCacheKey($token));
         if (! is_array($payload)) {
             return null;
         }
 
         $expiresAt = isset($payload['expires_at']) ? Carbon::parse((string) $payload['expires_at']) : null;
         if (! $expiresAt || $expiresAt->isPast()) {
-            Cache::forget($this->inviteCacheKey($token));
+            $this->inviteCacheStore()->forget($this->inviteCacheKey($token));
             return null;
         }
 
@@ -408,6 +409,11 @@ class AdminUserController extends Controller
     private function inviteCacheKey(string $token): string
     {
         return 'admin:invite:' . $token;
+    }
+
+    private function inviteCacheStore()
+    {
+        return Cache::store(self::INVITE_CACHE_STORE);
     }
 
     private function roleLabel(int $level): string
