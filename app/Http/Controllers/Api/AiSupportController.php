@@ -24,6 +24,7 @@ class AiSupportController extends Controller
                 'quick_replies' => $this->defaultQuickReplies(),
                 'product_cards' => [],
                 'brand_cards' => [],
+                'category_cards' => [],
                 'brand_view_all_url' => '',
             ]);
         }
@@ -62,6 +63,7 @@ class AiSupportController extends Controller
         $quickReplies = $this->defaultQuickReplies();
         $productCards = [];
         $brandCards = [];
+        $categoryCards = [];
         $brandViewAllUrl = '';
 
         $detectedBrand = $this->detectBrand($qLower);
@@ -161,20 +163,26 @@ class AiSupportController extends Controller
                                 $reply = 'Here are matching products for "' . $question . '".';
                                 $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
                             } else {
-                            $specificCards = [];
-                            $tokens = $this->buildSearchTokens($question);
-                            if (count($tokens) >= 2 || strlen($question) >= 8) {
-                                $specificCards = $this->getExactOrClosestProduct(
-                                    $question,
-                                    $detectedBrandId
-                                );
-                            }
+                                $matchedCategories = $this->searchCategories($question, 6);
+                                if (!empty($matchedCategories)) {
+                                    $categoryCards = $matchedCategories;
+                                    $reply = 'I found matching categories you can browse.';
+                                    $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
+                                } else {
+                                    $specificCards = [];
+                                    $tokens = $this->buildSearchTokens($question);
+                                    if (count($tokens) >= 2 || strlen($question) >= 8) {
+                                        $specificCards = $this->getExactOrClosestProduct(
+                                            $question,
+                                            $detectedBrandId
+                                        );
+                                    }
 
-                            if (!empty($specificCards)) {
-                                $productCards = $specificCards;
-                                $reply = 'Here is the product you searched.';
-                                $quickReplies = ['Product specifications', 'Track my order', 'Contact support'];
-                            } elseif (preg_match('/\b(minimalist|minimalist style)\b/i', $qLower)) {
+                                    if (!empty($specificCards)) {
+                                        $productCards = $specificCards;
+                                        $reply = 'Here is the product you searched.';
+                                        $quickReplies = ['Product specifications', 'Track my order', 'Contact support'];
+                                    } elseif (preg_match('/\b(minimalist|minimalist style)\b/i', $qLower)) {
                         $reply = "Minimalist style focuses on clean lines, neutral tones, and functional pieces.\nRecommended items:\n- Melo Reversible Fabric Sofa Set\n- Orla Fabric Sofa Bed\n- Flow Bench Sofa\n- Simple side tables, shelves, coffee tables, and console tables.";
                         $productCards = $this->getTopicCards(
                             ['minimalist','sofa','bench','coffee table','console table','side table','shelf'],
@@ -535,6 +543,8 @@ class AiSupportController extends Controller
                     } else {
                         $reply = 'I can help with order tracking, payment methods, contact details, and product prices. Tell me what you need.';
                     }
+                                }
+                            }
                     }
                     }
                 }
@@ -555,6 +565,7 @@ class AiSupportController extends Controller
             'quick_replies' => $quickReplies,
             'product_cards' => $productCards,
             'brand_cards' => $brandCards,
+            'category_cards' => $categoryCards,
             'brand_view_all_url' => $brandViewAllUrl,
         ]);
     }
@@ -673,6 +684,73 @@ class AiSupportController extends Controller
                 'description' => $descText,
                 'image' => $image,
                 'url' => $url,
+            ];
+        }
+
+        return $cards;
+    }
+
+    private function searchCategories(string $search, int $limit = 6): array
+    {
+        $search = trim($search);
+        if ($search === '') {
+            return [];
+        }
+
+        $tokens = $this->buildSearchTokens($search);
+        $like = '%' . $search . '%';
+
+        $query = DB::table('tbl_category as c')
+            ->leftJoin('tbl_product as p', function ($join) {
+                $join->on('p.pd_catid', '=', 'c.cat_id')
+                    ->whereIn('p.pd_status', [1, 2]);
+            })
+            ->select([
+                'c.cat_id',
+                'c.cat_name',
+                'c.cat_url',
+                DB::raw('COUNT(DISTINCT p.pd_id) as product_count'),
+            ])
+            ->where(function ($builder) use ($like, $tokens) {
+                $builder
+                    ->where('c.cat_name', 'ilike', $like)
+                    ->orWhere('c.cat_url', 'ilike', $like);
+
+                foreach ($tokens as $token) {
+                    $tokenLike = '%' . $token . '%';
+                    $builder
+                        ->orWhere('c.cat_name', 'ilike', $tokenLike)
+                        ->orWhere('c.cat_url', 'ilike', $tokenLike);
+                }
+            })
+            ->groupBy('c.cat_id', 'c.cat_name', 'c.cat_url')
+            ->orderByDesc(DB::raw('COUNT(DISTINCT p.pd_id)'))
+            ->orderBy('c.cat_name')
+            ->limit(max(1, min($limit, 10)));
+
+        $rows = $query->get();
+        $frontendBase = $this->frontendBaseUrl();
+        $cards = [];
+
+        foreach ($rows as $row) {
+            $name = trim((string) ($row->cat_name ?? ''));
+            if ($name === '') {
+                continue;
+            }
+
+            $slug = trim((string) ($row->cat_url ?? ''));
+            if ($slug === '') {
+                $slug = Str::slug($name);
+            }
+
+            if ($slug === '') {
+                continue;
+            }
+
+            $cards[] = [
+                'name' => $name,
+                'count' => (int) ($row->product_count ?? 0),
+                'url' => ($frontendBase !== '' ? $frontendBase : '') . '/category/' . rawurlencode($slug),
             ];
         }
 
