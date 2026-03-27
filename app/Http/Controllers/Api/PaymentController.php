@@ -64,24 +64,17 @@ class PaymentController extends Controller
         ]);
 
         $normalizedReferral = $this->normalizeReferralValue((string) data_get($validated, 'customer.referred_by', ''));
-
-        if ($normalizedReferral === '') {
-            return response()->json([
-                'message' => 'The referred by field is required.',
-                'errors' => [
-                    'customer.referred_by' => ['The referred by field is required.'],
-                ],
-            ], 422);
-        }
-
-        $referrer = $this->resolveValidReferrer($normalizedReferral);
-        if (!$referrer) {
-            return response()->json([
-                'message' => 'Referral code is invalid or referrer account is not verified.',
-                'errors' => [
-                    'customer.referred_by' => ['Referral code is invalid or referrer account is not verified.'],
-                ],
-            ], 422);
+        $referrer = null;
+        if ($normalizedReferral !== '') {
+            $referrer = $this->resolveValidReferrer($normalizedReferral);
+            if (!$referrer) {
+                return response()->json([
+                    'message' => 'Referral code is invalid or referrer account is not verified.',
+                    'errors' => [
+                        'customer.referred_by' => ['Referral code is invalid or referrer account is not verified.'],
+                    ],
+                ], 422);
+            }
         }
 
         $secretKey = config('services.paymongo.secret_key');
@@ -125,6 +118,16 @@ class PaymentController extends Controller
             ],
         ];
 
+        $customerPayload = [
+            'name' => trim((string) ($validated['customer']['name'] ?? '')),
+            'email' => trim((string) ($validated['customer']['email'] ?? '')),
+            'phone' => trim((string) ($validated['customer']['phone'] ?? '')),
+        ];
+        $customerPayload = array_filter($customerPayload, static fn ($value) => $value !== '');
+        if (!empty($customerPayload)) {
+            $payload['data']['attributes']['customer'] = $customerPayload;
+        }
+
         $res = Http::withBasicAuth($secretKey, '')
             ->post($this->paymongoApiUrl('/v1/checkout_sessions'), $payload);
 
@@ -146,8 +149,8 @@ class PaymentController extends Controller
                 'email' => $validated['customer']['email'] ?? null,
                 'phone' => $validated['customer']['phone'] ?? null,
                 'address' => $validated['customer']['address'] ?? null,
-                'referred_by' => $normalizedReferral,
-                'referrer_user_id' => (int) $referrer->c_userid,
+                'referred_by' => $normalizedReferral !== '' ? $normalizedReferral : null,
+                'referrer_user_id' => $referrer ? (int) $referrer->c_userid : null,
                 'description' => $validated['description'],
                 'amount' => (float) $computedAmount,
                 'payment_method' => $validated['payment_method'],
