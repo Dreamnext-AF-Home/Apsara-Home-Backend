@@ -777,6 +777,11 @@ class ProductController extends Controller
         return [
             'id'          => (int)   $p->pd_id,
             'supplierId'  => (int)   ($p->pd_supplier ?? 0),
+            'supplierName' => $p->supplier
+                ? (trim((string) ($p->supplier->s_company ?? '')) !== ''
+                    ? trim((string) $p->supplier->s_company)
+                    : (trim((string) ($p->supplier->s_name ?? '')) !== '' ? trim((string) $p->supplier->s_name) : null))
+                : null,
             'name'        => (string) ($p->pd_name ?? ''),
             'description'       => $p->pd_description ?? null,
             'specifications'    => $p->pd_specifications ?? null,
@@ -913,6 +918,7 @@ class ProductController extends Controller
                 ->with([
                     'photos:pp_id,pp_pdid,pp_filename,pp_varone,pp_date',
                     'brand:pb_id,pb_name,pb_status',
+                    'supplier:s_id,s_company,s_name',
                     'creationActivity:pal_id,pal_product_id,pal_actor_name,pal_actor_email,pal_actor_role,pal_created_at',
                     'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_width,pv_dimension,pv_height,pv_price_srp,pv_price_dp,pv_price_member,pv_prodpv,pv_qty,pv_status,pv_date',
                     'variants.photos:pvp_id,pvp_pvid,pvp_filename,pvp_sort,pvp_date',

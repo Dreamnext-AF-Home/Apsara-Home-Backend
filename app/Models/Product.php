@@ -90,6 +90,11 @@ class Product extends Model
         return $this->belongsTo(ProductBrand::class, 'pd_brand_type', 'pb_id');
     }
 
+    public function supplier()
+    {
+        return $this->belongsTo(Supplier::class, 'pd_supplier', 's_id');
+    }
+
     public function creationActivity()
     {
         return $this->hasOne(ProductActivityLog::class, 'pal_product_id', 'pd_id')
