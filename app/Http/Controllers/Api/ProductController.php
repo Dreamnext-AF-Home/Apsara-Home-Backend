@@ -11,6 +11,7 @@ use App\Models\ProductPhoto;
 use App\Models\ProductVariant;
 use App\Models\ProductVariantPhoto;
 use App\Models\ProductBrand;
+use App\Models\Supplier;
 use App\Models\SupplierCategoryAccess;
 use App\Models\SupplierUser;
 use Illuminate\Http\JsonResponse;
@@ -40,6 +41,79 @@ class ProductController extends Controller
         return $user instanceof Admin ? $user : null;
     }
 
+    private function resolveSupplierBrandType(int $supplierId): int
+    {
+        if ($supplierId <= 0) {
+            return 0;
+        }
+
+        $supplier = Supplier::query()->find($supplierId);
+        if (! $supplier) {
+            return 0;
+        }
+
+        $candidates = [
+            (string) ($supplier->s_company ?? ''),
+            (string) ($supplier->s_name ?? ''),
+        ];
+        $normalizedCandidates = collect($candidates)
+            ->map(fn ($value) => strtolower(preg_replace('/[^a-z0-9]/i', '', trim($value)) ?? ''))
+            ->filter(fn ($value) => $value !== '')
+            ->values();
+
+        if ($normalizedCandidates->isEmpty()) {
+            return 0;
+        }
+
+        $brands = ProductBrand::query()->select(['pb_id', 'pb_name'])->get();
+        foreach ($brands as $brand) {
+            $brandKey = strtolower(preg_replace('/[^a-z0-9]/i', '', (string) ($brand->pb_name ?? '')) ?? '');
+            if ($brandKey === '') {
+                continue;
+            }
+            foreach ($normalizedCandidates as $candidate) {
+                if ($candidate !== '' && $candidate === $brandKey) {
+                    return (int) $brand->pb_id;
+                }
+            }
+        }
+
+        $bestId = 0;
+        $bestScore = 0;
+        $bestLen = 0;
+        foreach ($brands as $brand) {
+            $brandKey = strtolower(preg_replace('/[^a-z0-9]/i', '', (string) ($brand->pb_name ?? '')) ?? '');
+            if ($brandKey === '' || strlen($brandKey) < 2) {
+                continue;
+            }
+
+            foreach ($normalizedCandidates as $candidate) {
+                if ($candidate === '') {
+                    continue;
+                }
+                $score = 0;
+                if ($candidate === $brandKey) {
+                    $score = 3;
+                } elseif (str_contains($candidate, $brandKey)) {
+                    $score = 2;
+                } elseif (str_contains($brandKey, $candidate)) {
+                    $score = 1;
+                }
+
+                if ($score > 0) {
+                    $len = strlen($brandKey);
+                    if ($score > $bestScore || ($score === $bestScore && $len > $bestLen)) {
+                        $bestScore = $score;
+                        $bestLen = $len;
+                        $bestId = (int) $brand->pb_id;
+                    }
+                }
+            }
+        }
+
+        return $bestId;
+    }
+
     private function resolveSupplierUser(Request $request): ?SupplierUser
     {
         $user = $request->user();
@@ -64,13 +138,30 @@ class ProductController extends Controller
     private function scopeQueryToActor($query, ?Admin $admin, ?SupplierUser $supplierUser)
     {
         if ($supplierUser) {
-            $query->where('pd_supplier', (int) $supplierUser->su_supplier);
+            $supplierId = (int) $supplierUser->su_supplier;
+            $brandTypeValue = $supplierId > 0 ? $this->resolveSupplierBrandType($supplierId) : 0;
+            if ($brandTypeValue > 0) {
+                $query->where(function ($inner) use ($supplierId, $brandTypeValue) {
+                    $inner->where('pd_supplier', $supplierId)
+                        ->orWhere('pd_brand_type', $brandTypeValue);
+                });
+            } else {
+                $query->where('pd_supplier', $supplierId);
+            }
             return $query;
         }
 
         if ($admin && $this->roleFromLevel((int) $admin->user_level_id) === 'supplier_admin') {
             $supplierId = (int) ($admin->supplier_id ?? 0);
-            $query->where('pd_supplier', $supplierId > 0 ? $supplierId : -1);
+            $brandTypeValue = $supplierId > 0 ? $this->resolveSupplierBrandType($supplierId) : 0;
+            if ($brandTypeValue > 0) {
+                $query->where(function ($inner) use ($supplierId, $brandTypeValue) {
+                    $inner->where('pd_supplier', $supplierId > 0 ? $supplierId : -1)
+                        ->orWhere('pd_brand_type', $brandTypeValue);
+                });
+            } else {
+                $query->where('pd_supplier', $supplierId > 0 ? $supplierId : -1);
+            }
         }
 
         return $query;
@@ -544,7 +635,7 @@ class ProductController extends Controller
         $product = Product::query()
             ->select([
                 'pd_id', 'pd_name', 'pd_description', 'pd_specifications', 'pd_material', 'pd_warranty',
-                'pd_catid', 'pd_catsubid', 'pd_room_type', 'pd_brand_type',
+                'pd_catid', 'pd_catsubid', 'pd_room_type', 'pd_brand_type', 'pd_supplier',
                 'pd_price_srp', 'pd_price_dp', 'pd_price_member', 'pd_qty',
                 'pd_prodpv',
                 'pd_weight', 'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
@@ -577,7 +668,7 @@ class ProductController extends Controller
         $product = Product::query()
             ->select([
                 'pd_id', 'pd_name', 'pd_description', 'pd_specifications', 'pd_material', 'pd_warranty',
-                'pd_catid', 'pd_catsubid', 'pd_room_type',
+                'pd_catid', 'pd_catsubid', 'pd_room_type', 'pd_supplier',
                 'pd_price_srp', 'pd_price_dp', 'pd_price_member', 'pd_qty',
                 'pd_prodpv',
                 'pd_weight', 'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
@@ -619,7 +710,7 @@ class ProductController extends Controller
             $query = Product::query()
                 ->select([
                     'pd_id', 'pd_name', 'pd_description', 'pd_specifications', 'pd_material', 'pd_warranty',
-                    'pd_catid', 'pd_catsubid', 'pd_room_type', 'pd_brand_type',
+                    'pd_catid', 'pd_catsubid', 'pd_room_type', 'pd_brand_type', 'pd_supplier',
                     'pd_price_srp', 'pd_price_dp', 'pd_price_member', 'pd_qty',
                     'pd_prodpv',
                     'pd_weight', 'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
@@ -656,13 +747,34 @@ class ProductController extends Controller
                 })
                 ->orderByDesc('pd_id');
 
-            $this->scopeQueryToActor($query, $admin, $supplierUser);
-
             if ($supplierUser) {
-                $query->where('pd_supplier', (int) $supplierUser->su_supplier);
+                $supplierId = (int) $supplierUser->su_supplier;
+                $brandTypeValue = $brandType !== '' ? (int) $brandType : 0;
+                if ($brandTypeValue <= 0 && $supplierId > 0) {
+                    $brandTypeValue = $this->resolveSupplierBrandType($supplierId);
+                }
+                if ($brandTypeValue > 0) {
+                    $query->where(function ($q) use ($supplierId, $brandTypeValue) {
+                        $q->where('pd_supplier', $supplierId)
+                          ->orWhere('pd_brand_type', $brandTypeValue);
+                    });
+                } else {
+                    $query->where('pd_supplier', $supplierId);
+                }
             } elseif ($admin && $this->roleFromLevel((int) $admin->user_level_id) === 'supplier_admin') {
                 $supplierId = (int) ($admin->supplier_id ?? 0);
-                $query->where('pd_supplier', $supplierId > 0 ? $supplierId : -1);
+                $brandTypeValue = $brandType !== '' ? (int) $brandType : 0;
+                if ($brandTypeValue <= 0 && $supplierId > 0) {
+                    $brandTypeValue = $this->resolveSupplierBrandType($supplierId);
+                }
+                if ($brandTypeValue > 0) {
+                    $query->where(function ($q) use ($supplierId, $brandTypeValue) {
+                        $q->where('pd_supplier', $supplierId > 0 ? $supplierId : -1)
+                          ->orWhere('pd_brand_type', $brandTypeValue);
+                    });
+                } else {
+                    $query->where('pd_supplier', $supplierId > 0 ? $supplierId : -1);
+                }
             } elseif ($requestedSupplierId > 0 && $admin) {
                 $query->where('pd_supplier', $requestedSupplierId);
             }
