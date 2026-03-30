@@ -6,6 +6,7 @@ use Illuminate\Http\Client\Response;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
+use JsonException;
 use RuntimeException;
 
 class JntShippingService
@@ -53,36 +54,15 @@ class JntShippingService
 
         $encryptedPassword = $this->encryptPassword($password);
         $businessDigest = $this->generateBusinessDigest($customerCode, $password, $privateKey);
-        $headerDigestOverride = trim((string) config('services.jnt.header_digest_override', ''));
-        $headerDigest = $headerDigestOverride !== ''
-            ? $headerDigestOverride
-            : $this->generateHeaderDigest($bizContent, $privateKey);
         $timestamp = (string) now()->valueOf();
+        $headerDigestOverride = trim((string) config('services.jnt.header_digest_override', ''));
+        $formPayload = ['bizContent' => $bizContent];
+        $digestCandidates = $this->buildHeaderDigestCandidates($bizContent, $privateKey, $apiAccount, $timestamp, $headerDigestOverride);
+        $lastAttemptDebug = null;
+        $lastError = null;
 
-        $formPayload = [
-            'customerCode' => $customerCode,
-            'pwd' => $encryptedPassword,
-            'digest' => $businessDigest,
-            'apiAccount' => $apiAccount,
-            'bizContent' => $bizContent,
-            'dataDigest' => $headerDigest,
-        ];
-
-        $client = Http::timeout($timeout)
-            ->acceptJson()
-            ->asForm()
-            ->withHeaders([
-                'apiAccount' => $apiAccount,
-                'digest' => $headerDigest,
-                'timestamp' => $timestamp,
-            ]);
-
-        $response = $method === 'get'
-            ? $client->get($url, $formPayload)
-            : $client->post($url, $formPayload);
-
-        return $this->decodeResponse($response, $url, [
-            'request' => [
+        foreach ($digestCandidates as $digestLabel => $headerDigest) {
+            $attemptDebug = [
                 'endpoint' => $meta['endpoint'] ?? null,
                 'url' => $url,
                 'headers' => [
@@ -92,11 +72,49 @@ class JntShippingService
                 ],
                 'form' => $formPayload,
                 'biz_payload' => $bizPayload,
-                'header_digest_override_used' => $headerDigestOverride !== '',
+                'header_digest_variant' => $digestLabel,
+                'header_digest_override_present' => $headerDigestOverride !== '',
                 'header_digest_override_value' => $headerDigestOverride !== '' ? $headerDigestOverride : null,
                 'header_digest_candidates' => $this->debugHeaderDigestCandidates($bizContent, $privateKey),
-            ],
-        ]);
+            ];
+
+            $client = Http::timeout($timeout)
+                ->acceptJson()
+                ->asForm()
+                ->withHeaders([
+                    'apiAccount' => $apiAccount,
+                    'digest' => $headerDigest,
+                    'timestamp' => $timestamp,
+                ]);
+
+            $response = $method === 'get'
+                ? $client->get($url, $formPayload)
+                : $client->post($url, $formPayload);
+
+            if ($response->successful()) {
+                return $this->decodeResponse($response, $url, [
+                    'request' => $attemptDebug,
+                ]);
+            }
+
+            $lastAttemptDebug = $attemptDebug;
+            $lastError = $this->extractErrorPayload($response);
+
+            if (!$this->isHeaderSignatureFailure($lastError)) {
+                return $this->decodeResponse($response, $url, [
+                    'request' => $attemptDebug,
+                ]);
+            }
+        }
+
+        throw new RuntimeException(
+            sprintf(
+                'J&T request failed (%s) at %s: %s',
+                $lastError['status'] ?? 'unknown',
+                $url,
+                $this->encodeDebugPayload(array_merge($lastError['payload'] ?? [], ['_debug' => $lastAttemptDebug]))
+            )
+        );
     }
 
     private function decodeResponse(Response $response, string $url, array $context = []): array
@@ -138,17 +156,44 @@ class JntShippingService
     private function encryptPassword(string $password): string
     {
         $suffix = (string) config('services.jnt.password_suffix', 'jadata236t2');
-        return md5($password . $suffix);
+        return strtoupper(md5($password . $suffix));
     }
 
     private function generateBusinessDigest(string $customerCode, string $password, string $privateKey): string
     {
-        return base64_encode(md5($customerCode . $password . $privateKey, true));
+        return base64_encode(md5($customerCode . $this->encryptPassword($password) . $privateKey, true));
     }
 
     private function generateHeaderDigest(string $bizContent, string $privateKey): string
     {
-        return base64_encode(md5($privateKey . $bizContent, true));
+        return base64_encode(md5($bizContent . $privateKey, true));
+    }
+
+    private function buildHeaderDigestCandidates(string $bizContent, string $privateKey, string $apiAccount, string $timestamp, string $headerDigestOverride = ''): array
+    {
+        $urlEncodedBizContent = urlencode($bizContent);
+        $candidates = [];
+
+        if ($headerDigestOverride !== '') {
+            $candidates['override'] = $headerDigestOverride;
+        }
+
+        $candidates['bizContent_plus_privateKey_raw_md5'] = base64_encode(md5($bizContent . $privateKey, true));
+        $candidates['privateKey_plus_bizContent_raw_md5'] = base64_encode(md5($privateKey . $bizContent, true));
+        $candidates['urlencoded_bizContent_plus_privateKey_raw_md5'] = base64_encode(md5($urlEncodedBizContent . $privateKey, true));
+        $candidates['privateKey_plus_urlencoded_bizContent_raw_md5'] = base64_encode(md5($privateKey . $urlEncodedBizContent, true));
+        $candidates['bizContent_plus_privateKey_hex_md5'] = base64_encode(md5($bizContent . $privateKey, false));
+        $candidates['privateKey_plus_bizContent_hex_md5'] = base64_encode(md5($privateKey . $bizContent, false));
+        $candidates['apiAccount_plus_timestamp_plus_privateKey_raw_md5'] = base64_encode(md5($apiAccount . $timestamp . $privateKey, true));
+        $candidates['timestamp_plus_apiAccount_plus_privateKey_raw_md5'] = base64_encode(md5($timestamp . $apiAccount . $privateKey, true));
+        $candidates['privateKey_plus_apiAccount_plus_timestamp_raw_md5'] = base64_encode(md5($privateKey . $apiAccount . $timestamp, true));
+        $candidates['privateKey_plus_timestamp_plus_apiAccount_raw_md5'] = base64_encode(md5($privateKey . $timestamp . $apiAccount, true));
+        $candidates['apiAccount_plus_timestamp_plus_bizContent_plus_privateKey_raw_md5'] = base64_encode(md5($apiAccount . $timestamp . $bizContent . $privateKey, true));
+        $candidates['timestamp_plus_apiAccount_plus_bizContent_plus_privateKey_raw_md5'] = base64_encode(md5($timestamp . $apiAccount . $bizContent . $privateKey, true));
+        $candidates['privateKey_plus_apiAccount_plus_timestamp_plus_bizContent_raw_md5'] = base64_encode(md5($privateKey . $apiAccount . $timestamp . $bizContent, true));
+        $candidates['privateKey_plus_timestamp_plus_apiAccount_plus_bizContent_raw_md5'] = base64_encode(md5($privateKey . $timestamp . $apiAccount . $bizContent, true));
+
+        return array_unique($candidates);
     }
 
     private function debugHeaderDigestCandidates(string $bizContent, string $privateKey): array
@@ -165,6 +210,33 @@ class JntShippingService
             'privateKey_plus_urlencoded_bizContent_hex_md5' => base64_encode(md5($privateKey . $urlEncodedBizContent, false)),
             'urlencoded_bizContent_plus_privateKey_hex_md5' => base64_encode(md5($urlEncodedBizContent . $privateKey, false)),
         ];
+    }
+
+    private function extractErrorPayload(Response $response): array
+    {
+        $json = $response->json();
+
+        return [
+            'status' => $response->status(),
+            'payload' => is_array($json) ? $json : ['raw' => $response->body()],
+        ];
+    }
+
+    private function isHeaderSignatureFailure(array $error): bool
+    {
+        $payload = $error['payload'] ?? [];
+
+        return (string) ($payload['code'] ?? '') === '145003030'
+            || Str::contains(Str::lower((string) ($payload['msg'] ?? '')), 'headers signature verification failed');
+    }
+
+    private function encodeDebugPayload(array $payload): string
+    {
+        try {
+            return json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            return '{}';
+        }
     }
 
     private function normalizeBizPayload(array $payload): array

@@ -63,9 +63,12 @@ class PaymentController extends Controller
             'order.handling_fee' => 'nullable|numeric|min:0',
         ]);
 
+        $customerId = auth('sanctum')->id();
+        $requiresReferral = !$customerId;
         $normalizedReferral = $this->normalizeReferralValue((string) data_get($validated, 'customer.referred_by', ''));
+        $referrer = null;
 
-        if ($normalizedReferral === '') {
+        if ($normalizedReferral === '' && $requiresReferral) {
             return response()->json([
                 'message' => 'The referred by field is required.',
                 'errors' => [
@@ -74,14 +77,16 @@ class PaymentController extends Controller
             ], 422);
         }
 
-        $referrer = $this->resolveValidReferrer($normalizedReferral);
-        if (!$referrer) {
-            return response()->json([
-                'message' => 'Referral code is invalid or referrer account is not verified.',
-                'errors' => [
-                    'customer.referred_by' => ['Referral code is invalid or referrer account is not verified.'],
-                ],
-            ], 422);
+        if ($normalizedReferral !== '') {
+            $referrer = $this->resolveValidReferrer($normalizedReferral);
+            if (!$referrer) {
+                return response()->json([
+                    'message' => 'Referral code is invalid or referrer account is not verified.',
+                    'errors' => [
+                        'customer.referred_by' => ['Referral code is invalid or referrer account is not verified.'],
+                    ],
+                ], 422);
+            }
         }
 
         $secretKey = config('services.paymongo.secret_key');
@@ -137,8 +142,6 @@ class PaymentController extends Controller
 
         $data = $res->json('data');
         $checkoutId = $data['id'] ?? null;
-        $customerId = auth('sanctum')->id();
-
         if ($checkoutId) {
             Cache::put("checkout_customer:{$checkoutId}", [
                 'customer_id' => $customerId ? (int) $customerId : null,
@@ -147,7 +150,7 @@ class PaymentController extends Controller
                 'phone' => $validated['customer']['phone'] ?? null,
                 'address' => $validated['customer']['address'] ?? null,
                 'referred_by' => $normalizedReferral,
-                'referrer_user_id' => (int) $referrer->c_userid,
+                'referrer_user_id' => $referrer ? (int) $referrer->c_userid : null,
                 'description' => $validated['description'],
                 'amount' => (float) $computedAmount,
                 'payment_method' => $validated['payment_method'],

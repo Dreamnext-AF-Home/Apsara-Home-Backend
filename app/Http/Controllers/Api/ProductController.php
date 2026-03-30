@@ -312,6 +312,7 @@ class ProductController extends Controller
             'actorName' => $log->pal_actor_name ? (string) $log->pal_actor_name : null,
             'actorEmail' => $log->pal_actor_email ? (string) $log->pal_actor_email : null,
             'actorRole' => $log->pal_actor_role ? (string) $log->pal_actor_role : null,
+            'changes' => is_array($log->pal_changes) ? array_values($log->pal_changes) : [],
             'createdAt' => optional($log->pal_created_at)->toIso8601String(),
         ];
     }
@@ -323,7 +324,8 @@ class ProductController extends Controller
         ?SupplierUser $supplierUser,
         ?Product $product = null,
         ?string $productName = null,
-        ?string $productSku = null
+        ?string $productSku = null,
+        ?array $changes = null
     ): void {
         $resolvedProductName = trim((string) ($productName ?? ($product?->pd_name ?? '')));
         $resolvedProductSku = trim((string) ($productSku ?? ($product?->pd_parent_sku ?? '')));
@@ -341,6 +343,7 @@ class ProductController extends Controller
                 'pal_actor_name' => $this->actorDisplayName($admin, $supplierUser),
                 'pal_actor_email' => $this->actorEmail($admin, $supplierUser),
                 'pal_actor_role' => $this->actorRoleLabel($admin, $supplierUser),
+                'pal_changes' => $changes ?: null,
                 'pal_created_at' => now(),
             ]);
         } catch (\Throwable $e) {
@@ -360,9 +363,10 @@ class ProductController extends Controller
         ?SupplierUser $supplierUser,
         ?Product $product = null,
         ?string $productName = null,
-        ?string $productSku = null
+        ?string $productSku = null,
+        ?array $changes = null
     ): void {
-        $this->createProductActivity($action, 'failed', $admin, $supplierUser, $product, $productName, $productSku);
+        $this->createProductActivity($action, 'failed', $admin, $supplierUser, $product, $productName, $productSku, $changes);
     }
 
     private function recordProductActivity(
@@ -371,9 +375,194 @@ class ProductController extends Controller
         ?Admin $admin,
         ?SupplierUser $supplierUser,
         ?string $productName = null,
-        ?string $productSku = null
+        ?string $productSku = null,
+        ?array $changes = null
     ): void {
-        $this->createProductActivity('' !== $action ? $action : 'updated', 'success', $admin, $supplierUser, $product, $productName, $productSku);
+        $this->createProductActivity('' !== $action ? $action : 'updated', 'success', $admin, $supplierUser, $product, $productName, $productSku, $changes);
+    }
+
+    private function normalizeImportBoolean(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_numeric($value)) {
+            return (int) $value === 1;
+        }
+
+        $normalized = strtolower(trim((string) $value));
+        return in_array($normalized, ['1', 'true', 'yes', 'y', 'on'], true);
+    }
+
+    private function normalizeImportImageList(mixed $value): array
+    {
+        if (is_array($value)) {
+            return collect($value)
+                ->filter(fn ($item) => is_string($item) && trim($item) !== '')
+                ->map(fn ($item) => trim((string) $item))
+                ->values()
+                ->all();
+        }
+
+        $raw = trim((string) $value);
+        if ($raw === '') {
+            return [];
+        }
+
+        $parts = preg_split('/[\r\n|,]+/', $raw) ?: [];
+
+        return collect($parts)
+            ->map(fn ($item) => trim((string) $item))
+            ->filter(fn ($item) => $item !== '')
+            ->values()
+            ->all();
+    }
+
+    private function fillProductFromImportRow(Product $product, array $row, int $supplierId, $now): Product
+    {
+        $images = $this->normalizeImportImageList($row['pd_images'] ?? []);
+        $primaryImage = trim((string) ($row['pd_image'] ?? ''));
+
+        if ($primaryImage !== '' && empty($images)) {
+            $images = [$primaryImage];
+        }
+
+        $product->fill([
+            'pd_name' => trim((string) ($row['pd_name'] ?? '')),
+            'pd_catid' => (int) ($row['pd_catid'] ?? 0),
+            'pd_room_type' => (int) ($row['pd_room_type'] ?? 0),
+            'pd_brand_type' => (int) ($row['pd_brand_type'] ?? 0),
+            'pd_catsubid' => (int) ($row['pd_catsubid'] ?? 0),
+            'pd_catsubid2' => 0,
+            'pd_shopid' => 0,
+            'pd_description' => (string) ($row['pd_description'] ?? ''),
+            'pd_specifications' => ($row['pd_specifications'] ?? null) !== null ? (string) $row['pd_specifications'] : null,
+            'pd_material' => trim((string) ($row['pd_material'] ?? '')),
+            'pd_warranty' => trim((string) ($row['pd_warranty'] ?? '')),
+            'pd_supplier' => $supplierId,
+            'pd_price_srp' => $this->toNumber($row['pd_price_srp'] ?? 0),
+            'pd_price_dp' => $this->toNumber($row['pd_price_dp'] ?? 0),
+            'pd_price_member' => array_key_exists('pd_price_member', $row) ? $this->toOptionalNumber($row['pd_price_member']) : null,
+            'pd_prodpv' => $this->toNumber($row['pd_prodpv'] ?? 0),
+            'pd_qty' => $this->toNumber($row['pd_qty'] ?? 0),
+            'pd_weight' => $this->toNumber($row['pd_weight'] ?? 0),
+            'pd_psweight' => $this->toNumber($row['pd_psweight'] ?? 0),
+            'pd_pswidth' => $this->toNumber($row['pd_pswidth'] ?? 0),
+            'pd_pslenght' => $this->toNumber($row['pd_pslenght'] ?? 0),
+            'pd_psheight' => $this->toNumber($row['pd_psheight'] ?? 0),
+            'pd_assembly_required' => $this->normalizeImportBoolean($row['pd_assembly_required'] ?? false) ? 1 : 0,
+            'pd_preorder' => '',
+            'pd_preorder_value' => 0,
+            'pd_parent_sku' => trim((string) ($row['pd_parent_sku'] ?? '')),
+            'pd_type' => (int) ($row['pd_type'] ?? 0),
+            'pd_shoptype' => 0,
+            'pd_musthave' => $this->normalizeImportBoolean($row['pd_musthave'] ?? false) ? 1 : 0,
+            'pd_bestseller' => $this->normalizeImportBoolean($row['pd_bestseller'] ?? false) ? 1 : 0,
+            'pd_salespromo' => $this->normalizeImportBoolean($row['pd_salespromo'] ?? false) ? 1 : 0,
+            'pd_user' => 0,
+            'pd_usertype' => 0,
+            'pd_last_update' => $now,
+            'pd_status' => (int) ($row['pd_status'] ?? 1),
+            'pd_image' => $images[0] ?? ($primaryImage !== '' ? $primaryImage : null),
+        ]);
+
+        if (!$product->exists) {
+            $product->pd_date = $now;
+        }
+
+        $product->save();
+
+        ProductPhoto::query()->where('pp_pdid', $product->pd_id)->delete();
+        foreach ($images as $url) {
+            ProductPhoto::create([
+                'pp_pdid' => $product->pd_id,
+                'pp_filename' => $url,
+                'pp_varone' => null,
+                'pp_date' => $now,
+            ]);
+        }
+
+        return $product->fresh(['photos']) ?? $product;
+    }
+
+    private function productChangeValue(mixed $value): string
+    {
+        if ($value === null) {
+            return '';
+        }
+
+        if (is_bool($value)) {
+            return $value ? 'Yes' : 'No';
+        }
+
+        if (is_float($value) || is_int($value) || is_numeric($value)) {
+            $number = (float) $value;
+            return fmod($number, 1.0) === 0.0
+                ? (string) (int) $number
+                : rtrim(rtrim(number_format($number, 2, '.', ''), '0'), '.');
+        }
+
+        return trim((string) $value);
+    }
+
+    private function buildProductChangeLog(Product $before, Product $after): array
+    {
+        $fields = [
+            'pd_name' => 'Name',
+            'pd_parent_sku' => 'SKU',
+            'pd_catid' => 'Category',
+            'pd_brand_type' => 'Brand',
+            'pd_price_srp' => 'SRP',
+            'pd_price_dp' => 'Dealer Price',
+            'pd_price_member' => 'Member Price',
+            'pd_prodpv' => 'PV',
+            'pd_qty' => 'Quantity',
+            'pd_status' => 'Status',
+            'pd_material' => 'Material',
+            'pd_warranty' => 'Warranty',
+            'pd_image' => 'Primary Image',
+        ];
+
+        $changes = [];
+        foreach ($fields as $field => $label) {
+            $beforeValue = $this->productChangeValue($before->{$field} ?? null);
+            $afterValue = $this->productChangeValue($after->{$field} ?? null);
+
+            if ($beforeValue === $afterValue) {
+                continue;
+            }
+
+            $changes[] = [
+                'field' => $label,
+                'before' => $beforeValue !== '' ? $beforeValue : null,
+                'after' => $afterValue !== '' ? $afterValue : null,
+            ];
+        }
+
+        $beforeImages = $this->productImageUrls($before);
+        $afterImages = $this->productImageUrls($after);
+
+        if ($beforeImages !== $afterImages) {
+            $changes[] = [
+                'field' => 'Image Gallery',
+                'before' => !empty($beforeImages) ? implode("\n", $beforeImages) : null,
+                'after' => !empty($afterImages) ? implode("\n", $afterImages) : null,
+            ];
+        }
+
+        return $changes;
+    }
+
+    private function productImageUrls(Product $product): array
+    {
+        $product->loadMissing('photos:pp_id,pp_pdid,pp_filename,pp_varone,pp_date');
+
+        return $product->photos
+            ->map(fn (ProductPhoto $photo) => trim((string) $photo->pp_filename))
+            ->filter(fn (string $url) => $url !== '')
+            ->values()
+            ->all();
     }
 
     private function supplierCanUseCategory(int $supplierId, int $categoryId): bool
@@ -524,6 +713,9 @@ class ProductController extends Controller
             'salespromo'  => (bool)  $p->pd_salespromo,
             'status'      => (int)   $p->pd_status,
             'sku'         => (string) ($p->pd_parent_sku ?? ''),
+            'uploaderName' => $p->creationActivity?->pal_actor_name ? (string) $p->creationActivity->pal_actor_name : null,
+            'uploaderEmail' => $p->creationActivity?->pal_actor_email ? (string) $p->creationActivity->pal_actor_email : null,
+            'uploaderRole' => $p->creationActivity?->pal_actor_role ? (string) $p->creationActivity->pal_actor_role : null,
             'image'       => $primaryImage,
             'images'      => $images,
             'variants'    => $this->mapVariants($p),
@@ -630,6 +822,7 @@ class ProductController extends Controller
                 ->with([
                     'photos:pp_id,pp_pdid,pp_filename,pp_varone,pp_date',
                     'brand:pb_id,pb_name,pb_status',
+                    'creationActivity:pal_id,pal_product_id,pal_actor_name,pal_actor_email,pal_actor_role,pal_created_at',
                     'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_width,pv_dimension,pv_height,pv_price_srp,pv_price_dp,pv_price_member,pv_prodpv,pv_qty,pv_status,pv_date',
                     'variants.photos:pvp_id,pvp_pvid,pvp_filename,pvp_sort,pvp_date',
                 ])
@@ -751,6 +944,137 @@ class ProductController extends Controller
                 'from' => $paginator->firstItem(),
                 'to' => $paginator->lastItem(),
             ],
+        ]);
+    }
+
+    public function import(Request $request): JsonResponse
+    {
+        $admin = $this->resolveAdmin($request);
+        $supplierUser = $this->resolveSupplierUser($request);
+        $actorSupplierId = $this->actorSupplierId($admin, $supplierUser);
+
+        if ($admin && $this->roleFromLevel((int) $admin->user_level_id) === 'supplier_admin' && !$admin->supplier_id) {
+            return response()->json([
+                'message' => 'Supplier Admin account is not linked to a supplier company.',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'mode' => 'nullable|in:create_only,create_or_update',
+            'rows' => 'required|array|min:1|max:500',
+            'rows.*' => 'required|array',
+        ]);
+
+        $mode = (string) ($validated['mode'] ?? 'create_or_update');
+        $rows = $validated['rows'];
+        $now = now();
+        $results = [];
+        $created = 0;
+        $updated = 0;
+        $failed = 0;
+
+        foreach ($rows as $index => $row) {
+            $rowNumber = $index + 1;
+            $name = trim((string) ($row['pd_name'] ?? ''));
+            $sku = trim((string) ($row['pd_parent_sku'] ?? ''));
+
+            try {
+                if ($name === '') {
+                    throw new \RuntimeException('Product name is required.');
+                }
+
+                $categoryId = (int) ($row['pd_catid'] ?? 0);
+                if ($categoryId <= 0) {
+                    throw new \RuntimeException('Category ID is required.');
+                }
+
+                if ($actorSupplierId > 0 && !$this->supplierCanUseCategory($actorSupplierId, $categoryId)) {
+                    throw new \RuntimeException('This supplier is not allowed to use the selected category.');
+                }
+
+                $brandType = (int) ($row['pd_brand_type'] ?? 0);
+                if ($brandType > 0 && !ProductBrand::query()->where('pb_id', $brandType)->exists()) {
+                    throw new \RuntimeException('The selected brand does not exist.');
+                }
+
+                $priceSrp = $this->toNumber($row['pd_price_srp'] ?? null);
+                if ($priceSrp < 0.01) {
+                    throw new \RuntimeException('SRP must be greater than zero.');
+                }
+
+                $product = null;
+                $beforeProduct = null;
+                $status = 'created';
+                $message = 'Product imported successfully.';
+
+                if ($sku !== '') {
+                    $productQuery = Product::query()->where('pd_parent_sku', $sku);
+                    $this->scopeQueryToActor($productQuery, $admin, $supplierUser);
+                    $product = $productQuery->first();
+                }
+
+                if ($product) {
+                    if ($mode !== 'create_or_update') {
+                        throw new \RuntimeException('Duplicate SKU found. Use create or update mode to update existing products.');
+                    }
+
+                    $beforeProduct = clone $product;
+                    $status = 'updated';
+                    $message = 'Existing product updated.';
+                } else {
+                    $product = new Product();
+                }
+
+                $product = DB::transaction(function () use ($product, $row, $actorSupplierId, $now) {
+                    return $this->fillProductFromImportRow($product, $row, $actorSupplierId, $now);
+                });
+
+                if ($status === 'updated') {
+                    $updated++;
+                } else {
+                    $created++;
+                }
+
+                $changes = $status === 'updated' && $beforeProduct instanceof Product
+                    ? $this->buildProductChangeLog($beforeProduct, $product)
+                    : null;
+
+                $this->recordProductActivity($status === 'updated' ? 'updated' : 'created', $product, $admin, $supplierUser, $name, $sku, $changes);
+
+                $results[] = [
+                    'row' => $rowNumber,
+                    'status' => $status,
+                    'product_id' => (int) $product->pd_id,
+                    'name' => $product->pd_name,
+                    'sku' => $product->pd_parent_sku ?: null,
+                    'message' => $message,
+                ];
+            } catch (\Throwable $e) {
+                $failed++;
+                $this->recordFailedProductActivity('created', $admin, $supplierUser, null, $name, $sku);
+
+                $results[] = [
+                    'row' => $rowNumber,
+                    'status' => 'failed',
+                    'product_id' => null,
+                    'name' => $name !== '' ? $name : null,
+                    'sku' => $sku !== '' ? $sku : null,
+                    'message' => $e->getMessage(),
+                ];
+            }
+        }
+
+        return response()->json([
+            'message' => $failed > 0
+                ? 'Bulk import finished with some row errors.'
+                : 'Bulk import completed successfully.',
+            'summary' => [
+                'total' => count($rows),
+                'created' => $created,
+                'updated' => $updated,
+                'failed' => $failed,
+            ],
+            'results' => $results,
         ]);
     }
 
@@ -1070,6 +1394,8 @@ class ProductController extends Controller
             'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
             'pd_parent_sku', 'pd_type', 'pd_status',
         ];
+        $product->loadMissing('photos:pp_id,pp_pdid,pp_filename,pp_varone,pp_date');
+        $beforeProduct = clone $product;
 
         try {
             DB::transaction(function () use ($request, $product, $fields) {
@@ -1224,7 +1550,8 @@ class ProductController extends Controller
         }
 
         try {
-            $this->recordProductActivity('updated', $product, $admin, $supplierUser);
+            $changes = $this->buildProductChangeLog($beforeProduct, $product);
+            $this->recordProductActivity('updated', $product, $admin, $supplierUser, null, null, $changes);
         } catch (\Throwable $e) {
             Log::warning('Product activity log failed after update', [
                 'product_id' => $product->pd_id,
@@ -1233,7 +1560,17 @@ class ProductController extends Controller
             ]);
         }
 
-        return response()->json(['message' => 'Product updated successfully.']);
+        $product->load([
+            'photos:pp_id,pp_pdid,pp_filename,pp_varone,pp_date',
+            'brand:pb_id,pb_name,pb_status',
+            'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_width,pv_dimension,pv_height,pv_price_srp,pv_price_dp,pv_price_member,pv_prodpv,pv_qty,pv_status,pv_date',
+            'variants.photos:pvp_id,pvp_pvid,pvp_filename,pvp_sort,pvp_date',
+        ]);
+
+        return response()->json([
+            'message' => 'Product updated successfully.',
+            'product' => $this->mapProduct($product),
+        ]);
     }
 
     public function destroy(Request $request, int $id): JsonResponse

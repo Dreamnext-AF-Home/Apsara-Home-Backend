@@ -110,6 +110,7 @@ Route::middleware(['auth:sanctum', 'admin.or_supplier'])->group(function () {
     Route::get('/admin/products', [ProductController::class, 'index']);
     Route::get('/admin/products/activity-logs', [ProductController::class, 'activityLogs']);
     Route::post('/admin/products', [ProductController::class, 'store']);
+    Route::post('/admin/products/import', [ProductController::class, 'import']);
     Route::put('/admin/products/{id}', [ProductController::class, 'update']);
     Route::delete('/admin/products/{id}', [ProductController::class, 'destroy']);
     Route::get('/admin/product-brands', [ProductBrandController::class, 'index']);

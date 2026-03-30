@@ -425,7 +425,7 @@ class AuthController extends Controller
         /** @var Customer $customer */
         $customer = $request->user();
 
-        $levelOneMembers = Customer::query()
+        $descendants = Customer::query()
             ->select([
                 'c_userid',
                 'c_username',
@@ -439,54 +439,55 @@ class AuthController extends Controller
                 'c_date_started',
                 'c_sponsor',
             ])
+            ->orderBy('c_userid')
+            ->get();
+
+        $descendantsBySponsor = $descendants
+            ->filter(fn (Customer $member) => (int) ($member->c_sponsor ?? 0) > 0)
+            ->groupBy('c_sponsor');
+
+        $buildNode = function (Customer $member, array $path = []) use (&$buildNode, $descendantsBySponsor): array {
+            $memberId = (int) $member->c_userid;
+            $nextPath = [...$path, $memberId];
+
+            $children = collect($descendantsBySponsor->get($memberId, []))
+                ->reject(fn (Customer $child) => in_array((int) $child->c_userid, $nextPath, true))
+                ->map(fn (Customer $child): array => $buildNode($child, $nextPath))
+                ->values();
+
+            $node = $this->transformReferralNode($member);
+            $node['children_count'] = $children->count();
+            $node['children'] = $children->all();
+
+            return $node;
+        };
+
+        $levelOneMembers = $descendants
             ->where('c_sponsor', (int) $customer->c_userid)
             ->orderByDesc('c_userid')
-            ->get();
+            ->values();
 
         $levelOneIds = $levelOneMembers->pluck('c_userid')->all();
 
         $levelTwoMembers = empty($levelOneIds)
             ? collect()
-            : Customer::query()
-                ->select([
-                    'c_userid',
-                    'c_username',
-                    'c_fname',
-                    'c_mname',
-                    'c_lname',
-                    'c_email',
-                    'c_accnt_status',
-                    'c_lockstatus',
-                    'c_totalincome',
-                    'c_date_started',
-                    'c_sponsor',
-                ])
+            : $descendants
                 ->whereIn('c_sponsor', $levelOneIds)
-                ->orderByDesc('c_userid')
-                ->get();
+                ->values();
 
-        $levelTwoBySponsor = $levelTwoMembers->groupBy('c_sponsor');
         $secondLevelCount = $levelTwoMembers->count();
         $directCount = $levelOneMembers->count();
 
-        $children = $levelOneMembers->map(function (Customer $member) use ($levelTwoBySponsor): array {
-            $childNodes = collect($levelTwoBySponsor->get((int) $member->c_userid, []))
-                ->map(fn (Customer $child): array => $this->transformReferralNode($child))
-                ->values();
-
-            $node = $this->transformReferralNode($member);
-            $node['children_count'] = $childNodes->count();
-            $node['children'] = $childNodes;
-
-            return $node;
-        })->values();
+        $children = $levelOneMembers
+            ->map(fn (Customer $member): array => $buildNode($member))
+            ->values();
 
         return response()->json([
             'root' => $this->transformReferralNode($customer),
             'summary' => [
                 'direct_count' => $directCount,
                 'second_level_count' => $secondLevelCount,
-                'total_network' => $directCount + $secondLevelCount,
+                'total_network' => $descendants->count(),
             ],
             'children' => $children,
         ]);
