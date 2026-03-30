@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\AdminNotification;
 use App\Models\Customer;
 use App\Models\CustomerAddress;
 use Illuminate\Http\Request;
@@ -769,6 +770,35 @@ class AuthController extends Controller
             'td_viewstat' => '1',
             'td_ip' => (string) $request->ip(),
         ]);
+
+        $customerName = $this->fullName($customer);
+        AdminNotification::query()->firstOrCreate(
+            [
+                'an_type' => 'username_change_request',
+                'an_source_type' => 'ticket',
+                'an_source_id' => (int) $ticketId,
+            ],
+            [
+                'an_severity' => 'warning',
+                'an_title' => 'Username Change Request',
+                'an_message' => sprintf(
+                    '%s requested a username change from "%s" to "%s".',
+                    $customerName !== '' ? $customerName : ('Member #' . $customer->c_userid),
+                    trim((string) ($customer->c_username ?? '')),
+                    $requestedUsername
+                ),
+                'an_href' => '/admin/inquiry',
+                'an_payload' => [
+                    'ticket_id' => (int) $ticketId,
+                    'customer_id' => (int) $customer->c_userid,
+                    'customer_name' => $customerName,
+                    'customer_email' => (string) ($customer->c_email ?? ''),
+                    'current_username' => trim((string) ($customer->c_username ?? '')),
+                    'requested_username' => $requestedUsername,
+                ],
+                'an_created_at' => now(),
+            ]
+        );
 
         Cache::forget($this->usernameChangeOtpCacheKey((string) $validated['verification_token']));
 
