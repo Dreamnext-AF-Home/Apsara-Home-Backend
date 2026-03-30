@@ -618,7 +618,7 @@ class EncashmentController extends Controller
             'province' => 'required|string|max:120',
             'postal_code' => 'required|string|max:20',
             'country' => 'required|string|max:80',
-            'notes' => 'required|string|max:1000',
+            'notes' => 'nullable|string|max:1000',
             'id_front_url' => 'required|url|max:1200',
             'id_back_url' => 'required|url|max:1200',
             'selfie_url' => 'required|url|max:1200',
