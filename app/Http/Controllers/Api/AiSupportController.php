@@ -65,7 +65,6 @@ class AiSupportController extends Controller
         $brandCards = [];
         $categoryCards = [];
         $brandViewAllUrl = '';
-        $debug = null;
 
         $detectedBrand = $this->detectBrand($qLower);
         $detectedBrandId = (int) ($detectedBrand['id'] ?? 0);
@@ -107,7 +106,7 @@ class AiSupportController extends Controller
                         ];
                         $reply = $availReplies[array_rand($availReplies)];
                         $quickReplies = ['Product price', 'Track my order', 'Payment methods'];
-                    } elseif ((preg_match('/\b(hi|hello|hey|hi there|assistant|chatbot|ai|good morning|good afternoon|good evening|kamusta|kumusta|magandang umaga|magandang hapon|magandang gabi|magandang araw)\b/i', $qLower) || mb_strlen($question, 'UTF-8') <= 2) && ! preg_match('/^ac$/i', $qLower)) {
+                    } elseif (preg_match('/\b(hi|hello|hey|hi there|assistant|chatbot|ai|good morning|good afternoon|good evening|kamusta|kumusta|magandang umaga|magandang hapon|magandang gabi|magandang araw)\b/i', $qLower) || mb_strlen($question, 'UTF-8') <= 2) {
                         $helloReplies = [
                             'Hi! Welcome. I can help with product details, shipping, payment options, and order tracking.',
                             'Hello! I am ShopBuddy AI. Ask me anything about products, checkout, delivery, or your orders.',
@@ -145,50 +144,6 @@ class AiSupportController extends Controller
                             }
                         }
                         $quickReplies = ['Show appliances', 'Show furniture', 'Track my order'];
-                    } elseif (preg_match('/\b(tv)\b/i', $qLower)) {
-                        $productCards = $this->getTvNameCards($detectedBrandId, 12);
-                        if (empty($productCards) && $detectedBrandId > 0) {
-                            $productCards = $this->getTvNameCards(0, 12);
-                        }
-                        if (!empty($productCards)) {
-                            $reply = 'Here are products with "TV" in the name.';
-                            $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
-                        } else {
-                            $reply = 'I could not find products with "TV" in the name right now.';
-                            $quickReplies = ['Show appliances', 'Show furniture', 'Track my order'];
-                        }
-                    } elseif (preg_match('/\b(bedroom|bed)\b/i', $qLower)) {
-                        $productCards = $this->getBedNameCards($detectedBrandId, 12);
-                        if (empty($productCards) && $detectedBrandId > 0) {
-                            $productCards = $this->getBedNameCards(0, 12);
-                        }
-                        if (!empty($productCards)) {
-                            $reply = 'Here are products with "bed" or "bedroom" in the name.';
-                            $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
-                        } else {
-                            $reply = 'I could not find products with "bed" in the name right now.';
-                            $quickReplies = ['Show furniture', 'Show best sellers', 'Track my order'];
-                        }
-                    } elseif (preg_match('/\b(ac|aircon|air con|air-conditioning|air conditioner)\b/i', $qLower)) {
-                        $productCards = $this->getAcNameCards(0, 12);
-                        if (!empty($productCards)) {
-                            $reply = 'Here are products with "AC" in the name.';
-                            $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
-                        } else {
-                            $reply = 'I could not find products with "AC" in the name right now.';
-                            $quickReplies = ['Show appliances', 'Show furniture', 'Track my order'];
-                            if (config('app.debug')) {
-                                $debug = [
-                                    'driver' => DB::connection()->getDriverName(),
-                                    'ac_like_samples' => DB::table('tbl_product as p')
-                                        ->whereRaw('LOWER(p.pd_name) LIKE ?', ['%ac%'])
-                                        ->orderByDesc('p.pd_id')
-                                        ->limit(12)
-                                        ->pluck('p.pd_name')
-                                        ->toArray(),
-                                ];
-                            }
-                        }
                     } else {
                         $directNameMatches = [];
                         if (strlen($question) >= 3) {
@@ -612,7 +567,6 @@ class AiSupportController extends Controller
             'brand_cards' => $brandCards,
             'category_cards' => $categoryCards,
             'brand_view_all_url' => $brandViewAllUrl,
-            'debug' => $debug,
         ]);
     }
 
@@ -815,7 +769,7 @@ class AiSupportController extends Controller
                 $join->on('fp.pp_pdid', '=', 'p.pd_id');
             })
             ->leftJoin('tbl_product_photo as pp', 'pp.pp_id', '=', 'fp.min_pp_id')
-            ->whereIn('p.pd_status', [1, 2])
+            ->where('p.pd_status', 1)
             ->where('v.pv_price_srp', '>', 0)
             ->whereRaw("LOWER(TRIM(p.pd_name)) !~ '^(test|sample|demo)[0-9 _-]*$'");
 
@@ -976,144 +930,6 @@ class AiSupportController extends Controller
             ->get();
 
         return $this->mapProductCards($rows);
-    }
-
-    private function getAcNameCards(int $brandId, int $limit): array
-    {
-        $photoSub = DB::table('tbl_product_photo')
-            ->select('pp_pdid', DB::raw('MIN(pp_id) as min_pp_id'))
-            ->groupBy('pp_pdid');
-
-        $query = DB::table('tbl_product as p')
-            ->join('tbl_product_variant as v', 'v.pv_pdid', '=', 'p.pd_id')
-            ->leftJoinSub($photoSub, 'fp', function ($join) {
-                $join->on('fp.pp_pdid', '=', 'p.pd_id');
-            })
-            ->leftJoin('tbl_product_photo as pp', 'pp.pp_id', '=', 'fp.min_pp_id')
-            ->whereIn('p.pd_status', [1, 2])
-            ->whereRaw("LOWER(TRIM(p.pd_name)) !~ '^(test|sample|demo)[0-9 _-]*$'");
-
-        if ($brandId > 0) {
-            $query->where('p.pd_brand_type', $brandId);
-        }
-
-        $query = $this->selectProductFields($query, $this->isMember);
-
-        $query->where(function ($q) {
-            $q->whereRaw('LOWER(p.pd_name) LIKE ?', ['%ac%'])
-                ->orWhereRaw('LOWER(p.pd_name) LIKE ?', ['%a/c%'])
-                ->orWhereRaw('LOWER(p.pd_name) LIKE ?', ['%a c%']);
-        });
-
-        $rows = $query
-            ->orderByDesc('p.pd_sales')
-            ->orderBy('min_price')
-            ->limit($limit > 0 ? $limit * 5 : 40)
-            ->get();
-
-        $filtered = $rows->filter(function ($row) {
-            $name = (string) ($row->pd_name ?? '');
-            if ($name === '') {
-                return false;
-            }
-
-            return preg_match('/(^|[^a-z0-9])a\\s*\\/?\\s*c([0-9]|[^a-z0-9]|$)/i', $name) === 1;
-        });
-
-        $filtered = $filtered->values()->take($limit > 0 ? $limit : 8);
-
-        return $this->mapProductCards($filtered);
-    }
-
-    private function getBedNameCards(int $brandId, int $limit): array
-    {
-        $photoSub = DB::table('tbl_product_photo')
-            ->select('pp_pdid', DB::raw('MIN(pp_id) as min_pp_id'))
-            ->groupBy('pp_pdid');
-
-        $query = DB::table('tbl_product as p')
-            ->join('tbl_product_variant as v', 'v.pv_pdid', '=', 'p.pd_id')
-            ->leftJoinSub($photoSub, 'fp', function ($join) {
-                $join->on('fp.pp_pdid', '=', 'p.pd_id');
-            })
-            ->leftJoin('tbl_product_photo as pp', 'pp.pp_id', '=', 'fp.min_pp_id')
-            ->whereIn('p.pd_status', [1, 2])
-            ->whereRaw("LOWER(TRIM(p.pd_name)) !~ '^(test|sample|demo)[0-9 _-]*$'");
-
-        if ($brandId > 0) {
-            $query->where('p.pd_brand_type', $brandId);
-        }
-
-        $query = $this->selectProductFields($query, $this->isMember);
-
-        $query->where(function ($q) {
-            $q->whereRaw('LOWER(p.pd_name) LIKE ?', ['%bed%'])
-                ->orWhereRaw('LOWER(p.pd_name) LIKE ?', ['%bedroom%']);
-        });
-
-        $rows = $query
-            ->orderByDesc('p.pd_sales')
-            ->orderBy('min_price')
-            ->limit($limit > 0 ? $limit * 5 : 40)
-            ->get();
-
-        $filtered = $rows->filter(function ($row) {
-            $name = (string) ($row->pd_name ?? '');
-            if ($name === '') {
-                return false;
-            }
-
-            return preg_match('/(^|[^a-z0-9])bed(room)?([0-9]|[^a-z0-9]|$)/i', $name) === 1;
-        });
-
-        $filtered = $filtered->values()->take($limit > 0 ? $limit : 8);
-
-        return $this->mapProductCards($filtered);
-    }
-
-    private function getTvNameCards(int $brandId, int $limit): array
-    {
-        $photoSub = DB::table('tbl_product_photo')
-            ->select('pp_pdid', DB::raw('MIN(pp_id) as min_pp_id'))
-            ->groupBy('pp_pdid');
-
-        $query = DB::table('tbl_product as p')
-            ->join('tbl_product_variant as v', 'v.pv_pdid', '=', 'p.pd_id')
-            ->leftJoinSub($photoSub, 'fp', function ($join) {
-                $join->on('fp.pp_pdid', '=', 'p.pd_id');
-            })
-            ->leftJoin('tbl_product_photo as pp', 'pp.pp_id', '=', 'fp.min_pp_id')
-            ->whereIn('p.pd_status', [1, 2])
-            ->whereRaw("LOWER(TRIM(p.pd_name)) !~ '^(test|sample|demo)[0-9 _-]*$'");
-
-        if ($brandId > 0) {
-            $query->where('p.pd_brand_type', $brandId);
-        }
-
-        $query = $this->selectProductFields($query, $this->isMember);
-
-        $query->where(function ($q) {
-            $q->whereRaw('LOWER(p.pd_name) LIKE ?', ['%tv%']);
-        });
-
-        $rows = $query
-            ->orderByDesc('p.pd_sales')
-            ->orderBy('min_price')
-            ->limit($limit > 0 ? $limit * 5 : 40)
-            ->get();
-
-        $filtered = $rows->filter(function ($row) {
-            $name = (string) ($row->pd_name ?? '');
-            if ($name === '') {
-                return false;
-            }
-
-            return preg_match('/(^|[^a-z0-9])tv([0-9]|[^a-z0-9]|$)/i', $name) === 1;
-        });
-
-        $filtered = $filtered->values()->take($limit > 0 ? $limit : 8);
-
-        return $this->mapProductCards($filtered);
     }
 
     private function buildSearchTokens(string $text, int $minLen = 3): array

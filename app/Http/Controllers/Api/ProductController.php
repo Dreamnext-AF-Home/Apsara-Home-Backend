@@ -544,7 +544,7 @@ class ProductController extends Controller
         $product = Product::query()
             ->select([
                 'pd_id', 'pd_name', 'pd_description', 'pd_specifications', 'pd_material', 'pd_warranty',
-                'pd_catid', 'pd_catsubid', 'pd_room_type', 'pd_brand_type', 'pd_supplier',
+                'pd_catid', 'pd_catsubid', 'pd_room_type', 'pd_brand_type',
                 'pd_price_srp', 'pd_price_dp', 'pd_price_member', 'pd_qty',
                 'pd_prodpv',
                 'pd_weight', 'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
@@ -577,7 +577,7 @@ class ProductController extends Controller
         $product = Product::query()
             ->select([
                 'pd_id', 'pd_name', 'pd_description', 'pd_specifications', 'pd_material', 'pd_warranty',
-                'pd_catid', 'pd_catsubid', 'pd_room_type', 'pd_supplier',
+                'pd_catid', 'pd_catsubid', 'pd_room_type',
                 'pd_price_srp', 'pd_price_dp', 'pd_price_member', 'pd_qty',
                 'pd_prodpv',
                 'pd_weight', 'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
@@ -619,7 +619,7 @@ class ProductController extends Controller
             $query = Product::query()
                 ->select([
                     'pd_id', 'pd_name', 'pd_description', 'pd_specifications', 'pd_material', 'pd_warranty',
-                    'pd_catid', 'pd_catsubid', 'pd_room_type', 'pd_brand_type', 'pd_supplier',
+                    'pd_catid', 'pd_catsubid', 'pd_room_type', 'pd_brand_type',
                     'pd_price_srp', 'pd_price_dp', 'pd_price_member', 'pd_qty',
                     'pd_prodpv',
                     'pd_weight', 'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
@@ -683,12 +683,6 @@ class ProductController extends Controller
                     'from'         => $paginator->firstItem(),
                     'to'           => $paginator->lastItem(),
                 ],
-                'debug' => config('app.debug') ? [
-                    'actor_supplier_id' => $this->actorSupplierId($admin, $supplierUser),
-                    'requested_supplier_id' => $requestedSupplierId,
-                    'actor_type' => $request->user() ? $request->user()::class : null,
-                    'status_filter' => $status,
-                ] : null,
             ]);
         } catch (\Throwable $e) {
             Log::error('Product index failed', [
@@ -833,12 +827,6 @@ class ProductController extends Controller
                 'errors' => [
                     'pd_catid' => ['This supplier is not allowed to use the selected category.'],
                 ],
-                'debug' => config('app.debug') ? [
-                    'actor_supplier_id' => $actorSupplierId,
-                    'category_id' => $categoryId,
-                    'supplier_can_use' => $this->supplierCanUseCategory($actorSupplierId, $categoryId),
-                    'actor_type' => $request->user() ? $request->user()::class : null,
-                ] : null,
             ], 422);
         }
 
