@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Mail;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Support\Str;
+use App\Support\MemberMonthlyActivation;
 use App\Mail\Auth\RegistrationOtpMail;
 use App\Mail\Auth\CustomerPasswordResetMail;
 use App\Mail\Auth\UsernameChangeOtpMail;
@@ -440,6 +441,7 @@ class AuthController extends Controller
                 'c_accnt_status',
                 'c_lockstatus',
                 'c_totalincome',
+                'c_gpv',
                 'c_date_started',
                 'c_sponsor',
             ])
@@ -486,12 +488,36 @@ class AuthController extends Controller
             ->map(fn (Customer $member): array => $buildNode($member))
             ->values();
 
+        $networkIds = collect($children)
+            ->flatMap(function (array $node) {
+                $collectIds = function (array $current) use (&$collectIds): array {
+                    $ids = [(int) ($current['id'] ?? 0)];
+                    foreach (($current['children'] ?? []) as $child) {
+                        $ids = [...$ids, ...$collectIds($child)];
+                    }
+
+                    return $ids;
+                };
+
+                return $collectIds($node);
+            })
+            ->filter(fn (int $id) => $id > 0)
+            ->unique()
+            ->values();
+
+        $networkMembers = $networkIds->isEmpty()
+            ? collect()
+            : $descendants->whereIn('c_userid', $networkIds->all())->values();
+        $totalNetwork = $networkMembers->count();
+        $totalPv = (float) $networkMembers->sum(fn (Customer $member) => (float) ($member->c_gpv ?? 0));
+
         return response()->json([
             'root' => $this->transformReferralNode($customer),
             'summary' => [
                 'direct_count' => $directCount,
                 'second_level_count' => $secondLevelCount,
-                'total_network' => $descendants->count(),
+                'total_network' => $totalNetwork,
+                'total_pv' => $totalPv,
             ],
             'children' => $children,
         ]);
@@ -863,6 +889,7 @@ class AuthController extends Controller
             'account_status' => $accountStatus,
             'lock_status' => $lockStatus,
             'verification_status' => $verificationStatus,
+            'monthly_activation' => MemberMonthlyActivation::summary($customer),
             'email_verified' => true,
             'password_change_required' => $this->customerRequiresPasswordChange($customer),
         ];

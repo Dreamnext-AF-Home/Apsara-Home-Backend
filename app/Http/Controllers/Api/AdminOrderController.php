@@ -13,6 +13,9 @@ use App\Models\CustomerWalletLedger;
 use App\Services\Shipping\JntShippingService;
 use App\Services\Shipping\XdeShippingService;
 use App\Support\AdminAccess;
+use App\Support\DirectAffiliatePerformanceBonus;
+use App\Support\DirectReferralCommission;
+use App\Support\GroupPurchaseBonus;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -461,13 +464,21 @@ class AdminOrderController extends Controller
 
         $order = CheckoutHistory::query()->where('ch_id', $id)->firstOrFail();
 
-        $order->fill([
-            'ch_approval_status' => 'rejected',
-            'ch_approval_notes' => $validated['notes'] ?? null,
-            'ch_approved_by' => (int) $admin->id,
-            'ch_approved_at' => now(),
-            'ch_fulfillment_status' => 'cancelled',
-        ])->save();
+        DB::transaction(function () use ($order, $admin, $validated) {
+            $order->fill([
+                'ch_approval_status' => 'rejected',
+                'ch_approval_notes' => $validated['notes'] ?? null,
+                'ch_approved_by' => (int) $admin->id,
+                'ch_approved_at' => now(),
+                'ch_fulfillment_status' => 'cancelled',
+            ])->save();
+
+            DirectReferralCommission::cancelPendingForOrder(
+                $order,
+                (int) $admin->id,
+                'Direct referral commission cancelled because the order was rejected.'
+            );
+        });
 
         $this->sendCustomerOrderStatusEmail($order, 'approval_rejected');
 
@@ -495,6 +506,17 @@ class AdminOrderController extends Controller
         $previousStatus = (string) ($order->ch_fulfillment_status ?? 'pending');
         $order->ch_fulfillment_status = $validated['status'];
         $order->save();
+
+        if ($validated['status'] === 'delivered') {
+            DirectReferralCommission::releaseAvailableForOrder($order, (int) $admin->id);
+        } elseif (in_array($validated['status'], ['cancelled', 'refunded'], true)) {
+            DirectReferralCommission::cancelPendingForOrder(
+                $order,
+                (int) $admin->id,
+                'Direct referral commission cancelled because the order was marked as ' . $validated['status'] . '.'
+            );
+        }
+
         $shippingResult = $this->bookShipmentOnShipped($order, (string) $validated['status']);
 
         if ($previousStatus !== (string) $order->ch_fulfillment_status) {
@@ -560,6 +582,16 @@ class AdminOrderController extends Controller
         }
 
         $order->save();
+
+        if ($shipmentStatus === 'delivered') {
+            DirectReferralCommission::releaseAvailableForOrder($order, (int) $admin->id);
+        } elseif (in_array($shipmentStatus, ['failed_delivery', 'returned_to_sender', 'cancelled'], true)) {
+            DirectReferralCommission::cancelPendingForOrder(
+                $order,
+                (int) $admin->id,
+                'Direct referral commission cancelled because the shipment status became ' . $shipmentStatus . '.'
+            );
+        }
 
         if ($previousShipmentStatus !== (string) $order->ch_shipment_status) {
             $this->sendCustomerOrderStatusEmail($order, 'shipment_status');
@@ -955,6 +987,9 @@ class AdminOrderController extends Controller
 
         $order->ch_pv_posted_at = now();
         $order->save();
+
+        DirectAffiliatePerformanceBonus::awardEligibleMilestonesForBuyer($customer, $order, (int) $admin->id);
+        GroupPurchaseBonus::awardForBuyer($customer, $order, (int) $admin->id);
     }
 
     private function sendCustomerOrderStatusEmail(CheckoutHistory $order, string $eventType): void

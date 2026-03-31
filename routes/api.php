@@ -168,6 +168,7 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,accounting,finance_of
     Route::patch('/admin/encashment/{id}/approve', [AdminEncashmentController::class, 'approve']);
     Route::patch('/admin/encashment/{id}/reject', [AdminEncashmentController::class, 'reject']);
     Route::patch('/admin/encashment/{id}/release', [AdminEncashmentController::class, 'release']);
+    Route::post('/admin/encashment/yearly-global-bonus/award', [AdminEncashmentController::class, 'awardYearlyGlobalBonus']);
 });
 
 Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin'])->group(function () {
