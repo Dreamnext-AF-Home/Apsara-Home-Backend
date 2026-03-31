@@ -67,6 +67,20 @@ class PaymentController extends Controller
         $requiresReferral = !$customerId;
         $normalizedReferral = $this->normalizeReferralValue((string) data_get($validated, 'customer.referred_by', ''));
         $referrer = null;
+        $authenticatedCustomer = $customerId
+            ? \App\Models\Customer::query()
+                ->select(['c_userid', 'c_sponsor'])
+                ->with('sponsor:c_userid,c_username,c_accnt_status,c_lockstatus')
+                ->find((int) $customerId)
+            : null;
+
+        if ($authenticatedCustomer instanceof \App\Models\Customer) {
+            $sponsorUsername = trim((string) ($authenticatedCustomer->sponsor?->c_username ?? ''));
+            if ($normalizedReferral === '' && $sponsorUsername !== '') {
+                $normalizedReferral = $sponsorUsername;
+                $referrer = $authenticatedCustomer->sponsor;
+            }
+        }
 
         if ($normalizedReferral === '' && $requiresReferral) {
             return response()->json([

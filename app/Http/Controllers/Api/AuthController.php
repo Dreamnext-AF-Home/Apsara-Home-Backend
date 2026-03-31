@@ -408,6 +408,10 @@ class AuthController extends Controller
     {
         $customer = $request->user();
 
+        if ($customer instanceof Customer) {
+            $customer->loadMissing('sponsor:c_userid,c_username,c_fname,c_mname,c_lname');
+        }
+
         if ((int) ($customer->c_lockstatus ?? 0) === 1) {
             optional($customer->currentAccessToken())->delete();
 
@@ -844,6 +848,9 @@ class AuthController extends Controller
             'name' => $fullName,
             'email' => $customer->c_email,
             'username' => $customer->c_username,
+            'referrer_id' => (int) ($customer->c_sponsor ?? 0),
+            'referrer_username' => $customer->sponsor?->c_username ? (string) $customer->sponsor->c_username : null,
+            'referrer_name' => $customer->sponsor instanceof Customer ? $this->fullName($customer->sponsor) : null,
             'phone' => $customer->c_mobile,
             'address' => (string) ($customer->c_address ?? ''),
             'barangay' => (string) ($customer->c_barangay ?? ''),
