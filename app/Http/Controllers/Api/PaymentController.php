@@ -81,9 +81,9 @@ class PaymentController extends Controller
             $referrer = $this->resolveValidReferrer($normalizedReferral);
             if (!$referrer) {
                 return response()->json([
-                    'message' => 'Referral code is invalid or referrer account is not verified.',
+                    'message' => 'Referral code is invalid or referrer account is unavailable.',
                     'errors' => [
-                        'customer.referred_by' => ['Referral code is invalid or referrer account is not verified.'],
+                        'customer.referred_by' => ['Referral code is invalid or referrer account is unavailable.'],
                     ],
                 ], 422);
             }
@@ -1042,7 +1042,6 @@ class PaymentController extends Controller
         return \App\Models\Customer::query()
             ->select(['c_userid', 'c_username', 'c_accnt_status', 'c_lockstatus'])
             ->whereRaw('LOWER(c_username) = ?', [strtolower($referral)])
-            ->where('c_accnt_status', 1)
             ->where('c_lockstatus', 0)
             ->first();
     }

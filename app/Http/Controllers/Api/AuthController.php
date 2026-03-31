@@ -77,13 +77,12 @@ class AuthController extends Controller
         $referrer = Customer::query()
             ->select(['c_userid', 'c_username', 'c_accnt_status', 'c_lockstatus'])
             ->whereRaw('LOWER(c_username) = ?', [strtolower((string) $validated['referred_by'])])
-            ->where('c_accnt_status', 1)
             ->where('c_lockstatus', 0)
             ->first();
 
         if (! $referrer) {
             throw ValidationException::withMessages([
-                'referred_by' => ['Referral code is invalid or referrer account is not verified.'],
+                'referred_by' => ['Referral code is invalid or referrer account is unavailable.'],
             ]);
         }
 
