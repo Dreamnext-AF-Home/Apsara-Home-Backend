@@ -698,6 +698,22 @@ class ProductController extends Controller
         })->values()->all();
     }
 
+    private function getEffectiveProductQty(Product $product): float
+    {
+        if (!$product->relationLoaded('variants')) {
+            $product->load('variants');
+        }
+
+        $activeVariants = $product->variants
+            ->filter(fn (ProductVariant $variant) => (int) ($variant->pv_status ?? 1) === 1);
+
+        if ($activeVariants->isNotEmpty()) {
+            return (float) $activeVariants->sum(fn (ProductVariant $variant) => $this->toNumber($variant->pv_qty));
+        }
+
+        return $this->toNumber($product->pd_qty);
+    }
+
     private function syncVariants(Product $product, array $variants, \DateTimeInterface $now): void
     {
         $existingVariantIds = ProductVariant::query()
@@ -773,6 +789,7 @@ class ProductController extends Controller
             ->all();
 
         $primaryImage = $images[0] ?? ($p->pd_image ?? null);
+        $effectiveQty = $this->getEffectiveProductQty($p);
 
         return [
             'id'          => (int)   $p->pd_id,
@@ -796,7 +813,7 @@ class ProductController extends Controller
             'priceDp'           => $this->toNumber($p->pd_price_dp),
             'priceMember'       => $this->toNumber($p->pd_price_member),
             'prodpv'            => $this->toNumber($p->pd_prodpv),
-            'qty'               => $this->toNumber($p->pd_qty),
+            'qty'               => $effectiveQty,
             'weight'            => (int)   $p->pd_weight,
             'psweight'          => $this->toNumber($p->pd_psweight),
             'pswidth'           => $this->toNumber($p->pd_pswidth),
