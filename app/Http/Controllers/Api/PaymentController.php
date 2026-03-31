@@ -65,19 +65,40 @@ class PaymentController extends Controller
         ]);
 
         $isMember = (bool) data_get($validated, 'customer.is_member', false);
+        $customerId = auth('sanctum')->id();
+        $requiresReferral = !$customerId;
         $normalizedReferral = $this->normalizeReferralValue((string) data_get($validated, 'customer.referred_by', ''));
+        $referrer = null;
+        $referralSourceType = null;
+        $authenticatedCustomer = $customerId
+            ? \App\Models\Customer::query()
+                ->select(['c_userid', 'c_sponsor'])
+                ->with('sponsor:c_userid,c_username,c_acct_status,c_lockstatus')
+                ->find((int) $customerId)
+            : null;
 
-        if (!$isMember) {
-            if ($normalizedReferral === '') {
-                return response()->json([
-                    'message' => 'The referred by field is required.',
-                    'errors' => [
-                        'customer.referred_by' => ['The referred by field is required.'],
-                    ],
-                ], 422);
+        if ($authenticatedCustomer instanceof \App\Models\Customer) {
+            $sponsorUsername = trim((string) ($authenticatedCustomer->sponsor?->c_username ?? ''));
+            if ($normalizedReferral === '' && $sponsorUsername !== '') {
+                $normalizedReferral = $sponsorUsername;
+                $referrer = $authenticatedCustomer->sponsor;
+                $referralSourceType = 'member_sponsor';
             }
+        }
 
-            $referrer = $this->resolveValidReferrer($normalizedReferral);
+        if ($normalizedReferral === '' && $requiresReferral && !$isMember) {
+            return response()->json([
+                'message' => 'The referred by field is required.',
+                'errors' => [
+                    'customer.referred_by' => ['The referred by field is required.'],
+                ],
+            ], 422);
+        }
+
+        if ($normalizedReferral !== '') {
+            if (!$referrer) {
+                $referrer = $this->resolveValidReferrer($normalizedReferral);
+            }
             if (!$referrer) {
                 return response()->json([
                     'message' => 'Referral code is invalid or referrer account is not verified.',
@@ -86,8 +107,9 @@ class PaymentController extends Controller
                     ],
                 ], 422);
             }
-        } else {
-            $referrer = null;
+            if ($referralSourceType === null) {
+                $referralSourceType = 'checkout_referral';
+            }
         }
 
         $secretKey = config('services.paymongo.secret_key');
@@ -154,6 +176,7 @@ class PaymentController extends Controller
                 'address' => $validated['customer']['address'] ?? null,
                 'referred_by' => $normalizedReferral,
                 'referrer_user_id' => $referrer ? (int) $referrer->c_userid : null,
+                'referral_source_type' => $referralSourceType,
                 'description' => $validated['description'],
                 'amount' => (float) $computedAmount,
                 'payment_method' => $validated['payment_method'],
