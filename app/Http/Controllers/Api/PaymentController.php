@@ -49,6 +49,7 @@ class PaymentController extends Controller
             'customer.phone' => 'nullable|string|max:50',
             'customer.address' => 'nullable|string|max:500',
             'customer.referred_by' => 'nullable|string|max:255',
+            'customer.is_member' => 'nullable|boolean',
             'order' => 'nullable|array',
             'order.product_name' => 'nullable|string|max:255',
             'order.product_id' => 'nullable|integer|min:1',
@@ -63,25 +64,30 @@ class PaymentController extends Controller
             'order.handling_fee' => 'nullable|numeric|min:0',
         ]);
 
+        $isMember = (bool) data_get($validated, 'customer.is_member', false);
         $normalizedReferral = $this->normalizeReferralValue((string) data_get($validated, 'customer.referred_by', ''));
 
-        if ($normalizedReferral === '') {
-            return response()->json([
-                'message' => 'The referred by field is required.',
-                'errors' => [
-                    'customer.referred_by' => ['The referred by field is required.'],
-                ],
-            ], 422);
-        }
+        if (!$isMember) {
+            if ($normalizedReferral === '') {
+                return response()->json([
+                    'message' => 'The referred by field is required.',
+                    'errors' => [
+                        'customer.referred_by' => ['The referred by field is required.'],
+                    ],
+                ], 422);
+            }
 
-        $referrer = $this->resolveValidReferrer($normalizedReferral);
-        if (!$referrer) {
-            return response()->json([
-                'message' => 'Referral code is invalid or referrer account is not verified.',
-                'errors' => [
-                    'customer.referred_by' => ['Referral code is invalid or referrer account is not verified.'],
-                ],
-            ], 422);
+            $referrer = $this->resolveValidReferrer($normalizedReferral);
+            if (!$referrer) {
+                return response()->json([
+                    'message' => 'Referral code is invalid or referrer account is not verified.',
+                    'errors' => [
+                        'customer.referred_by' => ['Referral code is invalid or referrer account is not verified.'],
+                    ],
+                ], 422);
+            }
+        } else {
+            $referrer = null;
         }
 
         $secretKey = config('services.paymongo.secret_key');
@@ -147,7 +153,7 @@ class PaymentController extends Controller
                 'phone' => $validated['customer']['phone'] ?? null,
                 'address' => $validated['customer']['address'] ?? null,
                 'referred_by' => $normalizedReferral,
-                'referrer_user_id' => (int) $referrer->c_userid,
+                'referrer_user_id' => $referrer ? (int) $referrer->c_userid : null,
                 'description' => $validated['description'],
                 'amount' => (float) $computedAmount,
                 'payment_method' => $validated['payment_method'],

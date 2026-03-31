@@ -217,3 +217,7 @@ Route::middleware(['auth:sanctum', 'supplier.actor'])->prefix('supplier/auth')->
     Route::post('/logout', [SupplierAuthController::class, 'logout']);
     Route::get('/me', [SupplierAuthController::class, 'me']);
 });
+
+Route::middleware(['auth:sanctum', 'supplier.actor'])->group(function () {
+    Route::get('/supplier/orders', [\App\Http\Controllers\Api\SupplierOrderController::class, 'index']);
+});

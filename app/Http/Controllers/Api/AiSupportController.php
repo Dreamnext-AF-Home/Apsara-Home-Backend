@@ -16,12 +16,25 @@ class AiSupportController extends Controller
     {
         $questionRaw = (string) $request->input('message', '');
         $question = $this->cleanInput($questionRaw);
+        $imageData = (string) $request->input('image', '');
+        $hasImage = trim($imageData) !== '';
 
-        if ($question === '') {
+        if ($question === '' && ! $hasImage) {
             return response()->json([
                 'status' => 'ok',
                 'reply' => 'Please type your question so I can help.',
                 'quick_replies' => $this->defaultQuickReplies(),
+                'product_cards' => [],
+                'brand_cards' => [],
+                'category_cards' => [],
+                'brand_view_all_url' => '',
+            ]);
+        }
+        if ($question === '' && $hasImage) {
+            return response()->json([
+                'status' => 'ok',
+                'reply' => "Thanks for the photo. To request a refund:\n1) Go to your Orders page.\n2) Open the order and click Refund/Return.\n3) Fill out the form and upload the photos as proof.\n4) Our admin will review it. You will be notified via notification or email once approved.",
+                'quick_replies' => ['Go to Orders page', 'Request a refund', 'Track my order'],
                 'product_cards' => [],
                 'brand_cards' => [],
                 'category_cards' => [],
@@ -37,7 +50,7 @@ class AiSupportController extends Controller
         if ($strictFromQuery !== '') {
             $nameQuery = $strictFromQuery;
         }
-        $isStrictNameQuery = in_array(strtolower(trim($nameQuery)), ['bed', 'pillow', 'sofa', 'bench', 'mirror'], true);
+        $isStrictNameQuery = in_array(strtolower(trim($nameQuery)), ['bed', 'pillow', 'sofa', 'bench', 'mirror', 'bin', 'trash', 'drum', 'drawer'], true);
 
         foreach ($this->tagalogIntentAliases() as $pattern => $append) {
             if (preg_match($pattern, $question)) {
@@ -72,6 +85,24 @@ class AiSupportController extends Controller
         $brandCards = [];
         $categoryCards = [];
         $brandViewAllUrl = '';
+        $stepImages = [];
+
+        $orderNumberDetected =
+            preg_match('/\b(order number|order no|order #|tracking number|tracking no|tracking #)\b/i', $qLower)
+            || preg_match('/\bcs_[a-z0-9]+\b/i', $qLower);
+
+        if ($orderNumberDetected) {
+            $prefix = $hasImage ? 'Thanks, I received the photo. ' : '';
+            return response()->json([
+                'status' => 'ok',
+                'reply' => $prefix . "Thanks, I received the order number. To request a refund:\n1) Go to your Orders page.\n2) Open the order and click Refund/Return.\n3) Fill out the form and upload photos as proof.\n4) Our admin will review it. You will be notified via notification or email once approved.",
+                'quick_replies' => ['Go to Orders page', 'Request a refund', 'Track my order'],
+                'product_cards' => [],
+                'brand_cards' => [],
+                'category_cards' => [],
+                'brand_view_all_url' => '',
+            ]);
+        }
 
         $detectedBrand = $this->detectBrand($qLower);
         $detectedBrandId = (int) ($detectedBrand['id'] ?? 0);
@@ -82,20 +113,36 @@ class AiSupportController extends Controller
             if (array_key_exists($qNormSimple, $faq)) {
                 $reply = $faq[$qNormSimple];
                 $quickReplies = ['Track my order', 'Payment methods', 'Contact support'];
-            } else {
-                $matchedFaq = '';
-                foreach ($faq as $key => $ans) {
-                    if ($key !== '' && str_contains($qNormSimple, $key)) {
-                        $matchedFaq = $ans;
-                        break;
-                    }
-                }
-
-                if ($matchedFaq !== '') {
-                    $reply = $matchedFaq;
-                    $quickReplies = ['Track my order', 'Payment methods', 'Contact support'];
                 } else {
-                    if (preg_match('/\b(how are you|how\'?s it going|kamusta ka|kumusta ka|ayos ka ba|mabuti ka ba)\b/i', $qLower)) {
+                    $matchedFaq = '';
+                    foreach ($faq as $key => $ans) {
+                        if ($key !== '' && str_contains($qNormSimple, $key)) {
+                            $matchedFaq = $ans;
+                            break;
+                        }
+                    }
+
+                    if ($matchedFaq !== '') {
+                        $reply = $matchedFaq;
+                        $quickReplies = ['Track my order', 'Payment methods', 'Contact support'];
+                    } elseif (preg_match('/\b(thank you|thanks|thank u|ty|salamat|maraming salamat|salamat po)\b/i', $qLower)) {
+                        $thanksReplies = [
+                            'You are welcome! If you need anything else, just let me know.',
+                            'Glad to help! I am here if you have more questions.',
+                            'You are welcome! Feel free to ask anytime.',
+                            'Walang anuman! Sabihin mo lang kung may kailangan ka pa.',
+                        ];
+                        $reply = $thanksReplies[array_rand($thanksReplies)];
+                        $quickReplies = ['Track my order', 'Payment methods', 'Contact support'];
+                    } else {
+                    $normalized = preg_replace('/[^a-z0-9\s]/i', ' ', $qLower);
+                    if (preg_match('/\b(how can i create account|create account|create an account|sign up|signup|register|how to register|how to sign up|how to create account|how do i sign up|how do i create account|how to login|log in|login page|where.*login|where.*sign in|where.*sign up|where.*register)\b/i', $qLower)
+                        || preg_match('/\b(accou?nt|acco?unt|acount|accnt|accout)\b/i', $normalized)) {
+                        $accountHelp = $this->buildAccountHelpResponse();
+                        $reply = $accountHelp['reply'];
+                        $quickReplies = $accountHelp['quickReplies'];
+                        $stepImages = $accountHelp['stepImages'];
+                    } elseif (preg_match('/\b(how are you|how\'?s it going|kamusta ka|kumusta ka|ayos ka ba|mabuti ka ba)\b/i', $qLower)) {
                         $greetReplies = [
                             'I am doing great and ready to help. What do you need today?',
                             'I am good, thanks for asking. How can I assist you today?',
@@ -161,6 +208,36 @@ class AiSupportController extends Controller
                         $quickReplies = $bestIntent['quickReplies'];
                         $productCards = $bestIntent['productCards'];
                         $categoryCards = $bestIntent['categoryCards'];
+                    } elseif (
+                        preg_match('/\b(refund|return|money back|ibalik|i-?refund|palit|replacement)\b/i', $qLower)
+                        && preg_match('/\b(damage|damaged|defective|broken|sira|basag|crack|cracked|wrong)\b/i', $qLower)
+                    ) {
+                        $reply = "Here is how the refund process works:\n1) Send your order number and clear photos/videos of the issue.\n2) Our team verifies the request (usually within 24-48 hours).\n3) If approved, we will arrange pickup/return instructions (if needed).\n4) Refund is processed back to your original payment method. Timing depends on the payment channel (typically 3-7 business days after approval).\n\nIf you want, share your order number and photos now and I will proceed.";
+                        $quickReplies = ['Send order number', 'Upload photos', 'Talk to support'];
+                    } elseif (preg_match('/\b(received.*(problem|issue|damaged|defective|broken|wrong)|item.*(problem|issue|damaged|defective|broken|wrong)|after.*receive|pagkatapos.*matanggap|pagkatanggap|sira|may damage|may sira|damaged item|damaged product|arrived damaged|i have ordered.*damage|damaged ordered|damaged order|order.*damaged|have damage)\b/i', $qLower)) {
+                        $reply = "I am sorry that happened. I can help fix this right away. Can you tell me:\n1) What is wrong with the item (damaged, defective, wrong item, missing parts)?\n2) Your order number\n3) Photos of the item and packaging\n\nOnce you share those, I will guide you through replacement or refund—whichever you prefer.";
+                        if ($hasImage) {
+                            $reply = "Thanks, I received the photo. " . $reply;
+                        }
+                        $quickReplies = ['Request a refund', 'Request a replacement', 'Talk to support', 'Track my order'];
+                    } elseif (
+                        preg_match('/\b(tracking number|order number|order no|order #|tracking no|tracking #)\b/i', $qLower)
+                        || preg_match('/\bcs_[a-z0-9]+\b/i', $qLower)
+                    ) {
+                        $reply = "Thanks for the order number. To request a refund:\n1) Go to your Orders page.\n2) Open the order and click Refund/Return.\n3) Fill out the form and upload photos as proof.\n4) Our admin will review it. You will be notified via notification or email once approved.";
+                        if ($hasImage) {
+                            $reply = "Thanks, I received the photo. " . $reply;
+                        }
+                        $quickReplies = ['Go to Orders page', 'Request a refund', 'Track my order'];
+                    } elseif (
+                        preg_match('/\b(crack|cracked|dent|dented|broken|defective|sira|basag|gasgas|scratch|scratched|missing parts|kulang|leak|stain)\b/i', $qLower)
+                        && preg_match('/\b(item|product|order|it)\b/i', $qLower)
+                    ) {
+                        $reply = "I am sorry about that. Please send:\n1) Photos of the damage\n2) Your order number\n3) A short description of the issue\n\nI will guide you through replacement or refund right away.";
+                        if ($hasImage) {
+                            $reply = "Thanks, I received the photo. " . $reply;
+                        }
+                        $quickReplies = ['Request a refund', 'Request a replacement', 'Talk to support'];
                     } else {
                         $directNameMatches = [];
                         if (strlen($nameQuery) >= 3) {
@@ -196,8 +273,15 @@ class AiSupportController extends Controller
                             } else {
                                 $matchedCategories = $this->searchCategories($searchQuestion, 6);
                                 if (!empty($matchedCategories)) {
-                                    $categoryCards = $matchedCategories;
-                                    $reply = 'I found matching categories you can browse.';
+                            $categoryCards = $matchedCategories;
+                            $categoryProducts = $this->getCategoryProductCards($matchedCategories, $detectedBrandId, 6);
+                            if (!empty($categoryProducts)) {
+                                $productCards = $categoryProducts;
+                                $categoryCards = [];
+                                $reply = 'Here are products from the closest matching category.';
+                            } else {
+                                $reply = 'I found matching categories you can browse.';
+                            }
                                     $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
                                 } else {
                                     $specificCards = [];
@@ -469,9 +553,16 @@ class AiSupportController extends Controller
                         if (empty($productCards)) {
                             $categoryCards = $this->searchCategories($searchQuestion, 6);
                         }
+                        if (empty($productCards) && !empty($categoryCards)) {
+                            $categoryProducts = $this->getCategoryProductCards($categoryCards, $detectedBrandId, 6);
+                            if (!empty($categoryProducts)) {
+                                $productCards = $categoryProducts;
+                                $categoryCards = [];
+                            }
+                        }
                         $reply = !empty($productCards)
                             ? 'Here are products that match your request.'
-                            : (!empty($categoryCards) ? 'I found matching categories you can browse.' : 'I could not find a matching product right now. Please try a more specific product name.');
+                            : (!empty($categoryCards) ? 'I found matching categories you can browse.' : $this->getNotUnderstoodReply());
                         $quickReplies = ['Show lowest price', 'Show highest price', 'Track my order'];
                     } elseif (preg_match('/\bwhat is the best product here\b/i', $qLower)) {
                         $productCards = $this->getTopRatedCards($detectedBrandId, 5);
@@ -483,7 +574,7 @@ class AiSupportController extends Controller
                             $productCards = $this->getBestSellingCards($detectedBrandId, 5);
                             $reply = !empty($productCards)
                                 ? 'We do not have enough ratings yet, so here are our current best-sellers instead.'
-                                : 'I could not find a matching product right now. Please try a more specific product name.';
+                                : $this->getNotUnderstoodReply();
                         }
                         $quickReplies = ['Show appliances', 'Show furniture', 'Track my order'];
                     } elseif (preg_match('/\b(lowest|cheapest|budget|low price)\b/i', $qLower)) {
@@ -493,7 +584,7 @@ class AiSupportController extends Controller
                                 ? ('Here are some of the lowest-priced ' . $detectedBrandName . ' products.')
                                 : 'Here are some of the lowest-priced products.';
                         } else {
-                            $reply = 'I could not find a matching product right now. Please try a more specific product name.';
+                            $reply = $this->getNotUnderstoodReply();
                         }
                         $quickReplies = ['Show highest price', 'Track my order', 'Payment methods'];
                     } elseif (preg_match('/\b(highest|expensive|premium|high price)\b/i', $qLower)) {
@@ -503,7 +594,7 @@ class AiSupportController extends Controller
                                 ? ('Here are some of the higher-priced ' . $detectedBrandName . ' products.')
                                 : 'Here are some of the higher-priced products.';
                         } else {
-                            $reply = 'I could not find a matching product right now. Please try a more specific product name.';
+                            $reply = $this->getNotUnderstoodReply();
                         }
                         $quickReplies = ['Show lowest price', 'Track my order', 'Payment methods'];
                     } elseif (preg_match('/\b(recommend|recommendation|suggest|suggestion|best match|top pick|top picks|personalized|personalised)\b/i', $qLower)
@@ -558,7 +649,7 @@ class AiSupportController extends Controller
                                 }
                                 $reply = 'Here are matching products: ' . implode('; ', $arr) . '.';
                             } else {
-                                $reply = 'I could not find a matching product right now. Please try a more specific product name.';
+                                $reply = $this->getNotUnderstoodReply();
                             }
                         }
                         $quickReplies = ['Track my order', 'Payment methods', 'Contact support'];
@@ -569,18 +660,28 @@ class AiSupportController extends Controller
                             : ('I found the brand ' . $detectedBrandName . ' but no active priced products are available right now.');
                         $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
                     } elseif (preg_match('/^[a-z0-9][a-z0-9\s\-\.\&]{2,}$/i', $question)) {
-                        $productCards = $this->getTopicCards($this->buildSearchTokens($question), $detectedBrandId, 6);
-                        if (empty($productCards)) {
-                            $productCards = $this->searchProductsByName($question, $detectedBrandId, 6);
-                        }
-                        if (!empty($productCards)) {
-                            $reply = 'Here are matching products for "' . $question . '".';
-                            $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
+                        $tokens = $this->buildSearchTokens($question);
+                        if (empty($tokens) || !$this->hasProductTokenMatch($tokens, $detectedBrandId)) {
+                            $reply = $this->getNotUnderstoodReply();
+                            $quickReplies = $this->defaultQuickReplies();
                         } else {
-                            $reply = 'I could not find a matching product right now. Please try a more specific product name.';
+                            $productCards = $this->getTopicCards($tokens, $detectedBrandId, 6);
+                            if (empty($productCards)) {
+                                $productCards = $this->searchProductsByName($question, $detectedBrandId, 6);
+                            }
+                            if (!empty($productCards)) {
+                                $reply = 'Here are matching products for "' . $question . '".';
+                                $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
+                            } else {
+                                $reply = $this->getNotUnderstoodReply();
+                            }
                         }
                     } else {
-                        $reply = 'I can help with order tracking, payment methods, contact details, and product prices. Tell me what you need.';
+                        $fallback = $this->getHelpfulFallback($question, $detectedBrandId);
+                        $reply = $fallback['reply'];
+                        $quickReplies = $fallback['quickReplies'];
+                        $productCards = $fallback['productCards'];
+                        $categoryCards = $fallback['categoryCards'];
                     }
                 }
             }
@@ -605,6 +706,7 @@ class AiSupportController extends Controller
             'brand_cards' => $brandCards,
             'category_cards' => $categoryCards,
             'brand_view_all_url' => $brandViewAllUrl,
+            'step_images' => $stepImages,
         ]);
     }
 
@@ -625,6 +727,53 @@ class AiSupportController extends Controller
             'Can you recommend a sofa for small spaces?',
             'What are your best-selling living room products?',
             'Do you have items on sale right now?'
+        ];
+    }
+
+    private function getNotUnderstoodReply(): string
+    {
+        return "I want to help. Tell me what you’re looking for (product type, budget, or room), and I’ll suggest the best options.";
+    }
+
+    private function getHelpfulFallback(string $question, int $brandId): array
+    {
+        $tokens = $this->buildSearchTokens($question, 2);
+        $productCards = [];
+        $categoryCards = [];
+
+        if (!empty($tokens)) {
+            $productCards = $this->searchProductsByKeywords($question, $brandId, 6);
+            if (empty($productCards)) {
+                $productCards = $this->searchProductsByName($question, $brandId, 6);
+            }
+            if (empty($productCards)) {
+                $categoryCards = $this->searchCategories($question, 6);
+            }
+        }
+
+        if (!empty($productCards)) {
+            return [
+                'reply' => 'Here are some items that might match what you need.',
+                'quickReplies' => ['Show lowest price', 'Show highest price', 'Track my order'],
+                'productCards' => $productCards,
+                'categoryCards' => [],
+            ];
+        }
+
+        if (!empty($categoryCards)) {
+            return [
+                'reply' => 'I found categories you can browse. Tell me your budget or style to narrow it down.',
+                'quickReplies' => ['Show appliances', 'Show furniture', 'Best product'],
+                'productCards' => [],
+                'categoryCards' => $categoryCards,
+            ];
+        }
+
+        return [
+            'reply' => $this->getNotUnderstoodReply(),
+            'quickReplies' => $this->defaultQuickReplies(),
+            'productCards' => [],
+            'categoryCards' => [],
         ];
     }
 
@@ -663,6 +812,16 @@ class AiSupportController extends Controller
         if (preg_match('/\b(mirror|mirrors|salamin|vanity mirror|wall mirror|mirror cabinet|full length mirror|full-length mirror)\b/i', $lower)) {
             $extras[] = 'mirror';
         }
+        if (preg_match('/\b(bin|trash|basura)\b/i', $lower)) {
+            $extras[] = 'bin';
+            $extras[] = 'trash';
+        }
+        if (preg_match('/\bdrum|drums\b/i', $lower)) {
+            $extras[] = 'drum';
+        }
+        if (preg_match('/\b(cabinet|cabinetry|drawer|drawers)\b/i', $lower)) {
+            $extras[] = 'drawer';
+        }
 
         $cleanTokens = preg_split('/\s+/', trim(strtolower($clean))) ?: [];
         $tokens = array_filter($cleanTokens, fn ($token) => $token !== '');
@@ -692,6 +851,15 @@ class AiSupportController extends Controller
         if (in_array($normalized, ['mirror', 'mirrors', 'salamin', 'vanity mirror', 'wall mirror', 'mirror cabinet', 'full length mirror', 'full-length mirror'], true)) {
             return 'mirror';
         }
+        if (in_array($normalized, ['bin', 'trash', 'basura'], true)) {
+            return $normalized === 'trash' ? 'trash' : 'bin';
+        }
+        if (in_array($normalized, ['drum', 'drums'], true)) {
+            return 'drum';
+        }
+        if (in_array($normalized, ['cabinet', 'cabinetry', 'drawer', 'drawers'], true)) {
+            return 'drawer';
+        }
 
         return $value;
     }
@@ -711,12 +879,33 @@ class AiSupportController extends Controller
         if (in_array($normalized, ['mirror', 'mirrors', 'salamin', 'vanity mirror', 'wall mirror', 'mirror cabinet', 'full length mirror', 'full-length mirror'], true)) {
             return ['mirror'];
         }
+        if (in_array($normalized, ['bin', 'trash', 'basura'], true)) {
+            return [$normalized === 'trash' ? 'trash' : 'bin'];
+        }
+        if (in_array($normalized, ['drum', 'drums'], true)) {
+            return ['drum'];
+        }
+        if (in_array($normalized, ['cabinet', 'cabinetry', 'drawer', 'drawers'], true)) {
+            return ['drawer'];
+        }
 
         return $normalized !== '' ? [$normalized] : [];
     }
 
     private function detectStrictNameQuery(string $qLower, string $searchQuestion): string
     {
+        if (preg_match('/\b(bin|basura)\b/i', $qLower)) {
+            return 'bin';
+        }
+        if (preg_match('/\btrash\b/i', $qLower)) {
+            return 'trash';
+        }
+        if (preg_match('/\bdrum|drums\b/i', $qLower)) {
+            return 'drum';
+        }
+        if (preg_match('/\b(cabinet|cabinetry|drawer|drawers)\b/i', $qLower)) {
+            return 'drawer';
+        }
         if (preg_match('/\b(sofa|sofas|bench|benches)\b/i', $qLower)) {
             return 'sofa';
         }
@@ -1273,6 +1462,7 @@ class AiSupportController extends Controller
             }
 
             $cards[] = [
+                'id' => (int) ($row->cat_id ?? 0),
                 'name' => $name,
                 'count' => (int) ($row->product_count ?? 0),
                 'url' => ($frontendBase !== '' ? $frontendBase : '') . '/category/' . rawurlencode($slug),
@@ -1280,6 +1470,65 @@ class AiSupportController extends Controller
         }
 
         return $cards;
+    }
+
+    private function getCategoryProductCards(array $categoryCards, int $brandId, int $limit = 6): array
+    {
+        $categoryId = 0;
+        foreach ($categoryCards as $card) {
+            $id = (int) ($card['id'] ?? 0);
+            if ($id > 0) {
+                $categoryId = $id;
+                break;
+            }
+        }
+        if ($categoryId <= 0) {
+            return [];
+        }
+
+        $query = $this->selectProductFields($this->productBaseQuery($brandId), $this->isMember)
+            ->where('p.pd_catid', $categoryId);
+
+        $rows = $query
+            ->orderByDesc('p.pd_sales')
+            ->orderByDesc('p.pd_id')
+            ->limit($limit > 0 ? $limit : 6)
+            ->get();
+
+        return $this->mapProductCards($rows);
+    }
+
+    private function buildAccountHelpResponse(): array
+    {
+        $base = $this->frontendBaseUrl();
+        $homeUrl = $base !== '' ? $base . '/' : '/';
+        $loginUrl = $base !== '' ? $base . '/login' : '/login';
+
+        $r1 = $base !== '' ? $base . '/Images/steps/r1.png' : '/Images/steps/r1.png';
+        $r2 = $base !== '' ? $base . '/Images/steps/r2.png' : '/Images/steps/r2.png';
+        $r3 = $base !== '' ? $base . '/Images/steps/r3.png' : '/Images/steps/r3.png';
+        $rr3 = $base !== '' ? $base . '/Images/steps/rr3.png' : '/Images/steps/rr3.png';
+        $r4 = $base !== '' ? $base . '/Images/steps/r4.png' : '/Images/steps/r4.png';
+
+        $reply = implode("\n\n", [
+            'Here’s how to create an account or log in:',
+            'Step 1: Go to the homepage and click the user icon. ' . $homeUrl,
+            'Step 2: If you already have an account, choose **Login**. If you don’t have one, choose **Sign Up**. Make sure you have a preferred/referrer before signing up. ' . $loginUrl,
+            'Step 3: After creating your account, we’ll send an OTP to verify it. Once verified, you can log in.',
+            'Login page: ' . $loginUrl,
+        ]);
+
+        return [
+            'reply' => $reply,
+            'quickReplies' => ['Login page', 'Sign up', 'Track my order'],
+            'stepImages' => [
+                ['url' => $r1, 'caption' => 'Step 1: Click the user icon on the homepage.'],
+                ['url' => $r2, 'caption' => 'Step 2: Choose Login or Sign Up.'],
+                ['url' => $r3, 'caption' => 'Step 2: Sign Up form view.'],
+                ['url' => $rr3, 'caption' => 'Step 2: Preferred/referrer is required.'],
+                ['url' => $r4, 'caption' => 'Step 3: Verify your account with the OTP.'],
+            ],
+        ];
     }
 
     private function productBaseQuery(int $brandId = 0, bool $withCategory = false)
@@ -1482,6 +1731,7 @@ class AiSupportController extends Controller
 
         $query->whereRaw('(' . implode(' OR ', $whereParts) . ')', $bindings);
         $query->havingRaw($this->priceExpression($this->isMember) . ' > 0');
+        $this->applyApplianceExclusions($query, $terms);
 
         $rows = $query
             ->orderByDesc('match_score')
@@ -1491,6 +1741,26 @@ class AiSupportController extends Controller
             ->get();
 
         return $this->mapProductCards($rows);
+    }
+
+    private function applyApplianceExclusions($query, array $terms): void
+    {
+        $normalized = array_map(fn ($term) => strtolower(trim((string) $term)), $terms);
+        if (!in_array('appliance', $normalized, true)) {
+            return;
+        }
+
+        $excludeIfAny = ['bed', 'pillow', 'sofa', 'bench', 'table', 'chair', 'cabinet', 'stool', 'mirror'];
+        foreach ($normalized as $term) {
+            if (in_array($term, $excludeIfAny, true)) {
+                return;
+            }
+        }
+
+        $excludeTerms = ['table', 'chair', 'sofa', 'bed', 'cabinet', 'stool', 'bench', 'mirror'];
+        foreach ($excludeTerms as $exclude) {
+            $query->whereRaw('LOWER(p.pd_name) NOT LIKE ?', ['%' . $exclude . '%']);
+        }
     }
 
     private function buildSearchTokens(string $text, int $minLen = 3): array
@@ -1511,6 +1781,25 @@ class AiSupportController extends Controller
             $out[] = $p;
         }
         return array_values(array_unique($out));
+    }
+
+    private function hasProductTokenMatch(array $tokens, int $brandId): bool
+    {
+        $tokens = array_values(array_filter($tokens, fn ($t) => $t !== ''));
+        if (empty($tokens)) {
+            return false;
+        }
+
+        $query = $this->productBaseQuery($brandId);
+        $query->where(function ($q) use ($tokens) {
+            foreach ($tokens as $t) {
+                $like = '%' . strtolower($t) . '%';
+                $q->orWhereRaw('LOWER(p.pd_name) LIKE ?', [$like])
+                  ->orWhereRaw('LOWER(COALESCE(p.pd_description, \'\')) LIKE ?', [$like]);
+            }
+        });
+
+        return $query->limit(1)->exists();
     }
 
     private function getExactOrClosestProduct(string $rawQuery, int $brandId): array
@@ -1712,6 +2001,19 @@ class AiSupportController extends Controller
 
     private function detectBrand(string $qLower): array
     {
+        if (preg_match('/\b(kids?|bata)\b/i', $qLower)) {
+            $brandRow = DB::table('tbl_product_brand')
+                ->select('pb_id', 'pb_name')
+                ->whereRaw('LOWER(pb_name) = ?', ['junior studio'])
+                ->first();
+            if ($brandRow) {
+                return [
+                    'id' => (int) ($brandRow->pb_id ?? 0),
+                    'name' => (string) ($brandRow->pb_name ?? 'Junior Studio'),
+                ];
+            }
+        }
+
         $detectedId = 0;
         $detectedName = '';
         $bestLen = 0;
