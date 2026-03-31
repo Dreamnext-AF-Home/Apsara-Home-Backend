@@ -470,7 +470,7 @@ class AuthController extends Controller
 
         $levelOneMembers = $descendants
             ->where('c_sponsor', (int) $customer->c_userid)
-            ->orderByDesc('c_userid')
+            ->sortByDesc('c_userid')
             ->values();
 
         $levelOneIds = $levelOneMembers->pluck('c_userid')->all();
