@@ -1398,17 +1398,30 @@ class ProductController extends Controller
             ]);
         }
 
+        $product = Product::query()
+            ->select([
+                'pd_id', 'pd_name', 'pd_description', 'pd_specifications', 'pd_material', 'pd_warranty',
+                'pd_catid', 'pd_catsubid', 'pd_room_type', 'pd_brand_type', 'pd_supplier',
+                'pd_price_srp', 'pd_price_dp', 'pd_price_member', 'pd_qty',
+                'pd_prodpv',
+                'pd_weight', 'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
+                'pd_assembly_required', 'pd_type', 'pd_musthave',
+                'pd_bestseller', 'pd_salespromo', 'pd_status', 'pd_date',
+                'pd_last_update', 'pd_parent_sku', 'pd_image',
+            ])
+            ->with([
+                'photos:pp_id,pp_pdid,pp_filename,pp_varone,pp_date',
+                'brand:pb_id,pb_name,pb_status',
+                'supplier:s_id,s_company,s_name',
+                'creationActivity:pal_id,pal_product_id,pal_actor_name,pal_actor_email,pal_actor_role,pal_created_at',
+                'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_width,pv_dimension,pv_height,pv_price_srp,pv_price_dp,pv_price_member,pv_prodpv,pv_qty,pv_status,pv_date',
+                'variants.photos:pvp_id,pvp_pvid,pvp_filename,pvp_sort,pvp_date',
+            ])
+            ->findOrFail($product->pd_id);
+
         return response()->json([
             'message' => 'Product created successfully.',
-            'product' => [
-                'id'       => $product->pd_id,
-                'name'     => $product->pd_name,
-                'priceSrp' => (float) $product->pd_price_srp,
-                'priceDp'  => $this->toNumber($product->pd_price_dp),
-                'priceMember' => $this->toNumber($product->pd_price_member),
-                'prodpv'   => (float) ($product->pd_prodpv ?? 0),
-                'status'   => (int) $product->pd_status,
-            ],
+            'product' => $this->mapProduct($product),
         ], 201);
     }
 
