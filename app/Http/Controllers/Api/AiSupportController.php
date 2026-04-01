@@ -31,6 +31,13 @@ class AiSupportController extends Controller
 
         $qLower = mb_strtolower($question, 'UTF-8');
         $qNormSimple = $this->normalizeSimple($qLower);
+        $searchQuestion = $this->normalizeSearchQuery($question);
+        $nameQuery = $this->normalizeNameQuery($searchQuestion);
+        $strictFromQuery = $this->detectStrictNameQuery($qLower, $searchQuestion);
+        if ($strictFromQuery !== '') {
+            $nameQuery = $strictFromQuery;
+        }
+        $isStrictNameQuery = in_array(strtolower(trim($nameQuery)), ['bed', 'pillow', 'sofa', 'bench', 'mirror'], true);
 
         foreach ($this->tagalogIntentAliases() as $pattern => $append) {
             if (preg_match($pattern, $question)) {
@@ -106,6 +113,11 @@ class AiSupportController extends Controller
                         ];
                         $reply = $availReplies[array_rand($availReplies)];
                         $quickReplies = ['Product price', 'Track my order', 'Payment methods'];
+                    } elseif ($this->isDiningTableIntent($qLower)) {
+                        $diningIntent = $this->handleDiningTableIntent($detectedBrandId, $question);
+                        $reply = $diningIntent['reply'];
+                        $quickReplies = $diningIntent['quickReplies'];
+                        $productCards = $diningIntent['productCards'];
                     } elseif (preg_match('/\b(hi|hello|hey|hi there|assistant|chatbot|ai|good morning|good afternoon|good evening|kamusta|kumusta|magandang umaga|magandang hapon|magandang gabi|magandang araw)\b/i', $qLower) || mb_strlen($question, 'UTF-8') <= 2) {
                         $helloReplies = [
                             'Hi! Welcome. I can help with product details, shipping, payment options, and order tracking.',
@@ -119,37 +131,56 @@ class AiSupportController extends Controller
                         ];
                         $reply = $helloReplies[array_rand($helloReplies)];
                         $quickReplies = ['Product price', 'Track my order', 'Payment methods'];
+                    } elseif (preg_match('/\b(recommend|recommendation|suggest|suggestion|best match|top pick|top picks|personalized|personalised)\b/i', $qLower)
+                        && !preg_match('/\b(best product|best seller|bestseller|top product|recommended product|what is the best product)\b/i', $qLower)) {
+                        $recIntent = $this->handleGeneralRecommendationIntent($detectedBrandId, $detectedBrandName);
+                        $reply = $recIntent['reply'];
+                        $quickReplies = $recIntent['quickReplies'];
+                        $productCards = $recIntent['productCards'];
+                        $categoryCards = $recIntent['categoryCards'];
+                    } elseif ($this->hasBudgetIntent($qLower)) {
+                        $budgetFlow = $this->handleBudgetIntent(
+                            $question,
+                            $qLower,
+                            $searchQuestion,
+                            $detectedBrandId
+                        );
+                        $reply = $budgetFlow['reply'];
+                        $quickReplies = $budgetFlow['quickReplies'];
+                        $productCards = $budgetFlow['productCards'];
+                        $categoryCards = $budgetFlow['categoryCards'];
                     } elseif (preg_match('/\b(best product|best seller|bestseller|top product|recommended product|what is the best product)\b/i', $qLower)) {
-                        $productCards = $this->getTopRatedCards($detectedBrandId, 5);
-                        if (!empty($productCards)) {
-                            $arr = [];
-                            foreach ($productCards as $card) {
-                                $arr[] = $card['name'] . ' (from ' . $card['price'] . ')';
-                            }
-                            $reply = $detectedBrandId > 0
-                                ? ('Great question. Here are some of our highest-rated ' . $detectedBrandName . ' products right now: ' . implode('; ', $arr) . '.')
-                                : ('Great question. Here are some of our highest-rated products right now: ' . implode('; ', $arr) . '.');
-                        } else {
-                            $productCards = $this->getBestSellingCards($detectedBrandId, 5);
-                            if (!empty($productCards)) {
-                                $arr = [];
-                                foreach ($productCards as $card) {
-                                    $arr[] = $card['name'] . ' (from ' . $card['price'] . ')';
-                                }
-                                $reply = $detectedBrandId > 0
-                                    ? ('We do not have enough ratings yet, so here are our current best-selling ' . $detectedBrandName . ' products: ' . implode('; ', $arr) . '.')
-                                    : ('We do not have enough ratings yet, so here are our current best-selling products: ' . implode('; ', $arr) . '.');
-                            } else {
-                                $reply = 'I can help you choose. Tell me your budget and category (e.g., sofa, appliance, bedroom), and I will recommend products.';
-                            }
-                        }
-                        $quickReplies = ['Show appliances', 'Show furniture', 'Track my order'];
+                        $bestIntent = $this->handleBestProductIntent(
+                            $question,
+                            $qLower,
+                            $searchQuestion,
+                            $detectedBrandId,
+                            $detectedBrandName
+                        );
+                        $reply = $bestIntent['reply'];
+                        $quickReplies = $bestIntent['quickReplies'];
+                        $productCards = $bestIntent['productCards'];
+                        $categoryCards = $bestIntent['categoryCards'];
                     } else {
                         $directNameMatches = [];
-                        if (strlen($question) >= 3) {
-                            $directNameMatches = $this->searchProductsByName($question, $detectedBrandId, 10);
-                            if (empty($directNameMatches)) {
-                                $directNameMatches = $this->searchProductsByNameNoPrice($question, 10);
+                        if (strlen($nameQuery) >= 3) {
+                            if ($isStrictNameQuery) {
+                                $strictKeywords = $this->getStrictNameKeywords($nameQuery);
+                                $merged = [];
+                                foreach ($strictKeywords as $keyword) {
+                                    $merged = $this->mergeCardLists($merged, $this->searchProductsByNameOnly($keyword, $detectedBrandId, 10));
+                                }
+                                if (empty($merged)) {
+                                    foreach ($strictKeywords as $keyword) {
+                                        $merged = $this->mergeCardLists($merged, $this->searchProductsByNameNoPrice($keyword, 10));
+                                    }
+                                }
+                                $directNameMatches = $merged;
+                            } else {
+                                $directNameMatches = $this->searchProductsByName($nameQuery, $detectedBrandId, 10);
+                                if (empty($directNameMatches)) {
+                                    $directNameMatches = $this->searchProductsByNameNoPrice($nameQuery, 10);
+                                }
                             }
                         }
                         if (!empty($directNameMatches)) {
@@ -157,23 +188,23 @@ class AiSupportController extends Controller
                             $reply = 'Here are matching products for "' . $question . '".';
                             $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
                         } else {
-                            $keywordMatches = $this->searchProductsByKeywords($question, $detectedBrandId, 10);
+                            $keywordMatches = $this->searchProductsByKeywords($searchQuestion, $detectedBrandId, 10);
                             if (!empty($keywordMatches)) {
                                 $productCards = $keywordMatches;
                                 $reply = 'Here are matching products for "' . $question . '".';
                                 $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
                             } else {
-                                $matchedCategories = $this->searchCategories($question, 6);
+                                $matchedCategories = $this->searchCategories($searchQuestion, 6);
                                 if (!empty($matchedCategories)) {
                                     $categoryCards = $matchedCategories;
                                     $reply = 'I found matching categories you can browse.';
                                     $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
                                 } else {
                                     $specificCards = [];
-                                    $tokens = $this->buildSearchTokens($question);
-                                    if (count($tokens) >= 2 || strlen($question) >= 8) {
+                                    $tokens = $this->buildSearchTokens($searchQuestion);
+                                    if (count($tokens) >= 2 || strlen($searchQuestion) >= 8) {
                                         $specificCards = $this->getExactOrClosestProduct(
-                                            $question,
+                                            $searchQuestion,
                                             $detectedBrandId
                                         );
                                     }
@@ -432,12 +463,15 @@ class AiSupportController extends Controller
                         $orderReply = $this->handleOrderTracking($question, $isMember, $memberId);
                         $reply = $orderReply['reply'];
                         $quickReplies = ['Payment methods', 'Contact support', 'Shipping policy'];
-                    } elseif (preg_match('/\b(appliances?|room|tv|television|beedroom|bedroom|bed|pillow|sofa|sofas|tabo|chair|chairs|table|tables|cabinet|cabinets|stool|stools|furniture)\b/i', $qLower)) {
-                        $topicTerms = $this->extractTopicTerms($qLower);
+                    } elseif (preg_match('/\b(appliances?|room|tv|television|beedroom|bedroom|bed|pillow|sofa|sofas|tabo|chair|chairs|table|tables|cabinet|cabinets|stool|stools|furniture|living room|dining room|kitchen|bathroom|office|outdoor)\b/i', $qLower)) {
+                        $topicTerms = $this->getSearchTermsFromQuery($qLower, $searchQuestion);
                         $productCards = $this->getTopicCards($topicTerms, $detectedBrandId, 20);
+                        if (empty($productCards)) {
+                            $categoryCards = $this->searchCategories($searchQuestion, 6);
+                        }
                         $reply = !empty($productCards)
                             ? 'Here are products that match your request.'
-                            : 'I could not find a matching product right now. Please try a more specific product name.';
+                            : (!empty($categoryCards) ? 'I found matching categories you can browse.' : 'I could not find a matching product right now. Please try a more specific product name.');
                         $quickReplies = ['Show lowest price', 'Show highest price', 'Track my order'];
                     } elseif (preg_match('/\bwhat is the best product here\b/i', $qLower)) {
                         $productCards = $this->getTopRatedCards($detectedBrandId, 5);
@@ -472,31 +506,36 @@ class AiSupportController extends Controller
                             $reply = 'I could not find a matching product right now. Please try a more specific product name.';
                         }
                         $quickReplies = ['Show lowest price', 'Track my order', 'Payment methods'];
+                    } elseif (preg_match('/\b(recommend|recommendation|suggest|suggestion|best match|top pick|top picks|personalized|personalised)\b/i', $qLower)
+                        && !preg_match('/\b(best product|best seller|bestseller|top product|recommended product|what is the best product)\b/i', $qLower)) {
+                        $recIntent = $this->handleGeneralRecommendationIntent($detectedBrandId, $detectedBrandName);
+                        $reply = $recIntent['reply'];
+                        $quickReplies = $recIntent['quickReplies'];
+                        $productCards = $recIntent['productCards'];
+                        $categoryCards = $recIntent['categoryCards'];
+                    } elseif ($this->hasBudgetIntent($qLower)) {
+                        $budgetFlow = $this->handleBudgetIntent(
+                            $question,
+                            $qLower,
+                            $searchQuestion,
+                            $detectedBrandId
+                        );
+                        $reply = $budgetFlow['reply'];
+                        $quickReplies = $budgetFlow['quickReplies'];
+                        $productCards = $budgetFlow['productCards'];
+                        $categoryCards = $budgetFlow['categoryCards'];
                     } elseif (preg_match('/\b(best product|best seller|bestseller|top product|recommended product|what is the best product)\b/i', $qLower)) {
-                        $productCards = $this->getTopRatedCards($detectedBrandId, 5);
-                        if (!empty($productCards)) {
-                            $arr = [];
-                            foreach ($productCards as $card) {
-                                $arr[] = $card['name'] . ' (from ' . $card['price'] . ')';
-                            }
-                            $reply = $detectedBrandId > 0
-                                ? ('Great question. Here are some of our highest-rated ' . $detectedBrandName . ' products right now: ' . implode('; ', $arr) . '.')
-                                : ('Great question. Here are some of our highest-rated products right now: ' . implode('; ', $arr) . '.');
-                        } else {
-                            $productCards = $this->getBestSellingCards($detectedBrandId, 5);
-                            if (!empty($productCards)) {
-                                $arr = [];
-                                foreach ($productCards as $card) {
-                                    $arr[] = $card['name'] . ' (from ' . $card['price'] . ')';
-                                }
-                                $reply = $detectedBrandId > 0
-                                    ? ('We do not have enough ratings yet, so here are our current best-selling ' . $detectedBrandName . ' products: ' . implode('; ', $arr) . '.')
-                                    : ('We do not have enough ratings yet, so here are our current best-selling products: ' . implode('; ', $arr) . '.');
-                            } else {
-                                $reply = 'I can help you choose. Tell me your budget and category (e.g., sofa, appliance, bedroom), and I will recommend products.';
-                            }
-                        }
-                        $quickReplies = ['Show appliances', 'Show furniture', 'Track my order'];
+                        $bestIntent = $this->handleBestProductIntent(
+                            $question,
+                            $qLower,
+                            $searchQuestion,
+                            $detectedBrandId,
+                            $detectedBrandName
+                        );
+                        $reply = $bestIntent['reply'];
+                        $quickReplies = $bestIntent['quickReplies'];
+                        $productCards = $bestIntent['productCards'];
+                        $categoryCards = $bestIntent['categoryCards'];
                     } elseif (preg_match('/\b(product|price|cost)\b/i', $qLower)) {
                         $keywords = trim(preg_replace('/\b(product|price|cost|how much|is|the)\b/i', '', $question));
                         if ($keywords === '') {
@@ -543,12 +582,11 @@ class AiSupportController extends Controller
                     } else {
                         $reply = 'I can help with order tracking, payment methods, contact details, and product prices. Tell me what you need.';
                     }
-                                }
-                            }
-                    }
-                    }
                 }
             }
+        }
+        }
+        }
         }
         } catch (\Throwable $e) {
             Log::error('AiSupportController failed', [
@@ -602,6 +640,493 @@ class AiSupportController extends Controller
         $value = preg_replace('/\s+/', ' ', trim($value)) ?? '';
         $value = preg_replace('/[^a-z0-9\s]/', '', $value) ?? '';
         return trim($value);
+    }
+
+    private function normalizeSearchQuery(string $value): string
+    {
+        $base = trim($value);
+        $clean = preg_replace('/\b(do you have|do you|have|show|find|give me|please|looking for|need|want|recommend|suggest|a|an|the)\b/i', ' ', $base) ?? '';
+        $clean = trim(preg_replace('/\s+/', ' ', $clean) ?? '');
+        $lower = strtolower($clean);
+
+        $extras = [];
+        if (preg_match('/\b(bed|bedroom|bed frame|bedframe)\b/i', $lower)) {
+            $extras[] = 'bed';
+        }
+        if (preg_match('/\b(pillow|pillows|unan|onan)\b/i', $lower)) {
+            $extras[] = 'pillow';
+        }
+        if (preg_match('/\b(sofa|sofas|bench|benches)\b/i', $lower)) {
+            $extras[] = 'sofa';
+            $extras[] = 'bench';
+        }
+        if (preg_match('/\b(mirror|mirrors|salamin|vanity mirror|wall mirror|mirror cabinet|full length mirror|full-length mirror)\b/i', $lower)) {
+            $extras[] = 'mirror';
+        }
+
+        $cleanTokens = preg_split('/\s+/', trim(strtolower($clean))) ?: [];
+        $tokens = array_filter($cleanTokens, fn ($token) => $token !== '');
+        foreach ($extras as $extra) {
+            $tokens[] = $extra;
+        }
+        $tokens = array_values(array_unique($tokens));
+        $final = trim(implode(' ', $tokens));
+        return $final !== '' ? $final : $base;
+    }
+
+    private function normalizeNameQuery(string $value): string
+    {
+        $normalized = strtolower(trim($value));
+        if ($normalized === 'bed' || $normalized === 'bedroom') {
+            return 'bed';
+        }
+        if (in_array($normalized, ['pillow', 'pillows', 'unan', 'onan'], true)) {
+            return 'pillow';
+        }
+        if (in_array($normalized, ['sofa', 'sofas'], true)) {
+            return 'sofa';
+        }
+        if (in_array($normalized, ['bench', 'benches'], true)) {
+            return 'bench';
+        }
+        if (in_array($normalized, ['mirror', 'mirrors', 'salamin', 'vanity mirror', 'wall mirror', 'mirror cabinet', 'full length mirror', 'full-length mirror'], true)) {
+            return 'mirror';
+        }
+
+        return $value;
+    }
+
+    private function getStrictNameKeywords(string $value): array
+    {
+        $normalized = strtolower(trim($value));
+        if (in_array($normalized, ['sofa', 'sofas', 'bench', 'benches'], true)) {
+            return ['sofa', 'bench'];
+        }
+        if ($normalized === 'bed' || $normalized === 'bedroom') {
+            return ['bed'];
+        }
+        if (in_array($normalized, ['pillow', 'pillows', 'unan', 'onan'], true)) {
+            return ['pillow'];
+        }
+        if (in_array($normalized, ['mirror', 'mirrors', 'salamin', 'vanity mirror', 'wall mirror', 'mirror cabinet', 'full length mirror', 'full-length mirror'], true)) {
+            return ['mirror'];
+        }
+
+        return $normalized !== '' ? [$normalized] : [];
+    }
+
+    private function detectStrictNameQuery(string $qLower, string $searchQuestion): string
+    {
+        if (preg_match('/\b(sofa|sofas|bench|benches)\b/i', $qLower)) {
+            return 'sofa';
+        }
+        if (preg_match('/\b(pillow|pillows|unan|onan)\b/i', $qLower)) {
+            return 'pillow';
+        }
+        if (preg_match('/\b(bed|bedroom|bed frame|bedframe)\b/i', $qLower)) {
+            return 'bed';
+        }
+        if (preg_match('/\b(mirror|mirrors|salamin|vanity mirror|wall mirror|mirror cabinet|full length mirror|full-length mirror)\b/i', $qLower)) {
+            return 'mirror';
+        }
+
+        return '';
+    }
+
+    private function mergeCardLists(array $base, array $add): array
+    {
+        $merged = [];
+        foreach ($base as $card) {
+            $key = $this->cardKey($card);
+            $merged[$key] = $card;
+        }
+        foreach ($add as $card) {
+            $key = $this->cardKey($card);
+            if (!isset($merged[$key])) {
+                $merged[$key] = $card;
+            }
+        }
+
+        return array_values($merged);
+    }
+
+    private function cardKey(array $card): string
+    {
+        $url = (string) ($card['url'] ?? '');
+        if ($url !== '') {
+            return strtolower($url);
+        }
+        $name = (string) ($card['name'] ?? '');
+        return strtolower($name);
+    }
+
+    private function extractBudget(string $input): float
+    {
+        $range = $this->extractBudgetRange($input);
+        if ($range['max'] > 0) {
+            return $range['max'];
+        }
+
+        return 0.0;
+    }
+
+    private function extractBudgetRange(string $input): array
+    {
+        $text = strtolower($input);
+        $rangePattern = '/(?:php|₱)?\s*([0-9][0-9,\.]*\s*k?)\s*(?:-|–|to|up to|upto|below|under|less than)\s*(?:php|₱)?\s*([0-9][0-9,\.]*\s*k?)/i';
+        if (preg_match($rangePattern, $text, $match)) {
+            $min = $this->parseBudgetToken($match[1] ?? '');
+            $max = $this->parseBudgetToken($match[2] ?? '');
+            if ($max > 0 && $min > 0 && $min > $max) {
+                [$min, $max] = [$max, $min];
+            }
+            return ['min' => $min > 0 ? $min : 1, 'max' => $max];
+        }
+
+        $singlePattern = '/(?:php|₱)?\s*([0-9][0-9,\.]*\s*k?)\b/i';
+        if (preg_match($singlePattern, $text, $match)) {
+            $max = $this->parseBudgetToken($match[1] ?? '');
+            return ['min' => $max > 0 ? 1 : 0, 'max' => $max];
+        }
+
+        return ['min' => 0, 'max' => 0];
+    }
+
+    private function parseBudgetToken(string $value): float
+    {
+        $raw = strtolower(trim($value));
+        $raw = str_replace([',', ' '], '', $raw);
+        $isK = str_ends_with($raw, 'k');
+        if ($isK) {
+            $raw = substr($raw, 0, -1);
+        }
+        $num = (float) $raw;
+        if ($num <= 0) {
+            return 0.0;
+        }
+        return $isK ? $num * 1000 : $num;
+    }
+
+    private function hasBudgetIntent(string $qLower): bool
+    {
+        if (preg_match('/\b(budget|price range|price|cost|under|below|less than|up to|upto)\b/i', $qLower)) {
+            return true;
+        }
+        if (preg_match('/\b[0-9][0-9,\.]*\s*k\b/i', $qLower)) {
+            return true;
+        }
+        if (preg_match('/(?:php|₱)?\s*[0-9][0-9,\.]*\b/i', $qLower)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private function handleBudgetIntent(
+        string $question,
+        string $qLower,
+        string $searchQuestion,
+        int $detectedBrandId
+    ): array {
+        $productCards = [];
+        $categoryCards = [];
+        $quickReplies = [];
+        $reply = '';
+
+        $range = $this->extractBudgetRange($qLower);
+        $min = (float) ($range['min'] ?? 0);
+        $max = (float) ($range['max'] ?? 0);
+        $hasBudget = $max > 0;
+
+        $categoryCards = $this->searchCategories($searchQuestion, 3);
+        $hasCategory = !empty($categoryCards);
+
+        if (!$hasBudget) {
+            $reply = 'Sure! What budget range are you aiming for? You can say 2k, 2000, or 2000-5000.';
+            $quickReplies = ['Under PHP 2,000', 'PHP 2,000 - 5,000', 'PHP 5,000 - 10,000', 'No budget yet'];
+            return [
+                'reply' => $reply,
+                'quickReplies' => $quickReplies,
+                'productCards' => $productCards,
+                'categoryCards' => $categoryCards,
+            ];
+        }
+
+        if (!$hasCategory) {
+            $reply = 'Got it. What type of product do you want within that budget? You can pick a category.';
+            $quickReplies = ['Home living', 'Appliances', 'Bedroom', 'Office setup', 'Outdoor'];
+            return [
+                'reply' => $reply,
+                'quickReplies' => $quickReplies,
+                'productCards' => $productCards,
+                'categoryCards' => $categoryCards,
+            ];
+        }
+
+        if ($min <= 0) {
+            $min = 1;
+        }
+        $terms = $this->getSearchTermsFromQuery($qLower, $searchQuestion);
+        if (empty($terms) && $hasCategory) {
+            $categoryName = (string) ($categoryCards[0]['name'] ?? '');
+            $terms = $this->buildSearchTokens($categoryName);
+        }
+        $productCards = !empty($terms)
+            ? $this->getPriceRangeCardsWithTerms($terms, $min, $max, $detectedBrandId, 10)
+            : $this->getPriceRangeCards($min, $max, $detectedBrandId, 10);
+        $reply = !empty($productCards)
+            ? 'Here are products that match your budget.'
+            : 'I could not find products in that price range. Try a higher budget or another category.';
+        $quickReplies = ['Show lowest price', 'Best product', 'Track my order', 'Change category'];
+
+        return [
+            'reply' => $reply,
+            'quickReplies' => $quickReplies,
+            'productCards' => $productCards,
+            'categoryCards' => $categoryCards,
+        ];
+    }
+
+    private function handleGeneralRecommendationIntent(int $detectedBrandId, string $detectedBrandName): array
+    {
+        $productCards = [];
+        $categoryCards = [];
+        $quickReplies = [];
+
+        $prompts = [
+            'I can give you personalized recommendations 😊 What product are you looking for and how will you use it?',
+            'Let’s find the best match for you 👍 What item do you need and any preferences?',
+            'I will suggest top options based on your needs—what are you shopping for today?',
+            'Tell me a bit about what you need, and I will recommend the best options.',
+            'Happy to help you choose. What product do you need and how will you use it?',
+            'Great! What item are you looking for and any must-have features?',
+            'I can help you decide. What are you shopping for and what matters most to you?',
+            'Tell me the product you need and your preferences, and I will suggest the best picks.',
+        ];
+
+        if ($detectedBrandId > 0 && $detectedBrandName !== '') {
+            $prompts[] = 'Sure! Are you looking for a specific ' . $detectedBrandName . ' item? Tell me how you will use it.';
+        }
+
+        $reply = $prompts[array_rand($prompts)];
+        $quickReplies = [
+            'Home living',
+            'Appliances',
+            'Bedroom',
+            'Office setup',
+            'Outdoor',
+            'Budget-friendly',
+            'Premium',
+        ];
+
+        return [
+            'reply' => $reply,
+            'quickReplies' => $quickReplies,
+            'productCards' => $productCards,
+            'categoryCards' => $categoryCards,
+        ];
+    }
+
+    private function isDiningTableIntent(string $qLower): bool
+    {
+        if (!preg_match('/\b(dining table|dining set|mesa|mesa kainan|mesa sa kainan|kainan)\b/i', $qLower)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private function handleDiningTableIntent(int $detectedBrandId, string $question): array
+    {
+        $productCards = [];
+        $quickReplies = [];
+
+        $seatRange = $this->extractSeatRange($question);
+        $seatText = '';
+        if ($seatRange['min'] > 0 && $seatRange['max'] > 0) {
+            $seatText = $seatRange['min'] . '–' . $seatRange['max'] . ' people';
+        } elseif ($seatRange['min'] > 0) {
+            $seatText = $seatRange['min'] . ' people';
+        }
+
+        $seatPrompt = $seatText !== '' ? ('Great choice for ' . $seatText . '. ') : '';
+        $replyOptions = [
+            $seatPrompt . 'Here are dining tables that fit your seating needs. Would you like a classic wood style or a modern design?',
+            $seatPrompt . 'Here are good options for your seating range. Do you prefer wood, glass, or metal?',
+            $seatPrompt . 'Here are dining tables ideal for your group size. Any preferred style or budget?',
+            'Got it. Here are dining tables that match your seating size. Do you want a compact or standard size?',
+        ];
+
+        $productCards = $this->getTopicCards(
+            ['dining table', 'dining set', 'table'],
+            $detectedBrandId,
+            10
+        );
+
+        if (empty($productCards)) {
+            $replyOptions[] = 'I could not find dining table results right now, but I can show tables if you tell me your budget and style.';
+        }
+
+        $reply = $replyOptions[array_rand($replyOptions)];
+        $quickReplies = [
+            'Wood style',
+            'Modern style',
+            'Under PHP 10,000',
+            'For 2–4 people',
+            'For 6–8 people',
+        ];
+
+        return [
+            'reply' => $reply,
+            'quickReplies' => $quickReplies,
+            'productCards' => $productCards,
+            'categoryCards' => [],
+        ];
+    }
+
+    private function extractSeatRange(string $question): array
+    {
+        $text = strtolower($question);
+        $map = [
+            'one' => 1,
+            'two' => 2,
+            'three' => 3,
+            'four' => 4,
+            'five' => 5,
+            'six' => 6,
+            'seven' => 7,
+            'eight' => 8,
+            'nine' => 9,
+            'ten' => 10,
+        ];
+        foreach ($map as $word => $num) {
+            $text = preg_replace('/\b' . $word . '\b/i', (string) $num, $text) ?? $text;
+        }
+
+        if (preg_match('/\b([0-9]{1,2})\s*(?:-|–|to)\s*([0-9]{1,2})\s*(?:people|persons|pax|seater|seats|tao)?\b/i', $text, $match)) {
+            $min = (int) $match[1];
+            $max = (int) $match[2];
+            if ($min > $max) {
+                [$min, $max] = [$max, $min];
+            }
+            return ['min' => $min, 'max' => $max];
+        }
+
+        if (preg_match('/\b(for|para sa|para)\s*([0-9]{1,2})\s*(?:people|persons|pax|seater|seats|tao)?\b/i', $text, $match)) {
+            $min = (int) $match[2];
+            return ['min' => $min, 'max' => $min];
+        }
+
+        return ['min' => 0, 'max' => 0];
+    }
+
+    private function handleBestProductIntent(
+        string $question,
+        string $qLower,
+        string $searchQuestion,
+        int $detectedBrandId,
+        string $detectedBrandName
+    ): array {
+        $productCards = [];
+        $categoryCards = [];
+        $quickReplies = [];
+        $reply = '';
+
+        $budget = $this->extractBudget($qLower);
+        $hasBudget = $budget > 0;
+        $categoryCards = $this->searchCategories($searchQuestion, 3);
+        $hasCategory = !empty($categoryCards);
+
+        if (!$hasCategory && $detectedBrandId <= 0) {
+            $categoryPrompts = [
+                'Sure! I can help with that. What type of product are you looking for? For example, home living, appliances, or something else?',
+                'Absolutely. What kind of product are you shopping for today? Home living, appliances, bedroom, or another category?',
+                'Happy to help. Which category are you interested in? Home living, appliances, office, or something else?',
+                'Got it. What product category should I focus on? Home living, appliances, bedroom, or outdoor?',
+                'I can recommend the best items. Which area are you shopping for: home living, appliances, office, or another category?',
+                'Sure thing. Tell me the category you want: home living, appliances, bedroom, or any other.',
+                'Let’s narrow it down. Are you looking for home living, appliances, bedroom, or office items?',
+                'Great! Which category fits what you need: home living, appliances, bedroom, or something else?',
+            ];
+            $reply = $categoryPrompts[array_rand($categoryPrompts)];
+            $quickReplies = ['Home living', 'Appliances', 'Bedroom', 'Office setup', 'Outdoor'];
+            $categoryCards = [];
+            return [
+                'reply' => $reply,
+                'quickReplies' => $quickReplies,
+                'productCards' => $productCards,
+                'categoryCards' => $categoryCards,
+            ];
+        }
+
+        if (!$hasBudget) {
+            $topic = '';
+            if ($detectedBrandId > 0) {
+                $topic = $detectedBrandName;
+            } elseif ($hasCategory) {
+                $topic = (string) ($categoryCards[0]['name'] ?? '');
+            }
+            $topicText = $topic !== '' ? ('Great! What kind of ' . $topic . ' do you need? ') : 'Great! What kind of product do you need? ';
+            $budgetPrompts = [
+                $topicText . 'And do you have a budget in mind?',
+                $topicText . 'What budget range should I target?',
+                $topicText . 'Do you have a budget or price range?',
+                $topicText . 'What price range works for you?',
+                $topicText . 'Any budget limit you want me to follow?',
+                $topicText . 'Do you want budget-friendly or premium options?',
+                $topicText . 'Rough budget range?',
+                $topicText . 'What price range should I use?',
+            ];
+            $reply = $budgetPrompts[array_rand($budgetPrompts)];
+            $quickReplies = ['Under PHP 5,000', 'PHP 5,000 - 10,000', 'PHP 10,000+', 'No budget yet', 'Budget-friendly', 'Premium'];
+            return [
+                'reply' => $reply,
+                'quickReplies' => $quickReplies,
+                'productCards' => $productCards,
+                'categoryCards' => $categoryCards,
+            ];
+        }
+
+        if ($detectedBrandId > 0) {
+            $productCards = $this->getTopRatedCards($detectedBrandId, 5);
+        }
+
+        if (empty($productCards) && $hasCategory) {
+            $tokens = $this->getSearchTermsFromQuery($qLower, $searchQuestion);
+            if (empty($tokens)) {
+                $categoryName = (string) ($categoryCards[0]['name'] ?? '');
+                $tokens = $this->buildSearchTokens($categoryName);
+            }
+            $productCards = $this->getTopicCards($tokens, $detectedBrandId, 8);
+        }
+
+        if (empty($productCards)) {
+            $productCards = $this->getTopRatedCards(0, 5);
+        }
+
+        if (!empty($productCards)) {
+            $finalReplies = [
+                'Here are some top picks based on your request.',
+                'Here are the best options that match what you asked for.',
+                'These are solid recommendations based on your needs.',
+                'Here are top choices you might like.',
+                'I found some great picks for you.',
+                'Here are the best matches I can recommend.',
+                'These are top-rated options that fit your request.',
+                'Here are strong recommendations for you.',
+            ];
+            $reply = $finalReplies[array_rand($finalReplies)];
+        } else {
+            $reply = 'I can help you choose. Tell me the product type and budget, and I will recommend options.';
+        }
+        $quickReplies = ['Show lowest price', 'Best product', 'Track my order', 'Change category', 'Set a budget'];
+
+        return [
+            'reply' => $reply,
+            'quickReplies' => $quickReplies,
+            'productCards' => $productCards,
+            'categoryCards' => $categoryCards,
+        ];
     }
 
     private function slugify(string $value): string
@@ -835,6 +1360,42 @@ class AiSupportController extends Controller
         return $this->mapProductCards($rows);
     }
 
+    private function getPriceRangeCardsWithTerms(array $terms, float $minBudget, float $maxBudget, int $brandId, int $limit): array
+    {
+        $min = max(0, $minBudget);
+        $max = max($min, $maxBudget);
+        if ($max < $min) {
+            [$min, $max] = [$max, $min];
+        }
+
+        $query = $this->productBaseQuery($brandId, true);
+        $query = $this->selectProductFields($query, $this->isMember);
+        $query->where(function ($q) use ($terms) {
+            foreach ($terms as $term) {
+                $kw = trim((string) $term);
+                if ($kw === '') {
+                    continue;
+                }
+                $like = '%' . strtolower($kw) . '%';
+                $q->orWhereRaw('LOWER(p.pd_name) LIKE ?', [$like])
+                  ->orWhereRaw('LOWER(COALESCE(p.pd_description, \'\')) LIKE ?', [$like])
+                  ->orWhereRaw('LOWER(c.cat_name) LIKE ?', [$like])
+                  ->orWhereRaw('LOWER(cs.subcat_name) LIKE ?', [$like])
+                  ->orWhereRaw('LOWER(i.item_name) LIKE ?', [$like]);
+            }
+        });
+
+        $rows = $query
+            ->havingRaw($this->priceExpression($this->isMember) . ' >= ? AND ' . $this->priceExpression($this->isMember) . ' <= ?', [$min, $max])
+            ->orderByRaw('min_price ASC')
+            ->orderByDesc('p.pd_sales')
+            ->orderByDesc('p.pd_id')
+            ->limit($limit > 0 ? $limit : 5)
+            ->get();
+
+        return $this->mapProductCards($rows);
+    }
+
     private function getTopRatedCards(int $brandId, int $limit): array
     {
         try {
@@ -998,6 +1559,21 @@ class AiSupportController extends Controller
                 $q->whereRaw('LOWER(p.pd_name) LIKE ?', [$like])
                   ->orWhereRaw('LOWER(COALESCE(p.pd_description, \'\')) LIKE ?', [$like]);
             })
+            ->orderByRaw('LOWER(p.pd_name) = LOWER(?) DESC', [$keywords])
+            ->orderByDesc('p.pd_sales')
+            ->orderBy('min_price')
+            ->limit($limit > 0 ? $limit : 5)
+            ->get();
+
+        return $this->mapProductCards($rows);
+    }
+
+    private function searchProductsByNameOnly(string $keywords, int $brandId, int $limit): array
+    {
+        $query = $this->selectProductFields($this->productBaseQuery($brandId), $this->isMember);
+        $like = '%' . strtolower($keywords) . '%';
+        $rows = $query
+            ->whereRaw('LOWER(p.pd_name) LIKE ?', [$like])
             ->orderByRaw('LOWER(p.pd_name) = LOWER(?) DESC', [$keywords])
             ->orderByDesc('p.pd_sales')
             ->orderBy('min_price')
@@ -1400,6 +1976,55 @@ class AiSupportController extends Controller
         }
 
         return $topicTerms;
+    }
+
+    private function extractRoomTokens(string $qLower): array
+    {
+        $tokens = [];
+        if (preg_match('/\b(living room|sala)\b/i', $qLower)) {
+            $tokens[] = 'living room';
+        }
+        if (preg_match('/\b(dining room|dining|kainan)\b/i', $qLower)) {
+            $tokens[] = 'dining room';
+        }
+        if (preg_match('/\b(bedroom|bed room|kwarto|silid)\b/i', $qLower)) {
+            $tokens[] = 'bedroom';
+        }
+        if (preg_match('/\b(kitchen|kusina)\b/i', $qLower)) {
+            $tokens[] = 'kitchen';
+        }
+        if (preg_match('/\b(bathroom|comfort room|cr|banyo)\b/i', $qLower)) {
+            $tokens[] = 'bathroom';
+        }
+        if (preg_match('/\b(office|workspace|study|opisina)\b/i', $qLower)) {
+            $tokens[] = 'office';
+        }
+        if (preg_match('/\b(outdoor|garden|patio|balcony|terrace|labas)\b/i', $qLower)) {
+            $tokens[] = 'outdoor';
+        }
+        if (preg_match('/\b(kids room|children room|nursery|baby room|pang bata)\b/i', $qLower)) {
+            $tokens[] = 'kids room';
+        }
+
+        return $tokens;
+    }
+
+    private function getSearchTermsFromQuery(string $qLower, string $searchQuestion): array
+    {
+        $terms = array_merge($this->extractTopicTerms($qLower), $this->extractRoomTokens($qLower));
+        if (empty($terms)) {
+            $terms = $this->buildSearchTokens($searchQuestion, 2);
+        }
+        $unique = [];
+        foreach ($terms as $term) {
+            $t = trim((string) $term);
+            if ($t === '') {
+                continue;
+            }
+            $unique[$t] = true;
+        }
+
+        return array_keys($unique);
     }
 
     private function faqMap(): array

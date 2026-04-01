@@ -10,6 +10,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Database\QueryException;
 use Illuminate\Validation\Rule;
 
 class MemberController extends Controller
@@ -356,6 +357,41 @@ class MemberController extends Controller
 
         return response()->json([
             'message' => 'Member updated successfully.',
+        ]);
+    }
+
+    public function destroy(int $id): JsonResponse
+    {
+        $customer = Customer::query()->where('c_userid', $id)->first();
+
+        if (! $customer) {
+            return response()->json([
+                'message' => 'Member not found.',
+            ], 404);
+        }
+
+        $memberName = trim(implode(' ', array_filter([
+            (string) ($customer->c_fname ?? ''),
+            (string) ($customer->c_mname ?? ''),
+            (string) ($customer->c_lname ?? ''),
+        ])));
+
+        if ($memberName === '') {
+            $memberName = (string) ($customer->c_username ?: ('Member #' . $customer->c_userid));
+        }
+
+        try {
+            $customer->delete();
+        } catch (QueryException $e) {
+            return response()->json([
+                'message' => 'This member cannot be deleted yet because related records still exist.',
+            ], 409);
+        }
+
+        $this->bustMembersCache();
+
+        return response()->json([
+            'message' => "{$memberName} deleted successfully.",
         ]);
     }
 

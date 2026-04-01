@@ -7,6 +7,8 @@ use App\Models\Admin;
 use App\Models\Customer;
 use App\Models\CustomerWalletLedger;
 use App\Models\EncashmentRequest;
+use App\Support\CustomerCashWallet;
+use App\Support\YearlyGlobalPurchaseBonus;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -168,7 +170,7 @@ class AdminEncashmentController extends Controller
             }
 
             $amount = (float) $lockedRow->er_amount;
-            $currentCash = (float) ($customer->c_totalincome ?? 0);
+            $currentCash = CustomerCashWallet::balance($customer);
 
             $alreadyDebited = CustomerWalletLedger::query()
                 ->where('wl_wallet_type', 'cash')
@@ -216,13 +218,36 @@ class AdminEncashmentController extends Controller
         return response()->json(['message' => 'Encashment released successfully.']);
     }
 
+    public function awardYearlyGlobalBonus(Request $request)
+    {
+        $admin = $this->resolveAdmin($request);
+        if (!$admin) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+        if ((int) $admin->user_level_id !== 1) {
+            return response()->json(['message' => 'Forbidden: only super admin can award yearly global bonus.'], 403);
+        }
+
+        $validated = $request->validate([
+            'year' => 'nullable|integer|min:2000|max:3000',
+        ]);
+
+        $year = (int) ($validated['year'] ?? now()->subYear()->year);
+        $result = YearlyGlobalPurchaseBonus::awardForYear($year, (int) $admin->id);
+
+        return response()->json([
+            'message' => 'Yearly global purchase bonus awarding completed.',
+            'result' => $result,
+        ]);
+    }
+
     private function transform(EncashmentRequest $row, array $lockedByCustomer = []): array
     {
         $customer = $row->customer;
         $name = $customer
             ? trim(implode(' ', array_filter([$customer->c_fname ?? null, $customer->c_mname ?? null, $customer->c_lname ?? null])))
             : '';
-        $cashBalance = (float) ($customer?->c_totalincome ?? 0);
+        $cashBalance = $customer ? CustomerCashWallet::balance($customer) : 0.0;
         $lockedAmount = (float) ($lockedByCustomer[(int) $row->er_customer_id] ?? 0);
         $availableAmount = max(0, $cashBalance - $lockedAmount);
         $shortfall = max(0, (float) $row->er_amount - $cashBalance);

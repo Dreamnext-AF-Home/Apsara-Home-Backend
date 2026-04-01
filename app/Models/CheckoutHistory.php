@@ -11,6 +11,8 @@ class CheckoutHistory extends Model
 
     protected $fillable = [
         'ch_customer_id',
+        'ch_referrer_customer_id',
+        'ch_referral_source_type',
         'ch_checkout_id',
         'ch_payment_intent_id',
         'ch_status',
@@ -28,6 +30,7 @@ class CheckoutHistory extends Model
         'ch_product_sku',
         'ch_product_pv',
         'ch_earned_pv',
+        'ch_commission_basis_amount',
         'ch_pv_posted_at',
         'ch_product_image',
         'ch_selected_color',
@@ -50,6 +53,7 @@ class CheckoutHistory extends Model
         'ch_quantity' => 'integer',
         'ch_product_pv' => 'float',
         'ch_earned_pv' => 'float',
+        'ch_commission_basis_amount' => 'float',
         'ch_paid_at' => 'datetime',
         'ch_approved_at' => 'datetime',
         'ch_pv_posted_at' => 'datetime',

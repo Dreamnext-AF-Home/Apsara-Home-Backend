@@ -36,6 +36,7 @@ class AdminUserController extends Controller
             'q' => 'nullable|string|max:120',
             'role' => 'nullable|string|max:60',
             'activity_status' => 'nullable|string|in:active,inactive',
+            'sort' => 'nullable|string|in:latest,recent_activity',
             'page' => 'nullable|integer|min:1',
             'per_page' => 'nullable|integer|min:1|max:100',
         ]);
@@ -43,10 +44,11 @@ class AdminUserController extends Controller
         $search = trim((string) ($validated['q'] ?? ''));
         $roleFilter = strtolower(trim((string) ($validated['role'] ?? '')));
         $activityStatus = strtolower(trim((string) ($validated['activity_status'] ?? '')));
+        $sort = strtolower(trim((string) ($validated['sort'] ?? 'latest')));
         $perPage = (int) ($validated['per_page'] ?? 20);
         $activeCutoff = now()->subMinutes(2);
 
-        $rows = Admin::query()
+        $query = Admin::query()
             ->with('supplier')
             ->when(!$this->isSuperAdmin($actor), function ($builder) use ($actor) {
                 $builder->whereIn('user_level_id', $this->allowedInviteLevels($actor));
@@ -82,9 +84,18 @@ class AdminUserController extends Controller
                 $builder->where(function ($query) use ($activeCutoff) {
                     $query->whereNull('last_seen_at')->orWhere('last_seen_at', '<', $activeCutoff);
                 });
-            })
-            ->orderByDesc('id')
-            ->paginate($perPage);
+            });
+
+        if ($sort === 'recent_activity') {
+            $query
+                ->orderByRaw('CASE WHEN last_seen_at IS NULL THEN 1 ELSE 0 END')
+                ->orderByDesc('last_seen_at')
+                ->orderByDesc('id');
+        } else {
+            $query->orderByDesc('id');
+        }
+
+        $rows = $query->paginate($perPage);
 
         return response()->json([
             'users' => collect($rows->items())->map(fn (Admin $admin) => $this->transform($admin))->values(),

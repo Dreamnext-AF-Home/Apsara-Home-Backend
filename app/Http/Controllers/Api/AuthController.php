@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\AdminNotification;
 use App\Models\Customer;
 use App\Models\CustomerAddress;
 use Illuminate\Http\Request;
@@ -14,6 +15,7 @@ use Illuminate\Support\Facades\Mail;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Support\Str;
+use App\Support\MemberMonthlyActivation;
 use App\Mail\Auth\RegistrationOtpMail;
 use App\Mail\Auth\CustomerPasswordResetMail;
 use App\Mail\Auth\UsernameChangeOtpMail;
@@ -76,13 +78,12 @@ class AuthController extends Controller
         $referrer = Customer::query()
             ->select(['c_userid', 'c_username', 'c_accnt_status', 'c_lockstatus'])
             ->whereRaw('LOWER(c_username) = ?', [strtolower((string) $validated['referred_by'])])
-            ->where('c_accnt_status', 1)
             ->where('c_lockstatus', 0)
             ->first();
 
         if (! $referrer) {
             throw ValidationException::withMessages([
-                'referred_by' => ['Referral code is invalid or referrer account is not verified.'],
+                'referred_by' => ['Referral code is invalid or referrer account is unavailable.'],
             ]);
         }
 
@@ -408,6 +409,10 @@ class AuthController extends Controller
     {
         $customer = $request->user();
 
+        if ($customer instanceof Customer) {
+            $customer->loadMissing('sponsor:c_userid,c_username,c_fname,c_mname,c_lname');
+        }
+
         if ((int) ($customer->c_lockstatus ?? 0) === 1) {
             optional($customer->currentAccessToken())->delete();
 
@@ -425,7 +430,7 @@ class AuthController extends Controller
         /** @var Customer $customer */
         $customer = $request->user();
 
-        $levelOneMembers = Customer::query()
+        $descendants = Customer::query()
             ->select([
                 'c_userid',
                 'c_username',
@@ -436,57 +441,83 @@ class AuthController extends Controller
                 'c_accnt_status',
                 'c_lockstatus',
                 'c_totalincome',
+                'c_gpv',
                 'c_date_started',
                 'c_sponsor',
             ])
-            ->where('c_sponsor', (int) $customer->c_userid)
-            ->orderByDesc('c_userid')
+            ->orderBy('c_userid')
             ->get();
+
+        $descendantsBySponsor = $descendants
+            ->filter(fn (Customer $member) => (int) ($member->c_sponsor ?? 0) > 0)
+            ->groupBy('c_sponsor');
+
+        $buildNode = function (Customer $member, array $path = []) use (&$buildNode, $descendantsBySponsor): array {
+            $memberId = (int) $member->c_userid;
+            $nextPath = [...$path, $memberId];
+
+            $children = collect($descendantsBySponsor->get($memberId, []))
+                ->reject(fn (Customer $child) => in_array((int) $child->c_userid, $nextPath, true))
+                ->map(fn (Customer $child): array => $buildNode($child, $nextPath))
+                ->values();
+
+            $node = $this->transformReferralNode($member);
+            $node['children_count'] = $children->count();
+            $node['children'] = $children->all();
+
+            return $node;
+        };
+
+        $levelOneMembers = $descendants
+            ->where('c_sponsor', (int) $customer->c_userid)
+            ->sortByDesc('c_userid')
+            ->values();
 
         $levelOneIds = $levelOneMembers->pluck('c_userid')->all();
 
         $levelTwoMembers = empty($levelOneIds)
             ? collect()
-            : Customer::query()
-                ->select([
-                    'c_userid',
-                    'c_username',
-                    'c_fname',
-                    'c_mname',
-                    'c_lname',
-                    'c_email',
-                    'c_accnt_status',
-                    'c_lockstatus',
-                    'c_totalincome',
-                    'c_date_started',
-                    'c_sponsor',
-                ])
+            : $descendants
                 ->whereIn('c_sponsor', $levelOneIds)
-                ->orderByDesc('c_userid')
-                ->get();
+                ->values();
 
-        $levelTwoBySponsor = $levelTwoMembers->groupBy('c_sponsor');
         $secondLevelCount = $levelTwoMembers->count();
         $directCount = $levelOneMembers->count();
 
-        $children = $levelOneMembers->map(function (Customer $member) use ($levelTwoBySponsor): array {
-            $childNodes = collect($levelTwoBySponsor->get((int) $member->c_userid, []))
-                ->map(fn (Customer $child): array => $this->transformReferralNode($child))
-                ->values();
+        $children = $levelOneMembers
+            ->map(fn (Customer $member): array => $buildNode($member))
+            ->values();
 
-            $node = $this->transformReferralNode($member);
-            $node['children_count'] = $childNodes->count();
-            $node['children'] = $childNodes;
+        $networkIds = collect($children)
+            ->flatMap(function (array $node) {
+                $collectIds = function (array $current) use (&$collectIds): array {
+                    $ids = [(int) ($current['id'] ?? 0)];
+                    foreach (($current['children'] ?? []) as $child) {
+                        $ids = [...$ids, ...$collectIds($child)];
+                    }
 
-            return $node;
-        })->values();
+                    return $ids;
+                };
+
+                return $collectIds($node);
+            })
+            ->filter(fn (int $id) => $id > 0)
+            ->unique()
+            ->values();
+
+        $networkMembers = $networkIds->isEmpty()
+            ? collect()
+            : $descendants->whereIn('c_userid', $networkIds->all())->values();
+        $totalNetwork = $networkMembers->count();
+        $totalPv = (float) $networkMembers->sum(fn (Customer $member) => (float) ($member->c_gpv ?? 0));
 
         return response()->json([
             'root' => $this->transformReferralNode($customer),
             'summary' => [
                 'direct_count' => $directCount,
                 'second_level_count' => $secondLevelCount,
-                'total_network' => $directCount + $secondLevelCount,
+                'total_network' => $totalNetwork,
+                'total_pv' => $totalPv,
             ],
             'children' => $children,
         ]);
@@ -769,6 +800,35 @@ class AuthController extends Controller
             'td_ip' => (string) $request->ip(),
         ]);
 
+        $customerName = $this->fullName($customer);
+        AdminNotification::query()->firstOrCreate(
+            [
+                'an_type' => 'username_change_request',
+                'an_source_type' => 'ticket',
+                'an_source_id' => (int) $ticketId,
+            ],
+            [
+                'an_severity' => 'warning',
+                'an_title' => 'Username Change Request',
+                'an_message' => sprintf(
+                    '%s requested a username change from "%s" to "%s".',
+                    $customerName !== '' ? $customerName : ('Member #' . $customer->c_userid),
+                    trim((string) ($customer->c_username ?? '')),
+                    $requestedUsername
+                ),
+                'an_href' => '/admin/inquiry',
+                'an_payload' => [
+                    'ticket_id' => (int) $ticketId,
+                    'customer_id' => (int) $customer->c_userid,
+                    'customer_name' => $customerName,
+                    'customer_email' => (string) ($customer->c_email ?? ''),
+                    'current_username' => trim((string) ($customer->c_username ?? '')),
+                    'requested_username' => $requestedUsername,
+                ],
+                'an_created_at' => now(),
+            ]
+        );
+
         Cache::forget($this->usernameChangeOtpCacheKey((string) $validated['verification_token']));
 
         return response()->json([
@@ -814,6 +874,9 @@ class AuthController extends Controller
             'name' => $fullName,
             'email' => $customer->c_email,
             'username' => $customer->c_username,
+            'referrer_id' => (int) ($customer->c_sponsor ?? 0),
+            'referrer_username' => $customer->sponsor?->c_username ? (string) $customer->sponsor->c_username : null,
+            'referrer_name' => $customer->sponsor instanceof Customer ? $this->fullName($customer->sponsor) : null,
             'phone' => $customer->c_mobile,
             'address' => (string) ($customer->c_address ?? ''),
             'barangay' => (string) ($customer->c_barangay ?? ''),
@@ -826,6 +889,7 @@ class AuthController extends Controller
             'account_status' => $accountStatus,
             'lock_status' => $lockStatus,
             'verification_status' => $verificationStatus,
+            'monthly_activation' => MemberMonthlyActivation::summary($customer),
             'email_verified' => true,
             'password_change_required' => $this->customerRequiresPasswordChange($customer),
         ];

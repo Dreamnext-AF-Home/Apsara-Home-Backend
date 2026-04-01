@@ -22,6 +22,7 @@ class ProductActivityLog extends Model
         'pal_actor_name',
         'pal_actor_email',
         'pal_actor_role',
+        'pal_changes',
         'pal_created_at',
     ];
 
@@ -30,6 +31,7 @@ class ProductActivityLog extends Model
         'pal_supplier_id' => 'integer',
         'pal_admin_id' => 'integer',
         'pal_supplier_user_id' => 'integer',
+        'pal_changes' => 'array',
         'pal_created_at' => 'datetime',
     ];
 }

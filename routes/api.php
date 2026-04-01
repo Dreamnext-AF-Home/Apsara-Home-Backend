@@ -98,6 +98,7 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,csr'])->group(f
     Route::get('/admin/members/stats', [MemberController::class, 'stats']);
     Route::get('/admin/members/referrals', [MemberController::class, 'referralTree']);
     Route::patch('/admin/members/{id}', [MemberController::class, 'update']);
+    Route::delete('/admin/members/{id}', [MemberController::class, 'destroy']);
     Route::get('/admin/members/kyc', [AdminMemberKycController::class, 'index']);
     Route::patch('/admin/members/kyc/{id}/approve', [AdminMemberKycController::class, 'approve']);
     Route::patch('/admin/members/kyc/{id}/reject', [AdminMemberKycController::class, 'reject']);
@@ -110,6 +111,7 @@ Route::middleware(['auth:sanctum', 'admin.or_supplier'])->group(function () {
     Route::get('/admin/products', [ProductController::class, 'index']);
     Route::get('/admin/products/activity-logs', [ProductController::class, 'activityLogs']);
     Route::post('/admin/products', [ProductController::class, 'store']);
+    Route::post('/admin/products/import', [ProductController::class, 'import']);
     Route::put('/admin/products/{id}', [ProductController::class, 'update']);
     Route::delete('/admin/products/{id}', [ProductController::class, 'destroy']);
     Route::get('/admin/product-brands', [ProductBrandController::class, 'index']);
@@ -166,6 +168,7 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,accounting,finance_of
     Route::patch('/admin/encashment/{id}/approve', [AdminEncashmentController::class, 'approve']);
     Route::patch('/admin/encashment/{id}/reject', [AdminEncashmentController::class, 'reject']);
     Route::patch('/admin/encashment/{id}/release', [AdminEncashmentController::class, 'release']);
+    Route::post('/admin/encashment/yearly-global-bonus/award', [AdminEncashmentController::class, 'awardYearlyGlobalBonus']);
 });
 
 Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin'])->group(function () {

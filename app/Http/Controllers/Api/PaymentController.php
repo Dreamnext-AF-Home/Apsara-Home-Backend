@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Models\AdminNotification;
 use App\Mail\Checkout\CheckoutCompletedMail;
 use App\Models\CheckoutHistory;
+use App\Models\Product;
+use App\Support\DirectReferralCommission;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -134,6 +136,7 @@ class PaymentController extends Controller
         }
 
         $computedAmount = max(0, $subtotal - $voucherDiscount) + $handlingFee;
+        $resolvedOrderSnapshot = $this->resolveOrderSnapshot(is_array($validated['order'] ?? null) ? $validated['order'] : []);
 
         $payload = [
             'data' => [
@@ -164,8 +167,6 @@ class PaymentController extends Controller
 
         $data = $res->json('data');
         $checkoutId = $data['id'] ?? null;
-        $customerId = auth('sanctum')->id();
-
         if ($checkoutId) {
             Cache::put("checkout_customer:{$checkoutId}", [
                 'customer_id' => $customerId ? (int) $customerId : null,
@@ -179,7 +180,7 @@ class PaymentController extends Controller
                 'description' => $validated['description'],
                 'amount' => (float) $computedAmount,
                 'payment_method' => $validated['payment_method'],
-                'order' => $validated['order'] ?? [],
+                'order' => $resolvedOrderSnapshot,
                 'voucher' => $voucher ? [
                     'id' => (int) $voucher->avi_id,
                     'code' => (string) ($voucher->avi_code ?? ''),
@@ -544,6 +545,9 @@ class PaymentController extends Controller
         $order = is_array($cached['order'] ?? null) ? $cached['order'] : [];
         $quantity = (int) ($order['quantity'] ?? 1);
         $quantity = $quantity > 0 ? $quantity : 1;
+        $resolvedOrderSnapshot = $this->resolveOrderSnapshot($order);
+        $productPv = (float) ($resolvedOrderSnapshot['product_pv'] ?? 0);
+        $commissionBasisAmount = (float) ($resolvedOrderSnapshot['commission_basis_amount'] ?? 0);
         $alreadyExists = CheckoutHistory::query()
             ->where('ch_checkout_id', $checkoutId)
             ->exists();
@@ -562,21 +566,24 @@ class PaymentController extends Controller
             [
                 // Guest checkouts do not have a member account, so store 0 as a sentinel.
                 'ch_customer_id' => (int) ($cached['customer_id'] ?? 0),
+                'ch_referrer_customer_id' => !empty($cached['referrer_user_id']) ? (int) $cached['referrer_user_id'] : null,
+                'ch_referral_source_type' => (string) ($cached['referral_source_type'] ?? ''),
                 'ch_payment_intent_id' => data_get($attrs, 'payment_intent.id'),
                 'ch_status' => (string) ($attrs['status'] ?? 'paid'),
                 'ch_description' => (string) ($cached['description'] ?? ''),
                 'ch_amount' => (float) ($cached['amount'] ?? 0),
                 'ch_payment_method' => (string) ($cached['payment_method'] ?? ''),
                 'ch_quantity' => $quantity,
-                'ch_product_name' => (string) ($order['product_name'] ?? ($cached['description'] ?? 'Order Item')),
-                'ch_product_id' => isset($order['product_id']) ? (int) $order['product_id'] : null,
-                'ch_product_sku' => (string) ($order['product_sku'] ?? ''),
-                'ch_product_pv' => isset($order['product_pv']) ? (float) $order['product_pv'] : 0,
-                'ch_earned_pv' => isset($order['product_pv']) ? ((float) $order['product_pv'] * $quantity) : 0,
-                'ch_product_image' => (string) ($order['product_image'] ?? ''),
-                'ch_selected_color' => (string) ($order['selected_color'] ?? ''),
-                'ch_selected_size' => (string) ($order['selected_size'] ?? ''),
-                'ch_selected_type' => (string) ($order['selected_type'] ?? ''),
+                'ch_product_name' => (string) ($resolvedOrderSnapshot['product_name'] ?? ($cached['description'] ?? 'Order Item')),
+                'ch_product_id' => isset($resolvedOrderSnapshot['product_id']) ? (int) $resolvedOrderSnapshot['product_id'] : null,
+                'ch_product_sku' => (string) ($resolvedOrderSnapshot['product_sku'] ?? ''),
+                'ch_product_pv' => $productPv,
+                'ch_earned_pv' => $productPv * $quantity,
+                'ch_commission_basis_amount' => $commissionBasisAmount * $quantity,
+                'ch_product_image' => (string) ($resolvedOrderSnapshot['product_image'] ?? ''),
+                'ch_selected_color' => (string) ($resolvedOrderSnapshot['selected_color'] ?? ''),
+                'ch_selected_size' => (string) ($resolvedOrderSnapshot['selected_size'] ?? ''),
+                'ch_selected_type' => (string) ($resolvedOrderSnapshot['selected_type'] ?? ''),
                 'ch_customer_name' => (string) ($cached['name'] ?? 'Customer'),
                 'ch_customer_email' => (string) ($cached['email'] ?? ''),
                 'ch_customer_phone' => (string) ($cached['phone'] ?? ''),
@@ -596,7 +603,124 @@ class PaymentController extends Controller
 
         if ($isNowPaid) {
             $this->markAffiliateVoucherUsedIfNeeded($checkoutId, is_array($cached) ? $cached : []);
+            DirectReferralCommission::createPendingIfEligible(
+                $history,
+                !empty($cached['referrer_user_id']) ? (int) $cached['referrer_user_id'] : null,
+                (string) ($cached['referral_source_type'] ?? '')
+            );
         }
+    }
+
+    private function resolveOrderSnapshot(array $order): array
+    {
+        $quantity = max(1, (int) ($order['quantity'] ?? 1));
+        $selectedSku = trim((string) ($order['product_sku'] ?? ''));
+        $selectedColor = trim((string) ($order['selected_color'] ?? ''));
+        $selectedSize = trim((string) ($order['selected_size'] ?? ''));
+        $selectedType = trim((string) ($order['selected_type'] ?? ''));
+        $fallbackPv = isset($order['product_pv']) ? (float) $order['product_pv'] : 0.0;
+        $fallbackName = trim((string) ($order['product_name'] ?? ''));
+        $fallbackImage = trim((string) ($order['product_image'] ?? ''));
+
+        $snapshot = [
+            'product_id' => isset($order['product_id']) ? (int) $order['product_id'] : null,
+            'product_name' => $fallbackName,
+            'product_sku' => $selectedSku,
+            'product_pv' => $fallbackPv,
+            'commission_basis_amount' => 0.0,
+            'product_image' => $fallbackImage,
+            'quantity' => $quantity,
+            'selected_color' => $selectedColor !== '' ? $selectedColor : null,
+            'selected_size' => $selectedSize !== '' ? $selectedSize : null,
+            'selected_type' => $selectedType !== '' ? $selectedType : null,
+        ];
+
+        $productId = (int) ($snapshot['product_id'] ?? 0);
+        if ($productId <= 0) {
+            return $snapshot;
+        }
+
+        $product = Product::query()
+            ->select(['pd_id', 'pd_name', 'pd_parent_sku', 'pd_prodpv', 'pd_price_srp', 'pd_price_dp', 'pd_image'])
+            ->with(['variants' => function ($query) {
+                $query->select([
+                    'pv_id',
+                    'pv_pdid',
+                    'pv_sku',
+                    'pv_name',
+                    'pv_color',
+                    'pv_size',
+                    'pv_price_srp',
+                    'pv_price_dp',
+                    'pv_prodpv',
+                    'pv_status',
+                ]);
+            }])
+            ->find($productId);
+
+        if (!$product) {
+            return $snapshot;
+        }
+
+        $snapshot['product_name'] = trim((string) ($product->pd_name ?? '')) !== ''
+            ? trim((string) $product->pd_name)
+            : $snapshot['product_name'];
+        $snapshot['product_image'] = trim((string) ($product->pd_image ?? '')) !== ''
+            ? trim((string) $product->pd_image)
+            : $snapshot['product_image'];
+
+        $matchingVariant = $product->variants
+            ->filter(fn ($variant) => (int) ($variant->pv_status ?? 1) === 1)
+            ->first(function ($variant) use ($selectedSku, $selectedColor, $selectedSize, $selectedType) {
+                if ($selectedSku !== '' && strcasecmp((string) ($variant->pv_sku ?? ''), $selectedSku) === 0) {
+                    return true;
+                }
+
+                $variantName = trim((string) ($variant->pv_name ?? ''));
+                if ($selectedType !== '' && $variantName !== '' && strcasecmp($variantName, $selectedType) === 0) {
+                    return true;
+                }
+
+                $variantColor = trim((string) ($variant->pv_color ?? ''));
+                $variantSize = trim((string) ($variant->pv_size ?? ''));
+
+                return $selectedColor !== ''
+                    && $selectedSize !== ''
+                    && $variantColor !== ''
+                    && $variantSize !== ''
+                    && strcasecmp($variantColor, $selectedColor) === 0
+                    && strcasecmp($variantSize, $selectedSize) === 0;
+            });
+
+        if ($matchingVariant) {
+            $variantSku = trim((string) ($matchingVariant->pv_sku ?? ''));
+            if ($variantSku !== '') {
+                $snapshot['product_sku'] = $variantSku;
+            }
+
+            $variantPv = (float) ($matchingVariant->pv_prodpv ?? 0);
+            if ($variantPv > 0) {
+                $snapshot['product_pv'] = $variantPv;
+            }
+
+            $variantSrp = (float) ($matchingVariant->pv_price_srp ?? 0);
+            $variantDp = (float) ($matchingVariant->pv_price_dp ?? 0);
+            $snapshot['commission_basis_amount'] = max(0, $variantSrp - $variantDp);
+        } else {
+            $snapshot['product_sku'] = trim((string) ($product->pd_parent_sku ?? '')) !== ''
+                ? trim((string) $product->pd_parent_sku)
+                : $snapshot['product_sku'];
+        }
+
+        if ((float) $snapshot['product_pv'] <= 0) {
+            $snapshot['product_pv'] = (float) ($product->pd_prodpv ?? 0);
+        }
+
+        if ((float) $snapshot['commission_basis_amount'] <= 0) {
+            $snapshot['commission_basis_amount'] = max(0, (float) ($product->pd_price_srp ?? 0) - (float) ($product->pd_price_dp ?? 0));
+        }
+
+        return $snapshot;
     }
 
     private function resolveAffiliateVoucher(string $code): ?object
@@ -1067,7 +1191,6 @@ class PaymentController extends Controller
         return \App\Models\Customer::query()
             ->select(['c_userid', 'c_username', 'c_accnt_status', 'c_lockstatus'])
             ->whereRaw('LOWER(c_username) = ?', [strtolower($referral)])
-            ->where('c_accnt_status', 1)
             ->where('c_lockstatus', 0)
             ->first();
     }

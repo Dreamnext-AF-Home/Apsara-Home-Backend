@@ -13,6 +13,9 @@ use App\Models\CustomerWalletLedger;
 use App\Models\EncashmentPayoutMethod;
 use App\Models\EncashmentRequest;
 use App\Support\AdminAccess;
+use App\Support\CustomerCashWallet;
+use App\Support\MemberMonthlyActivation;
+use App\Support\PersonalPurchaseCashback;
 use Illuminate\Http\Request;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\DB;
@@ -75,10 +78,8 @@ class EncashmentController extends Controller
                 ->sum('wl_amount');
         }
 
-        $encashmentPendingLocked = (float) EncashmentRequest::query()
-            ->where('er_customer_id', (int) $customer->c_userid)
-            ->whereIn('er_status', ['pending', 'approved_by_admin', 'on_hold'])
-            ->sum('er_amount');
+        $cashBalance = CustomerCashWallet::balance($customer);
+        $encashmentPendingLocked = CustomerCashWallet::lockedEncashmentAmount((int) $customer->c_userid);
 
         $pendingPv = (float) CheckoutHistory::query()
             ->where('ch_customer_id', (int) $customer->c_userid)
@@ -122,6 +123,21 @@ class EncashmentController extends Controller
                 ->where('b_bonustype', 2)
                 ->sum('b_amount');
         }
+        if (Schema::hasTable('tbl_group_purchase_bonus_awards')) {
+            $groupPurchaseBonus += (float) DB::table('tbl_group_purchase_bonus_awards')
+                ->where('gpba_customer_id', (int) $customer->c_userid)
+                ->sum('gpba_bonus_amount');
+        }
+        if (Schema::hasTable('tbl_direct_affiliate_performance_bonus_awards')) {
+            $affiliatePerformanceBonus += (float) DB::table('tbl_direct_affiliate_performance_bonus_awards')
+                ->where('dapb_customer_id', (int) $customer->c_userid)
+                ->sum('dapb_bonus_amount');
+        }
+        if (Schema::hasTable('tbl_yearly_global_purchase_bonus_awards')) {
+            $globalPurchaseBonus += (float) DB::table('tbl_yearly_global_purchase_bonus_awards')
+                ->where('ygpba_customer_id', (int) $customer->c_userid)
+                ->sum('ygpba_bonus_amount');
+        }
 
         $totalReferrals = (int) Customer::query()
             ->where('c_sponsor', (int) $customer->c_userid)
@@ -141,11 +157,7 @@ class EncashmentController extends Controller
         $reservedAffiliateVoucherAmount = 0.0;
         $affiliateVouchers = collect();
         if (Schema::hasTable('tbl_affiliate_voucher_issuances')) {
-            $reservedAffiliateVoucherAmount = (float) DB::table('tbl_affiliate_voucher_issuances')
-                ->where('avi_customer_id', (int) $customer->c_userid)
-                ->where('avi_status', 'active')
-                ->selectRaw('SUM(avi_amount * COALESCE(avi_max_uses, 1)) as total_reserved')
-                ->value('total_reserved') ?? 0;
+            $reservedAffiliateVoucherAmount = PersonalPurchaseCashback::reservedBalance($customer);
 
             $affiliateVouchers = DB::table('tbl_affiliate_voucher_issuances')
                 ->where('avi_customer_id', (int) $customer->c_userid)
@@ -169,23 +181,17 @@ class EncashmentController extends Controller
         $afVoucherBalance = max(0, (float) ($customer->c_WP ?? $customer->c_wp ?? 0));
         $availableEgcBalance = max(0, (float) ($customer->c_AP ?? $customer->c_ap ?? 0));
 
-        $cashbackRate = 0.04;
-        $cashbackBalance = (float) CheckoutHistory::query()
-            ->where('ch_customer_id', (int) $customer->c_userid)
-            ->where('ch_earned_pv', '>', 0)
-            ->whereIn('ch_fulfillment_status', ['delivered', 'completed'])
-            ->sum(DB::raw('ch_earned_pv * ' . $cashbackRate));
+        $cashbackRate = PersonalPurchaseCashback::rate();
+        $cashbackSourceBalance = PersonalPurchaseCashback::sourceBalance($customer);
+        $cashbackBalance = PersonalPurchaseCashback::availableBalance($customer);
 
         $afVoucherSourceBalance = $afVoucherBalance;
-        $cashbackSourceBalance = $cashbackBalance;
-        $cashbackBalance = max(0, $cashbackSourceBalance - $reservedAffiliateVoucherAmount);
-        $cashbackSourceBalance = $cashbackBalance;
-
         $cashbackRate = $cashbackRate * 100;
+        $monthlyActivation = MemberMonthlyActivation::summary($customer);
 
         return response()->json([
             'summary' => [
-                'cash_balance' => round((float) ($customer->c_totalincome ?? 0), 2),
+                'cash_balance' => round($cashBalance, 2),
                 'pv_balance' => round((float) ($customer->c_gpv ?? 0), 2),
                 'current_pv' => round($affiliateRetailProfit, 2),
                 'personal_purchase_pv' => round($globalPurchaseBonus, 2),
@@ -199,7 +205,7 @@ class EncashmentController extends Controller
                 'pv_credits' => round($pvCredits, 2),
                 'pv_debits' => round($pvDebits, 2),
                 'encashment_locked' => round($encashmentPendingLocked, 2),
-                'encashment_available' => round(max(0, ((float) ($customer->c_totalincome ?? 0)) - $encashmentPendingLocked), 2),
+                'encashment_available' => round(max(0, $cashBalance - $encashmentPendingLocked), 2),
                 'af_voucher_balance' => round($afVoucherBalance, 2),
                 'available_egc_balance' => round($availableEgcBalance, 2),
                 'cashback_balance' => round($cashbackBalance, 2),
@@ -208,12 +214,18 @@ class EncashmentController extends Controller
                 'af_voucher_reserved_balance' => round($reservedAffiliateVoucherAmount, 2),
                 'cashback_source_balance' => round($cashbackSourceBalance, 2),
                 'cashback_reserved_balance' => round($reservedAffiliateVoucherAmount, 2),
+                'personal_cashback_balance' => round($cashbackBalance, 2),
+                'personal_cashback_source_balance' => round($cashbackSourceBalance, 2),
+                'personal_cashback_reserved_balance' => round($reservedAffiliateVoucherAmount, 2),
+                'personal_cashback_rate' => round($cashbackRate, 2),
+                'personal_cashback_voucher_expiry_days' => PersonalPurchaseCashback::defaultExpiryDays(),
                 'can_create_affiliate_voucher' => $isVerifiedAffiliate,
                 'referrals' => [
                     'total' => $totalReferrals,
                     'verified' => $verifiedReferrals,
                     'active' => $activeReferrals,
                 ],
+                'monthly_activation' => $monthlyActivation,
             ],
             'ledger' => collect($ledgerRows?->items() ?? [])->map(function (CustomerWalletLedger $row) {
                 return [
@@ -287,17 +299,9 @@ class EncashmentController extends Controller
         $voucher = DB::transaction(function () use ($customer, $validated) {
             $requestedAmount = round((float) $validated['amount'], 2);
 
-            $sourceBalance = (float) CheckoutHistory::query()
-                ->where('ch_customer_id', (int) $customer->c_userid)
-                ->where('ch_earned_pv', '>', 0)
-                ->whereIn('ch_fulfillment_status', ['delivered', 'completed'])
-                ->sum(DB::raw('ch_earned_pv * 0.04'));
+            $sourceBalance = PersonalPurchaseCashback::sourceBalance($customer);
 
-            $reservedAmount = (float) DB::table('tbl_affiliate_voucher_issuances')
-                ->where('avi_customer_id', (int) $customer->c_userid)
-                ->where('avi_status', 'active')
-                ->selectRaw('SUM(avi_amount * COALESCE(avi_max_uses, 1)) as total_reserved')
-                ->value('total_reserved') ?? 0;
+            $reservedAmount = PersonalPurchaseCashback::reservedBalance($customer);
 
             $availableAmount = max(0, $sourceBalance - $reservedAmount);
             $maxUses = array_key_exists('max_uses', $validated) ? (int) $validated['max_uses'] : null;
@@ -307,7 +311,7 @@ class EncashmentController extends Controller
 
             if ($requiredBalance > $availableAmount) {
                 throw new HttpResponseException(response()->json([
-                    'message' => 'Insufficient cashback balance for the voucher amount and usage limit.',
+                'message' => 'Insufficient personal purchase cashback balance for the voucher amount and usage limit.',
                     'available_balance' => round($availableAmount, 2),
                     'required_balance' => round($requiredBalance, 2),
                 ], 422));
@@ -327,7 +331,7 @@ class EncashmentController extends Controller
                 'avi_code' => $code,
                 'avi_amount' => $requestedAmount,
                 'avi_status' => 'active',
-                'avi_expires_at' => $expiresAt ?? now('Asia/Manila')->addYear(),
+                'avi_expires_at' => $expiresAt ?? now('Asia/Manila')->addDays(PersonalPurchaseCashback::defaultExpiryDays())->endOfDay(),
                 'avi_max_uses' => $maxUses,
                 'avi_used_count' => 0,
                 'created_at' => now(),
@@ -352,7 +356,7 @@ class EncashmentController extends Controller
         });
 
         return response()->json([
-            'message' => 'Affiliate voucher created successfully.',
+            'message' => 'Personal purchase cashback voucher created successfully.',
             'voucher' => [
                 'id' => (int) $voucher->avi_id,
                 'code' => (string) $voucher->avi_code,
@@ -442,6 +446,7 @@ class EncashmentController extends Controller
             ->paginate(20);
 
         $rules = $this->rules();
+        $monthlyActivation = MemberMonthlyActivation::summary($customer);
 
         return response()->json([
             'requests' => collect($rows->items())->map(fn (EncashmentRequest $row) => $this->transform($row, $customer))->values(),
@@ -463,6 +468,7 @@ class EncashmentController extends Controller
             'eligibility' => $this->evaluateEligibility($customer, $rules),
             'policy' => $this->policyMeta($rules),
             'verification' => $this->verificationMeta($customer),
+            'monthly_activation' => $monthlyActivation,
         ]);
     }
 
@@ -618,7 +624,7 @@ class EncashmentController extends Controller
             'province' => 'required|string|max:120',
             'postal_code' => 'required|string|max:20',
             'country' => 'required|string|max:80',
-            'notes' => 'required|string|max:1000',
+            'notes' => 'nullable|string|max:1000',
             'id_front_url' => 'required|url|max:1200',
             'id_back_url' => 'required|url|max:1200',
             'selfie_url' => 'required|url|max:1200',
@@ -935,14 +941,10 @@ class EncashmentController extends Controller
 
     private function evaluateEligibility(Customer $customer, array $rules): array
     {
-        $grossEarnings = (float) ($customer->c_totalincome ?? 0);
+        $grossEarnings = CustomerCashWallet::balance($customer);
         $points = (float) ($customer->c_gpv ?? 0);
 
-        $openStatuses = ['pending', 'approved_by_admin', 'on_hold'];
-        $lockedAmount = (float) EncashmentRequest::query()
-            ->where('er_customer_id', (int) $customer->c_userid)
-            ->whereIn('er_status', $openStatuses)
-            ->sum('er_amount');
+        $lockedAmount = CustomerCashWallet::lockedEncashmentAmount((int) $customer->c_userid);
         $availableAmount = max(0, $grossEarnings - $lockedAmount);
 
         $lastRequest = EncashmentRequest::query()
@@ -984,6 +986,7 @@ class EncashmentController extends Controller
             'current_points' => round($points, 2),
             'remaining_cooldown_minutes' => $remainingCooldownMinutes,
             'has_active_account' => ((int) ($customer->c_lockstatus ?? 0) === 0) && ((int) ($customer->c_accnt_status ?? 0) === 1),
+            'is_verified' => (int) ($customer->c_accnt_status ?? 0) === 1,
         ];
     }
 
