@@ -1,0 +1,6 @@
+fastapi==0.115.0
+uvicorn==0.30.6
+open-clip-torch==2.26.1
+torch
+Pillow==10.4.0
+requests==2.32.3

@@ -3,9 +3,12 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\VisionEmbeddingService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 class AiSupportController extends Controller
@@ -16,8 +19,9 @@ class AiSupportController extends Controller
     {
         $questionRaw = (string) $request->input('message', '');
         $question = $this->cleanInput($questionRaw);
+        $images = $this->extractImageInputs($request);
 
-        if ($question === '') {
+        if ($question === '' && empty($images)) {
             return response()->json([
                 'status' => 'ok',
                 'reply' => 'Please type your question so I can help.',
@@ -27,6 +31,10 @@ class AiSupportController extends Controller
                 'category_cards' => [],
                 'brand_view_all_url' => '',
             ]);
+        }
+
+        if ($question === '' && !empty($images)) {
+            $question = 'image search';
         }
 
         $qLower = mb_strtolower($question, 'UTF-8');
@@ -78,6 +86,76 @@ class AiSupportController extends Controller
         $detectedBrandName = (string) ($detectedBrand['name'] ?? '');
 
         try {
+            $imageHandled = false;
+            if (!empty($images)) {
+                $imageQuery = (string) ($images[0] ?? '');
+                if ($imageQuery !== '' && Schema::hasTable('tbl_product_image_embeddings')) {
+                    $embedder = new VisionEmbeddingService();
+                    $embedding = $embedder->embedImage($imageQuery);
+                    if (is_array($embedding) && !empty($embedding)) {
+                        $similar = $this->searchProductsByImageEmbedding($embedding, $detectedBrandId, 10);
+                        if (!empty($similar)) {
+                            $productCards = $similar;
+                            $reply = 'Here are similar products based on your image.';
+                            $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
+                            $imageHandled = true;
+                        }
+                    }
+                }
+
+                $vision = $this->analyzeImagesForKeywords($images);
+                $visionKeywords = $this->expandVisionKeywords($vision['keywords'] ?? [], (string) ($vision['category'] ?? ''));
+                $strictImageTerms = $this->extractImageStrictTerms($visionKeywords);
+                if (!empty($strictImageTerms) && $imageQuery !== '' && Schema::hasTable('tbl_product_image_embeddings')) {
+                    $embedder = new VisionEmbeddingService();
+                    $embedding = $embedder->embedImage($imageQuery);
+                    if (is_array($embedding) && !empty($embedding)) {
+                        $filteredSimilar = $this->searchProductsByImageEmbedding($embedding, $detectedBrandId, 10, $strictImageTerms);
+                        if (!empty($filteredSimilar)) {
+                            $productCards = $filteredSimilar;
+                            $reply = 'Here are similar products based on your image.';
+                            $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
+                            $imageHandled = true;
+                        }
+                    }
+                }
+
+                if (!empty($strictImageTerms) && empty($productCards)) {
+                    $reply = 'I could not find close matches for that item. Please try another photo or add a short description like brand or model.';
+                    $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
+                    $imageHandled = true;
+                }
+                if (!empty($visionKeywords)) {
+                    $productCards = $this->getTopicCards($visionKeywords, $detectedBrandId, 10);
+                    if (empty($productCards)) {
+                        $productCards = $this->searchProductsByKeywords(implode(' ', $visionKeywords), $detectedBrandId, 10);
+                    }
+                    if (!empty($productCards)) {
+                        $reply = 'Here are similar products based on your image.';
+                        $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
+                        $imageHandled = true;
+                    }
+                }
+
+                if (! $imageHandled) {
+                    $reply = 'I could not recognize the product clearly from the image. Please try a clearer photo or add a short description.';
+                    $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
+                    $imageHandled = true;
+                }
+            }
+
+            if ($imageHandled) {
+                return response()->json([
+                    'status' => 'ok',
+                    'reply' => $reply,
+                    'quick_replies' => $quickReplies,
+                    'product_cards' => $productCards,
+                    'brand_cards' => $brandCards,
+                    'category_cards' => $categoryCards,
+                    'brand_view_all_url' => $brandViewAllUrl,
+                ]);
+            }
+
             $faq = $this->faqMap();
             if (array_key_exists($qNormSimple, $faq)) {
                 $reply = $faq[$qNormSimple];
@@ -183,6 +261,18 @@ class AiSupportController extends Controller
                                     }
                                 }
                                 $directNameMatches = $merged;
+                            } elseif ($nameQuery === 'aircon') {
+                                $strictKeywords = $this->getStrictNameKeywords($nameQuery);
+                                $merged = [];
+                                foreach ($strictKeywords as $keyword) {
+                                    $merged = $this->mergeCardLists($merged, $this->searchProductsByNameOnly($keyword, $detectedBrandId, 10));
+                                }
+                                if (empty($merged)) {
+                                    foreach ($strictKeywords as $keyword) {
+                                        $merged = $this->mergeCardLists($merged, $this->searchProductsByNameNoPrice($keyword, 10));
+                                    }
+                                }
+                                $directNameMatches = $merged;
                             } else {
                                 $directNameMatches = $this->searchProductsByName($nameQuery, $detectedBrandId, 10);
                                 if (empty($directNameMatches)) {
@@ -195,6 +285,19 @@ class AiSupportController extends Controller
                             $reply = 'Here are matching products for "' . $question . '".';
                             $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
                         } else {
+                            if ($nameQuery === 'aircon') {
+                                $reply = 'I could not find any aircon products right now. Please try another keyword or brand.';
+                                $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
+                                return response()->json([
+                                    'status' => 'ok',
+                                    'reply' => $reply,
+                                    'quick_replies' => $quickReplies,
+                                    'product_cards' => [],
+                                    'brand_cards' => $brandCards,
+                                    'category_cards' => $categoryCards,
+                                    'brand_view_all_url' => $brandViewAllUrl,
+                                ]);
+                            }
                             $keywordMatches = $this->searchProductsByKeywords($searchQuestion, $detectedBrandId, 10);
                             if (!empty($keywordMatches)) {
                                 $productCards = $keywordMatches;
@@ -670,6 +773,11 @@ class AiSupportController extends Controller
         if (preg_match('/\b(mirror|mirrors|salamin|vanity mirror|wall mirror|mirror cabinet|full length mirror|full-length mirror)\b/i', $lower)) {
             $extras[] = 'mirror';
         }
+        if (preg_match('/\b(aircon|air conditioner|ac unit|ac|window type|window-type)\b/i', $lower)) {
+            $extras[] = 'aircon';
+            $extras[] = 'air conditioner';
+            $extras[] = 'ac';
+        }
 
         $cleanTokens = preg_split('/\s+/', trim(strtolower($clean))) ?: [];
         $tokens = array_filter($cleanTokens, fn ($token) => $token !== '');
@@ -699,6 +807,9 @@ class AiSupportController extends Controller
         if (in_array($normalized, ['mirror', 'mirrors', 'salamin', 'vanity mirror', 'wall mirror', 'mirror cabinet', 'full length mirror', 'full-length mirror'], true)) {
             return 'mirror';
         }
+        if (in_array($normalized, ['aircon', 'air conditioner', 'ac', 'ac unit', 'window type', 'window-type'], true)) {
+            return 'aircon';
+        }
 
         return $value;
     }
@@ -718,6 +829,9 @@ class AiSupportController extends Controller
         if (in_array($normalized, ['mirror', 'mirrors', 'salamin', 'vanity mirror', 'wall mirror', 'mirror cabinet', 'full length mirror', 'full-length mirror'], true)) {
             return ['mirror'];
         }
+        if (in_array($normalized, ['aircon', 'air conditioner', 'ac', 'ac unit', 'window type', 'window-type'], true)) {
+            return ['aircon', 'air conditioner', 'ac', 'window type'];
+        }
 
         return $normalized !== '' ? [$normalized] : [];
     }
@@ -735,6 +849,9 @@ class AiSupportController extends Controller
         }
         if (preg_match('/\b(mirror|mirrors|salamin|vanity mirror|wall mirror|mirror cabinet|full length mirror|full-length mirror)\b/i', $qLower)) {
             return 'mirror';
+        }
+        if (preg_match('/\b(aircon|air conditioner|ac unit|ac|window type|window-type)\b/i', $qLower)) {
+            return 'aircon';
         }
 
         return '';
@@ -1332,6 +1449,106 @@ class AiSupportController extends Controller
         $priceExpr = $this->priceExpression($forMember);
         return $query->selectRaw('p.pd_id, p.pd_name, ' . $priceExpr . ' AS min_price, MAX(p.pd_description) AS pd_description, MAX(pp.pp_filename) AS pp_filename')
             ->groupBy('p.pd_id', 'p.pd_name');
+    }
+
+    private function searchProductsByImageEmbedding(array $embedding, int $brandId, int $limit, array $mustContainTerms = []): array
+    {
+        if (empty($embedding)) {
+            return [];
+        }
+
+        $vectorLiteral = $this->formatVectorLiteral($embedding);
+        if ($vectorLiteral === '') {
+            return [];
+        }
+
+        $termSql = '';
+        $termBindings = [];
+        if (!empty($mustContainTerms)) {
+            $likes = [];
+            foreach ($mustContainTerms as $term) {
+                $kw = trim((string) $term);
+                if ($kw === '') {
+                    continue;
+                }
+                $likes[] = 'LOWER(COALESCE(p.pd_name, \'\')) LIKE ?';
+                $termBindings[] = '%' . strtolower($kw) . '%';
+                $likes[] = 'LOWER(COALESCE(p.pd_description, \'\')) LIKE ?';
+                $termBindings[] = '%' . strtolower($kw) . '%';
+            }
+            if (!empty($likes)) {
+                $termSql = 'AND (' . implode(' OR ', $likes) . ')';
+            }
+        }
+
+        $priceExpr = $this->priceExpression($this->isMember);
+        $brandSql = $brandId > 0 ? 'AND p.pd_brand_type = ' . (int) $brandId : '';
+        $limit = $limit > 0 ? (int) $limit : 10;
+
+        $sql = <<<SQL
+            SELECT p.pd_id,
+                   p.pd_name,
+                   {$priceExpr} AS min_price,
+                   MAX(p.pd_description) AS pd_description,
+                   MAX(pie.pie_image_url) AS pp_filename,
+                   MIN(pie.pie_embedding <=> '{$vectorLiteral}') AS distance
+            FROM tbl_product_image_embeddings pie
+            JOIN tbl_product p ON p.pd_id = pie.pie_product_id
+            JOIN tbl_product_variant v ON v.pv_pdid = p.pd_id
+            WHERE p.pd_status = 1
+              AND v.pv_price_srp > 0
+              {$brandSql}
+              {$termSql}
+            GROUP BY p.pd_id, p.pd_name
+            ORDER BY distance ASC
+            LIMIT {$limit}
+        SQL;
+
+        try {
+            $rows = empty($termBindings)
+                ? DB::select($sql)
+                : DB::select($sql, $termBindings);
+            return $this->mapProductCards($rows);
+        } catch (\Throwable $e) {
+            Log::warning('Image embedding search failed', [
+                'error' => $e->getMessage(),
+            ]);
+            return [];
+        }
+    }
+
+    private function formatVectorLiteral(array $embedding): string
+    {
+        $values = [];
+        foreach ($embedding as $value) {
+            if (!is_numeric($value)) {
+                continue;
+            }
+            $values[] = number_format((float) $value, 6, '.', '');
+        }
+
+        if (empty($values)) {
+            return '';
+        }
+
+        return '[' . implode(',', $values) . ']';
+    }
+
+    private function extractImageStrictTerms(array $keywords): array
+    {
+        $terms = [];
+        foreach ($keywords as $keyword) {
+            $kw = strtolower(trim((string) $keyword));
+            if ($kw === '') {
+                continue;
+            }
+            if (str_contains($kw, 'aircon') || str_contains($kw, 'air conditioner') || $kw === 'ac' || str_contains($kw, 'aircon ') || str_contains($kw, 'window type') || str_contains($kw, 'split type')) {
+                $terms = array_merge($terms, ['aircon', 'air conditioner', 'ac']);
+            }
+        }
+
+        $terms = array_values(array_unique($terms));
+        return $terms;
     }
 
     private function getPriceSortedCards(int $brandId, string $order, int $limit): array
@@ -2278,5 +2495,185 @@ class AiSupportController extends Controller
             '/\b(pa-help po|paano po ito|hindi gumagana|nag error)\b/i' => ' help support issue not working error ',
             '/\b(salamat|ok po|sige po|pasensya na)\b/i' => ' thank you ',
         ];
+    }
+
+    private function extractImageInputs(Request $request): array
+    {
+        $images = $request->input('images', []);
+        $legacy = $request->input('image');
+
+        $list = [];
+        if (is_string($images)) {
+            $list[] = $images;
+        } elseif (is_array($images)) {
+            $list = $images;
+        }
+
+        if (is_string($legacy) && trim($legacy) !== '') {
+            $list[] = $legacy;
+        }
+
+        $clean = collect($list)
+            ->filter(fn ($img) => is_string($img) && trim($img) !== '')
+            ->map(fn ($img) => trim($img))
+            ->values()
+            ->all();
+
+        return array_slice($clean, 0, 4);
+    }
+
+    private function analyzeImagesForKeywords(array $images): array
+    {
+        $apiKey = (string) env('OPENAI_API_KEY', '');
+        if ($apiKey === '') {
+            return ['keywords' => []];
+        }
+
+        $model = (string) env('OPENAI_VISION_MODEL', 'gpt-4.1-mini');
+        $content = [
+            [
+                'type' => 'input_text',
+                'text' => 'Analyze the image and return JSON with a product category and 3-8 concrete keywords (no sentences). Example: {"category":"air conditioner","keywords":["aircon","window type","AC unit","cooling","appliance"]}.',
+            ],
+        ];
+
+        foreach ($images as $img) {
+            $content[] = [
+                'type' => 'input_image',
+                'image_url' => $img,
+            ];
+        }
+
+        try {
+            $res = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $apiKey,
+                'Content-Type' => 'application/json',
+            ])->post('https://api.openai.com/v1/responses', [
+                'model' => $model,
+                'input' => [
+                    [
+                        'role' => 'user',
+                        'content' => $content,
+                    ],
+                ],
+                'max_output_tokens' => 200,
+            ]);
+
+            if ($res->failed()) {
+                Log::warning('AI image analysis failed', [
+                    'status' => $res->status(),
+                    'error' => $res->json(),
+                ]);
+                return ['keywords' => []];
+            }
+
+            $payload = $res->json();
+            $text = (string) ($payload['output_text'] ?? '');
+            if ($text === '') {
+                $text = (string) data_get($payload, 'output.0.content.0.text', '');
+            }
+
+            $parsed = $this->parseVisionKeywords($text);
+            $keywords = $parsed['keywords'] ?? [];
+            $category = (string) ($parsed['category'] ?? '');
+            return ['keywords' => $keywords, 'category' => $category];
+        } catch (\Throwable $e) {
+            Log::warning('AI image analysis exception', [
+                'error' => $e->getMessage(),
+            ]);
+            return ['keywords' => [], 'category' => ''];
+        }
+    }
+
+    private function parseVisionKeywords(string $text): array
+    {
+        $text = trim($text);
+        if ($text === '') {
+            return ['keywords' => [], 'category' => ''];
+        }
+
+        $json = null;
+        if (str_contains($text, '{')) {
+            if (preg_match('/\{.*\}/s', $text, $match)) {
+                $json = json_decode($match[0], true);
+            } else {
+                $json = json_decode($text, true);
+            }
+        } else {
+            $json = json_decode($text, true);
+        }
+
+        if (is_array($json) && !empty($json['keywords']) && is_array($json['keywords'])) {
+            $keywords = collect($json['keywords'])
+                ->filter(fn ($k) => is_string($k) && trim($k) !== '')
+                ->map(fn ($k) => trim($k))
+                ->take(8)
+                ->values()
+                ->all();
+            $category = is_string($json['category'] ?? null) ? trim((string) $json['category']) : '';
+            return [
+                'keywords' => $keywords,
+                'category' => $category,
+            ];
+        }
+
+        $parts = preg_split('/[,;\n]+/', $text) ?: [];
+        $keywords = collect($parts)
+            ->map(fn ($part) => trim($part))
+            ->filter(fn ($part) => $part !== '')
+            ->take(8)
+            ->values()
+            ->all();
+        return [
+            'keywords' => $keywords,
+            'category' => '',
+        ];
+    }
+
+    private function expandVisionKeywords(array $keywords, string $category): array
+    {
+        $normalized = collect($keywords)
+            ->filter(fn ($k) => is_string($k) && trim($k) !== '')
+            ->map(fn ($k) => strtolower(trim($k)))
+            ->values()
+            ->all();
+
+        $category = strtolower(trim($category));
+        if ($category !== '') {
+            $normalized[] = $category;
+        }
+
+        $synonyms = [
+            'aircon' => ['air conditioner', 'ac', 'ac unit', 'window type aircon', 'window type', 'cooling', 'appliance'],
+            'air conditioner' => ['aircon', 'ac', 'ac unit', 'window type aircon', 'window type', 'cooling', 'appliance'],
+            'sofa' => ['couch', 'loveseat', 'sectional', 'sofa bed'],
+            'chair' => ['armchair', 'dining chair', 'office chair', 'seat'],
+            'table' => ['coffee table', 'dining table', 'side table', 'console table'],
+            'cabinet' => ['drawer', 'storage', 'wardrobe'],
+            'bed' => ['bed frame', 'mattress', 'bedroom'],
+            'pillow' => ['cushion', 'unan'],
+            'mirror' => ['vanity mirror', 'wall mirror'],
+            'tv' => ['television', 'tv rack'],
+            'refrigerator' => ['fridge'],
+            'washing machine' => ['washer'],
+            'microwave' => ['microwave oven'],
+            'oven' => ['toaster oven'],
+            'fan' => ['electric fan'],
+        ];
+
+        $expanded = $normalized;
+        foreach ($normalized as $token) {
+            if (isset($synonyms[$token])) {
+                $expanded = array_merge($expanded, $synonyms[$token]);
+            }
+        }
+
+        $expanded = array_values(array_unique(array_filter($expanded, fn ($k) => $k !== '')));
+
+        if (empty($expanded) && $category !== '') {
+            $expanded[] = $category;
+        }
+
+        return array_slice($expanded, 0, 12);
     }
 }

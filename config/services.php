@@ -49,6 +49,16 @@ return [
         'use_tls' => env('PUSHER_APP_TLS', true),
     ],
 
+    'vision_embedding' => [
+        'url' => (function (): ?string {
+            $env = (string) env('APP_ENV', 'production');
+            if (in_array($env, ['local', 'development', 'dev'], true)) {
+                return env('VISION_EMBEDDING_URL_LOCAL', env('VISION_EMBEDDING_URL'));
+            }
+            return env('VISION_EMBEDDING_URL');
+        })(),
+    ],
+
     'xde' => [
         'base_url' => env('XDE_BASE_URL'),
         'book_path' => env('XDE_BOOK_PATH', '/v2/pickup'),
