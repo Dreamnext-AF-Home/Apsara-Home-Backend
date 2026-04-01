@@ -161,6 +161,13 @@ class AiSupportController extends Controller
                         $quickReplies = $bestIntent['quickReplies'];
                         $productCards = $bestIntent['productCards'];
                         $categoryCards = $bestIntent['categoryCards'];
+                    } elseif (preg_match('/\b(refund|return|exchange|damaged|damage|defective|wrong item|missing parts)\b/i', $qLower)) {
+                        $reply = "Here is the refund/return process:\n"
+                            . "1) Go to My Orders.\n"
+                            . "2) Select the order and click Request Refund.\n"
+                            . "3) Fill out the form and upload clear photos/videos of the item and packaging as proof.\n"
+                            . "4) Submit the request. Our team will review it and notify you via notifications or email.";
+                        $quickReplies = ['Track my order', 'Contact support', 'Payment methods'];
                     } else {
                         $directNameMatches = [];
                         if (strlen($nameQuery) >= 3) {
