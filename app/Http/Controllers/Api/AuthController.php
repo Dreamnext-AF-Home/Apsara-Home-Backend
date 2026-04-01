@@ -495,10 +495,8 @@ class AuthController extends Controller
                     foreach (($current['children'] ?? []) as $child) {
                         $ids = [...$ids, ...$collectIds($child)];
                     }
-
                     return $ids;
                 };
-
                 return $collectIds($node);
             })
             ->filter(fn (int $id) => $id > 0)

@@ -12,6 +12,7 @@ use App\Models\CustomerVerificationRequest;
 use App\Models\CustomerWalletLedger;
 use App\Models\EncashmentPayoutMethod;
 use App\Models\EncashmentRequest;
+use App\Models\ReferralEarning;
 use App\Support\AdminAccess;
 use App\Support\CustomerCashWallet;
 use App\Support\MemberMonthlyActivation;
@@ -88,12 +89,29 @@ class EncashmentController extends Controller
             ->whereNotIn('ch_status', ['failed', 'cancelled', 'expired'])
             ->sum('ch_earned_pv');
 
-        $affiliateRetailProfit = (float) CheckoutHistory::query()
-            ->where('ch_customer_id', (int) $customer->c_userid)
-            ->where('ch_earned_pv', '>', 0)
-            ->whereNotNull('ch_pv_posted_at')
-            ->whereIn('ch_fulfillment_status', ['delivered', 'completed'])
-            ->sum('ch_earned_pv');
+        $affiliateRetailProfit = 0.0;
+        $pendingReferralEarnings = 0.0;
+        if (Schema::hasTable('tbl_referral_earnings')) {
+            $affiliateRetailProfit = (float) ReferralEarning::query()
+                ->where('re_referrer_customer_id', (int) $customer->c_userid)
+                ->where('re_status', 'available')
+                ->sum('re_amount');
+
+            $pendingReferralEarnings = (float) ReferralEarning::query()
+                ->where('re_referrer_customer_id', (int) $customer->c_userid)
+                ->where('re_status', 'pending')
+                ->sum('re_amount');
+        }
+
+        $yearlyPurchasePv = 0.0;
+        if (Schema::hasTable('tbl_customer_wallet_ledger')) {
+            $yearlyPurchasePv = (float) CustomerWalletLedger::query()
+                ->where('wl_customer_id', (int) $customer->c_userid)
+                ->where('wl_wallet_type', 'pv')
+                ->where('wl_entry_type', 'credit')
+                ->whereYear('created_at', now()->year)
+                ->sum('wl_amount');
+        }
 
         $lifetimePv = 0.0;
         if (Schema::hasTable('tbl_customer_wallet_ledger')) {
@@ -150,6 +168,9 @@ class EncashmentController extends Controller
             ->count();
 
         $activeReferrals = $verifiedReferrals;
+        $directReferralTotalPv = (float) Customer::query()
+            ->where('c_sponsor', (int) $customer->c_userid)
+            ->sum('c_gpv');
 
         $isVerifiedAffiliate = (int) ($customer->c_accnt_status ?? 0) === 1
             && (int) ($customer->c_lockstatus ?? 0) === 0;
@@ -200,6 +221,15 @@ class EncashmentController extends Controller
                 'current_cv' => round($affiliateRetailProfit + $affiliatePerformanceBonus + $cashbackBalance + $groupPurchaseBonus + $globalPurchaseBonus, 2),
                 'pending_pv' => round($pendingPv, 2),
                 'lifetime_pv' => round($lifetimePv, 2),
+                'affiliate_retail_profit' => round($affiliateRetailProfit, 2),
+                'pending_referral_earnings' => round($pendingReferralEarnings, 2),
+                'yearly_purchase_pv' => round($yearlyPurchasePv, 2),
+                'affiliate_performance_bonus' => round($affiliatePerformanceBonus, 2),
+                'global_purchase_bonus' => round($globalPurchaseBonus, 2),
+                'group_purchase_bonus' => round($groupPurchaseBonus, 2),
+                'monthly_purchase_points' => round((float) ($monthlyActivation['current_month_pv'] ?? 0), 2),
+                'total_bonus' => round($affiliateRetailProfit + $affiliatePerformanceBonus + $groupPurchaseBonus + $globalPurchaseBonus, 2),
+                'direct_referral_total_pv' => round($directReferralTotalPv, 2),
                 'cash_credits' => round($cashCredits, 2),
                 'cash_debits' => round($cashDebits, 2),
                 'pv_credits' => round($pvCredits, 2),
