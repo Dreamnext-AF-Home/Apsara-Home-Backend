@@ -22,6 +22,7 @@ use App\Http\Controllers\Api\AddressController;
 use App\Http\Controllers\Api\SupplierController;
 use App\Http\Controllers\Api\SupplierAuthController;
 use App\Http\Controllers\Api\SupplierUserController;
+use App\Http\Controllers\Api\SupplierOrderController;
 use App\Http\Controllers\Api\CustomerAddressController;
 use App\Http\Controllers\Api\InteriorRequestController;
 use App\Http\Controllers\Api\JntWebhookController;
@@ -219,4 +220,8 @@ Route::middleware(['auth:sanctum', 'admin.actor'])->prefix('admin/auth')->group(
 Route::middleware(['auth:sanctum', 'supplier.actor'])->prefix('supplier/auth')->group(function () {
     Route::post('/logout', [SupplierAuthController::class, 'logout']);
     Route::get('/me', [SupplierAuthController::class, 'me']);
+});
+
+Route::middleware(['auth:sanctum', 'supplier.actor'])->group(function () {
+    Route::get('/supplier/orders', [SupplierOrderController::class, 'index']);
 });
