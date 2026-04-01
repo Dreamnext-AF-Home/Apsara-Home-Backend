@@ -65,15 +65,16 @@ class PaymentController extends Controller
             'order.handling_fee' => 'nullable|numeric|min:0',
         ]);
 
+        $isMember = (bool) data_get($validated, 'customer.is_member', false);
         $customerId = auth('sanctum')->id();
         $requiresReferral = !$customerId;
         $normalizedReferral = $this->normalizeReferralValue((string) data_get($validated, 'customer.referred_by', ''));
         $referrer = null;
-        $referralSourceType = $normalizedReferral !== '' ? 'checkout_referral' : null;
+        $referralSourceType = null;
         $authenticatedCustomer = $customerId
             ? \App\Models\Customer::query()
                 ->select(['c_userid', 'c_sponsor'])
-                ->with('sponsor:c_userid,c_username,c_accnt_status,c_lockstatus')
+                ->with('sponsor:c_userid,c_username,c_acct_status,c_lockstatus')
                 ->find((int) $customerId)
             : null;
 
@@ -86,7 +87,7 @@ class PaymentController extends Controller
             }
         }
 
-        if ($normalizedReferral === '' && $requiresReferral) {
+        if ($normalizedReferral === '' && $requiresReferral && !$isMember) {
             return response()->json([
                 'message' => 'The referred by field is required.',
                 'errors' => [
@@ -96,12 +97,14 @@ class PaymentController extends Controller
         }
 
         if ($normalizedReferral !== '') {
-            $referrer = $this->resolveValidReferrer($normalizedReferral);
+            if (!$referrer) {
+                $referrer = $this->resolveValidReferrer($normalizedReferral);
+            }
             if (!$referrer) {
                 return response()->json([
-                    'message' => 'Referral code is invalid or referrer account is unavailable.',
+                    'message' => 'Referral code is invalid or referrer account is not verified.',
                     'errors' => [
-                        'customer.referred_by' => ['Referral code is invalid or referrer account is unavailable.'],
+                        'customer.referred_by' => ['Referral code is invalid or referrer account is not verified.'],
                     ],
                 ], 422);
             }
