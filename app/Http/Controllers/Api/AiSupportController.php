@@ -45,7 +45,7 @@ class AiSupportController extends Controller
         if ($strictFromQuery !== '') {
             $nameQuery = $strictFromQuery;
         }
-        $isStrictNameQuery = in_array(strtolower(trim($nameQuery)), ['bed', 'pillow', 'sofa', 'bench', 'mirror'], true);
+        $isStrictNameQuery = in_array(strtolower(trim($nameQuery)), ['bed', 'pillow', 'sofa', 'bench', 'mirror', 'tv'], true);
 
         foreach ($this->tagalogIntentAliases() as $pattern => $append) {
             if (preg_match($pattern, $question)) {
@@ -196,7 +196,7 @@ class AiSupportController extends Controller
                         $reply = $diningIntent['reply'];
                         $quickReplies = $diningIntent['quickReplies'];
                         $productCards = $diningIntent['productCards'];
-                    } elseif (preg_match('/\b(hi|hello|hey|hi there|assistant|chatbot|ai|good morning|good afternoon|good evening|kamusta|kumusta|magandang umaga|magandang hapon|magandang gabi|magandang araw)\b/i', $qLower) || mb_strlen($question, 'UTF-8') <= 2) {
+                    } elseif (preg_match('/\b(hi|hello|hey|hi there|assistant|chatbot|ai|good morning|good afternoon|good evening|kamusta|kumusta|magandang umaga|magandang hapon|magandang gabi|magandang araw)\b/i', $qLower) || (mb_strlen($question, 'UTF-8') <= 2 && $strictFromQuery === '')) {
                         $helloReplies = [
                             'Hi! Welcome. I can help with product details, shipping, payment options, and order tracking.',
                             'Hello! I am ShopBuddy AI. Ask me anything about products, checkout, delivery, or your orders.',
@@ -715,7 +715,7 @@ class AiSupportController extends Controller
             'brand_cards' => $brandCards,
             'category_cards' => $categoryCards,
             'brand_view_all_url' => $brandViewAllUrl,
-        ]);
+        ], 200, [], JSON_INVALID_UTF8_SUBSTITUTE);
     }
 
     private function defaultQuickReplies(): array
@@ -810,6 +810,9 @@ class AiSupportController extends Controller
         if (in_array($normalized, ['aircon', 'air conditioner', 'ac', 'ac unit', 'window type', 'window-type'], true)) {
             return 'aircon';
         }
+        if (in_array($normalized, ['tv', 'television', 'televison'], true)) {
+            return 'tv';
+        }
 
         return $value;
     }
@@ -832,6 +835,9 @@ class AiSupportController extends Controller
         if (in_array($normalized, ['aircon', 'air conditioner', 'ac', 'ac unit', 'window type', 'window-type'], true)) {
             return ['aircon', 'air conditioner', 'ac', 'window type'];
         }
+        if (in_array($normalized, ['tv', 'television', 'televison'], true)) {
+            return ['tv', 'television'];
+        }
 
         return $normalized !== '' ? [$normalized] : [];
     }
@@ -852,6 +858,9 @@ class AiSupportController extends Controller
         }
         if (preg_match('/\b(aircon|air conditioner|ac unit|ac|window type|window-type)\b/i', $qLower)) {
             return 'aircon';
+        }
+        if (preg_match('/\b(tv|television|televison)\b/i', $qLower)) {
+            return 'tv';
         }
 
         return '';
@@ -2198,6 +2207,11 @@ class AiSupportController extends Controller
         if (preg_match('/\bfurniture\b/i', $qLower)) {
             $topicTerms[] = 'furniture';
         }
+        if (preg_match('/\b(cellphones?|cellphone|phones?|phone|mobile phones?|smartphones?)\b/i', $qLower)) {
+            $topicTerms[] = 'phone';
+            $topicTerms[] = 'cellphone';
+            $topicTerms[] = 'gadgets';
+        }
 
         return $topicTerms;
     }
@@ -2404,6 +2418,7 @@ class AiSupportController extends Controller
             '/may ibang kulay ba\??/i' => ' kulay available colors available variants ',
             '/paano po mag-?contact ng support\??/i' => ' contact support customer service ',
             '/puwede pong mag-?follow up\??/i' => ' follow-up inquiry contact support ',
+            '/\b(cellphones?|cellphone|phones?|phone|mobile phones?|smartphones?)\b/i' => ' mobile accessories gadgets phone cellphone ',
             '/may live chat ba\??/i' => ' live chat support ',
             '/saan ko makikita ang ticket number\??/i' => ' ticket number support ',
             '/salamat po/i' => ' thank you ',
