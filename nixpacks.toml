@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = [
+  "php82",
+  "php82Packages.composer",
+  "nginx",
+  "libmysqlclient",
+  "nodejs_22"
+]
