@@ -30,6 +30,7 @@ class AiSupportController extends Controller
                 'brand_cards' => [],
                 'category_cards' => [],
                 'brand_view_all_url' => '',
+                'step_images' => [],
             ]);
         }
 
@@ -80,12 +81,44 @@ class AiSupportController extends Controller
         $brandCards = [];
         $categoryCards = [];
         $brandViewAllUrl = '';
+        $stepImages = [];
 
         $detectedBrand = $this->detectBrand($qLower);
         $detectedBrandId = (int) ($detectedBrand['id'] ?? 0);
         $detectedBrandName = (string) ($detectedBrand['name'] ?? '');
 
         try {
+            if ($this->isRegistrationIntent($qLower)) {
+                $frontendBase = $this->frontendBaseUrl();
+                $loginUrl = ($frontendBase !== '' ? $frontendBase : '') . '/login';
+                $reply = "1. Go to the website homepage.\n"
+                    . "2. Click the user icon in the top right side or visit: {$loginUrl}\n"
+                    . "3. Click Sign up if you don't have account.\n"
+                    . "4. Fill in the all required informations\n"
+                    . "5. Check your email for a verification link.\n"
+                    . "6. Click the verification link to activate your account.\n"
+                    . "7. Log in using your username and password.\n\n"
+                    . "The complete guide for registration or login is shown in the image below.";
+
+                $stepImages = [
+                    ['url' => ($frontendBase !== '' ? $frontendBase : '') . '/images/steps/r1.png', 'caption' => 'Open the login page'],
+                    ['url' => ($frontendBase !== '' ? $frontendBase : '') . '/images/steps/r2.png', 'caption' => 'Choose Sign up'],
+                    ['url' => ($frontendBase !== '' ? $frontendBase : '') . '/images/steps/r3.png', 'caption' => 'Fill in your details'],
+                    ['url' => ($frontendBase !== '' ? $frontendBase : '') . '/images/steps/r4.png', 'caption' => 'Verify and log in'],
+                ];
+
+                return response()->json([
+                    'status' => 'ok',
+                    'reply' => $reply,
+                    'quick_replies' => ['Log in', 'Reset password', 'Contact support'],
+                    'product_cards' => [],
+                    'brand_cards' => [],
+                    'category_cards' => [],
+                    'brand_view_all_url' => '',
+                    'step_images' => $stepImages,
+                ]);
+            }
+
             $imageHandled = false;
             if (!empty($images)) {
                 $imageQuery = (string) ($images[0] ?? '');
@@ -153,6 +186,7 @@ class AiSupportController extends Controller
                     'brand_cards' => $brandCards,
                     'category_cards' => $categoryCards,
                     'brand_view_all_url' => $brandViewAllUrl,
+                    'step_images' => $stepImages,
                 ]);
             }
 
@@ -296,6 +330,7 @@ class AiSupportController extends Controller
                                     'brand_cards' => $brandCards,
                                     'category_cards' => $categoryCards,
                                     'brand_view_all_url' => $brandViewAllUrl,
+                                    'step_images' => $stepImages,
                                 ]);
                             }
                             $keywordMatches = $this->searchProductsByKeywords($searchQuestion, $detectedBrandId, 10);
@@ -704,7 +739,7 @@ class AiSupportController extends Controller
                 'file' => $e->getFile(),
                 'line' => $e->getLine(),
             ]);
-            $reply = 'Support assistant is temporarily unavailable. Please try again in a moment.';
+            $reply = "I’m not sure I understood your question. Could you rephrase it or choose one of the common topics below?";
         }
 
         return response()->json([
@@ -715,7 +750,20 @@ class AiSupportController extends Controller
             'brand_cards' => $brandCards,
             'category_cards' => $categoryCards,
             'brand_view_all_url' => $brandViewAllUrl,
+            'step_images' => $stepImages,
         ], 200, [], JSON_INVALID_UTF8_SUBSTITUTE);
+    }
+
+    private function isRegistrationIntent(string $qLower): bool
+    {
+        $pattern = '/\b('
+            . 'sign ?up|signup|register|registration|create (an )?account|make (an )?account|open (an )?account|get started|join|log in|login|sign in'
+            . '|paano mag log ?in|paano mag login|paano ako makakapag-?login|paano ako mag sign in|paano mag sign in sa account'
+            . '|paano pumasok sa account( ko)?|paano ako makakapasok sa account( ko)?|hindi ako makalogin|saan ako mag login|paano gamitin ang login'
+            . '|paano mag sign ?up|paano mag register|paano gumawa ng account|paano mag create ng account|paano mag open ng account|paano mag join|paano mag simula|paano magsimula'
+            . ')\b/i';
+
+        return (bool) preg_match($pattern, $qLower);
     }
 
     private function defaultQuickReplies(): array
@@ -2286,6 +2334,15 @@ class AiSupportController extends Controller
             'paano magsign up o gumawa ng account' => 'I-click ang "Mag-sign Up" at punan ang form gamit ang iyong email at password.',
             'libre ba ang pag sign up' => 'Oo! Libre ang paggawa ng account.',
             'paano maglogin' => 'I-click ang "Mag-login" at ilagay ang iyong email at password.',
+            'paano mag log in' => 'I-click ang "Mag-login" at ilagay ang iyong email at password.',
+            'paano ako makakapag-login' => 'I-click ang "Mag-login" at ilagay ang iyong email at password.',
+            'paano ako mag sign in' => 'I-click ang "Mag-login" at ilagay ang iyong email at password.',
+            'paano mag sign in sa account' => 'I-click ang "Mag-login" at ilagay ang iyong email at password.',
+            'paano pumasok sa account ko' => 'I-click ang "Mag-login" at ilagay ang iyong email at password.',
+            'paano ako makakapasok sa account ko' => 'I-click ang "Mag-login" at ilagay ang iyong email at password.',
+            'hindi ako makalogin paano gawin' => 'Subukan i-click ang "Mag-login" at ilagay ang iyong email at password. Kung hindi pa rin, gamitin ang "Forgot Password" o kontakin ang support.',
+            'saan ako mag login' => 'I-click ang "Mag-login" sa taas na user icon o bisitahin ang login page.',
+            'paano gamitin ang login' => 'I-click ang "Mag-login" at ilagay ang iyong email at password.',
             'ano ang available ninyong produkto' => 'Maaari mong tingnan lahat ng produkto sa aming "Shop" o gamitin ang search bar.',
             'paano ko malalaman ang laki o sukat ng produkto' => 'Bawat produkto ay may detalye sa description kasama ang sukat o dimension.',
             'may available ba kayong color red o blue' => 'Oo, nakalista ang kulay sa product page. Piliin ang nais na kulay bago mag-add to cart.',
