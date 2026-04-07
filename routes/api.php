@@ -224,4 +224,6 @@ Route::middleware(['auth:sanctum', 'supplier.actor'])->prefix('supplier/auth')->
 
 Route::middleware(['auth:sanctum', 'supplier.actor'])->group(function () {
     Route::get('/supplier/orders', [SupplierOrderController::class, 'index']);
+    Route::patch('/supplier/orders/{id}/fulfillment', [SupplierOrderController::class, 'updateFulfillment']);
+    Route::patch('/supplier/orders/{id}/tracking', [SupplierOrderController::class, 'updateTracking']);
 });

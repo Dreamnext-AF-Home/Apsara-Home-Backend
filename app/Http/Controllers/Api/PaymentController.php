@@ -51,6 +51,7 @@ class PaymentController extends Controller
             'customer.phone' => 'nullable|string|max:50',
             'customer.address' => 'nullable|string|max:500',
             'customer.referred_by' => 'nullable|string|max:255',
+            'customer.is_member' => 'nullable|boolean',
             'order' => 'nullable|array',
             'order.product_name' => 'nullable|string|max:255',
             'order.product_id' => 'nullable|integer|min:1',
@@ -74,7 +75,7 @@ class PaymentController extends Controller
         $authenticatedCustomer = $customerId
             ? \App\Models\Customer::query()
                 ->select(['c_userid', 'c_sponsor'])
-                ->with('sponsor:c_userid,c_username,c_acct_status,c_lockstatus')
+                ->with('sponsor:c_userid,c_username,c_accnt_status,c_lockstatus')
                 ->find((int) $customerId)
             : null;
 
