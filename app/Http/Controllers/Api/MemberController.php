@@ -8,9 +8,10 @@ use App\Models\CustomerWalletLedger;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Database\QueryException;
 use Illuminate\Validation\Rule;
 
 class MemberController extends Controller
@@ -65,7 +66,6 @@ class MemberController extends Controller
                 ])
                 ->when($search !== '', function ($query) use ($search) {
                     $like = '%' . $search . '%';
-
                     $query->where(function ($inner) use ($like) {
                         $inner->where('tbl_customer.c_username', 'ilike', $like)
                             ->orWhere('tbl_customer.c_email', 'ilike', $like)
@@ -271,27 +271,36 @@ class MemberController extends Controller
 
     public function stats(): JsonResponse
     {
-        $payload = Cache::remember('admin:members:stats:' . $this->membersCacheVersion(), now()->addMinutes(2), function () {
-            $total = Customer::count();
-            $active = Customer::where('c_lockstatus', 0)->where('c_accnt_status', 1)->count();
-            $pending = Customer::where('c_lockstatus', 0)->whereIn('c_accnt_status', [0, 2])->count();
-            $blocked = Customer::where('c_lockstatus', 1)->count();
-            $totalSpent = (float) Customer::sum('c_gpv');
-            $totalEarnings = (float) Customer::sum('c_totalincome');
-            $totalReferrals = Customer::whereNotNull('c_sponsor')
-                ->where('c_sponsor', '!=', 0)
-                ->count();
+        $cacheKey = 'admin:members:stats:' . $this->membersCacheVersion();
+        $cached = Cache::get($cacheKey);
 
-            return [
-                'total' => $total,
-                'active' => $active,
-                'pending' => $pending,
-                'blocked' => $blocked,
-                'totalSpent' => $totalSpent,
-                'totalEarnings' => $totalEarnings,
-                'totalReferrals' => $totalReferrals,
-            ];
-        });
+        if (is_array($cached)) {
+            return response()->json($cached);
+        }
+
+        $lock = Cache::lock('lock:' . $cacheKey, 30);
+
+        if ($lock->get()) {
+            try {
+                $payload = $this->buildStatsPayload();
+                Cache::put($cacheKey, $payload, now()->addMinutes(10));
+                return response()->json($payload);
+            } finally {
+                $lock->release();
+            }
+        }
+
+        // Another request is currently computing stats. Wait briefly for cached result.
+        usleep(250000);
+        $payload = Cache::get($cacheKey);
+
+        if (is_array($payload)) {
+            return response()->json($payload);
+        }
+
+        // Fallback in case lock holder failed; still return real data.
+        $payload = $this->buildStatsPayload();
+        Cache::put($cacheKey, $payload, now()->addMinutes(10));
 
         return response()->json($payload);
     }
@@ -523,6 +532,31 @@ class MemberController extends Controller
         });
 
         return response()->json($payload);
+    }
+
+    private function buildStatsPayload(): array
+    {
+        $summary = DB::table('tbl_customer')
+            ->selectRaw("
+                COUNT(*)::bigint AS total,
+                COUNT(*) FILTER (WHERE c_lockstatus = 0 AND c_accnt_status = 1)::bigint AS active,
+                COUNT(*) FILTER (WHERE c_lockstatus = 0 AND c_accnt_status IN (0, 2))::bigint AS pending,
+                COUNT(*) FILTER (WHERE c_lockstatus = 1)::bigint AS blocked,
+                COALESCE(SUM(c_gpv), 0)::numeric AS total_spent,
+                COALESCE(SUM(c_totalincome), 0)::numeric AS total_earnings,
+                COUNT(*) FILTER (WHERE c_sponsor IS NOT NULL AND c_sponsor <> 0)::bigint AS total_referrals
+            ")
+            ->first();
+
+        return [
+            'total' => (int) ($summary->total ?? 0),
+            'active' => (int) ($summary->active ?? 0),
+            'pending' => (int) ($summary->pending ?? 0),
+            'blocked' => (int) ($summary->blocked ?? 0),
+            'totalSpent' => (float) ($summary->total_spent ?? 0),
+            'totalEarnings' => (float) ($summary->total_earnings ?? 0),
+            'totalReferrals' => (int) ($summary->total_referrals ?? 0),
+        ];
     }
 
     private function mapStatus(int $lockStatus, int $accountStatus): string
