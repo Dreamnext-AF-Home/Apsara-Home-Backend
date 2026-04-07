@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\MemberController;
 use App\Http\Controllers\Api\ProductController;
+use App\Http\Controllers\Api\AddsContentController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\ProductBrandController;
 use Illuminate\Support\Facades\Route;
@@ -113,6 +114,9 @@ Route::middleware(['auth:sanctum', 'admin.or_supplier'])->group(function () {
     Route::get('/admin/products/activity-logs', [ProductController::class, 'activityLogs']);
     Route::post('/admin/products', [ProductController::class, 'store']);
     Route::post('/admin/products/import', [ProductController::class, 'import']);
+    Route::post('/admin/products/bulk-price/preview', [ProductController::class, 'bulkPricePreview']);
+    Route::post('/admin/products/bulk-price/apply', [ProductController::class, 'bulkPriceApply']);
+    Route::post('/admin/webpages/adds-content', [AddsContentController::class, 'store']);
     Route::put('/admin/products/{id}', [ProductController::class, 'update']);
     Route::delete('/admin/products/{id}', [ProductController::class, 'destroy']);
     Route::get('/admin/product-brands', [ProductBrandController::class, 'index']);

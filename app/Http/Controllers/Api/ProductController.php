@@ -1163,6 +1163,261 @@ class ProductController extends Controller
         ]);
     }
 
+    public function bulkPricePreview(Request $request): JsonResponse
+    {
+        $admin = $this->resolveAdmin($request);
+        $supplierUser = $this->resolveSupplierUser($request);
+
+        if ($admin && $this->roleFromLevel((int) $admin->user_level_id) === 'supplier_admin' && !$admin->supplier_id) {
+            return response()->json([
+                'message' => 'Supplier Admin account is not linked to a supplier company.',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'rows' => 'required|array|min:1|max:500',
+            'rows.*' => 'required|array',
+        ]);
+
+        $rows = $validated['rows'];
+        $results = [];
+        $failed = 0;
+
+        foreach ($rows as $index => $row) {
+            $rowNumber = $index + 1;
+            $sku = trim((string) ($row['sku'] ?? $row['pd_parent_sku'] ?? ''));
+            $id = (int) ($row['id'] ?? $row['pd_id'] ?? 0);
+            $priceSrp = array_key_exists('price_srp', $row) ? $this->toOptionalNumber($row['price_srp']) : (array_key_exists('pd_price_srp', $row) ? $this->toOptionalNumber($row['pd_price_srp']) : null);
+            $priceDp = array_key_exists('price_dp', $row) ? $this->toOptionalNumber($row['price_dp']) : (array_key_exists('pd_price_dp', $row) ? $this->toOptionalNumber($row['pd_price_dp']) : null);
+            $priceMember = array_key_exists('price_member', $row) ? $this->toOptionalNumber($row['price_member']) : (array_key_exists('pd_price_member', $row) ? $this->toOptionalNumber($row['pd_price_member']) : null);
+
+            if ($sku === '' && $id <= 0) {
+                $failed++;
+                $results[] = [
+                    'row' => $rowNumber,
+                    'status' => 'failed',
+                    'product_id' => null,
+                    'sku' => $sku !== '' ? $sku : null,
+                    'name' => null,
+                    'message' => 'SKU or Product ID is required.',
+                ];
+                continue;
+            }
+
+            if ($priceSrp === null && $priceDp === null && $priceMember === null) {
+                $failed++;
+                $results[] = [
+                    'row' => $rowNumber,
+                    'status' => 'failed',
+                    'product_id' => null,
+                    'sku' => $sku !== '' ? $sku : null,
+                    'name' => null,
+                    'message' => 'At least one price field is required.',
+                ];
+                continue;
+            }
+
+            $productQuery = Product::query();
+            if ($id > 0) {
+                $productQuery->where('pd_id', $id);
+            } else {
+                $productQuery->where('pd_parent_sku', $sku);
+            }
+            $this->scopeQueryToActor($productQuery, $admin, $supplierUser);
+            $product = $productQuery->first();
+
+            if (!$product) {
+                $failed++;
+                $results[] = [
+                    'row' => $rowNumber,
+                    'status' => 'failed',
+                    'product_id' => null,
+                    'sku' => $sku !== '' ? $sku : null,
+                    'name' => null,
+                    'message' => 'Product not found or not accessible.',
+                ];
+                continue;
+            }
+
+            $results[] = [
+                'row' => $rowNumber,
+                'status' => 'ready',
+                'product_id' => (int) $product->pd_id,
+                'sku' => $product->pd_parent_sku ?: null,
+                'name' => $product->pd_name,
+                'current' => [
+                    'price_srp' => (float) $product->pd_price_srp,
+                    'price_dp' => (float) $product->pd_price_dp,
+                    'price_member' => $product->pd_price_member !== null ? (float) $product->pd_price_member : null,
+                ],
+                'next' => [
+                    'price_srp' => $priceSrp,
+                    'price_dp' => $priceDp,
+                    'price_member' => $priceMember,
+                ],
+                'message' => 'Ready for update.',
+            ];
+        }
+
+        return response()->json([
+            'message' => $failed > 0
+                ? 'Preview generated with some row errors.'
+                : 'Preview generated successfully.',
+            'summary' => [
+                'total' => count($rows),
+                'ready' => count($rows) - $failed,
+                'failed' => $failed,
+            ],
+            'results' => $results,
+        ]);
+    }
+
+    public function bulkPriceApply(Request $request): JsonResponse
+    {
+        $admin = $this->resolveAdmin($request);
+        $supplierUser = $this->resolveSupplierUser($request);
+
+        if ($admin && $this->roleFromLevel((int) $admin->user_level_id) === 'supplier_admin' && !$admin->supplier_id) {
+            return response()->json([
+                'message' => 'Supplier Admin account is not linked to a supplier company.',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'rows' => 'required|array|min:1|max:500',
+            'rows.*' => 'required|array',
+        ]);
+
+        $rows = $validated['rows'];
+        $results = [];
+        $updated = 0;
+        $failed = 0;
+        $now = now();
+
+        foreach ($rows as $index => $row) {
+            $rowNumber = $index + 1;
+            $sku = trim((string) ($row['sku'] ?? $row['pd_parent_sku'] ?? ''));
+            $id = (int) ($row['id'] ?? $row['pd_id'] ?? 0);
+            $priceSrp = array_key_exists('price_srp', $row) ? $this->toOptionalNumber($row['price_srp']) : (array_key_exists('pd_price_srp', $row) ? $this->toOptionalNumber($row['pd_price_srp']) : null);
+            $priceDp = array_key_exists('price_dp', $row) ? $this->toOptionalNumber($row['price_dp']) : (array_key_exists('pd_price_dp', $row) ? $this->toOptionalNumber($row['pd_price_dp']) : null);
+            $priceMember = array_key_exists('price_member', $row) ? $this->toOptionalNumber($row['price_member']) : (array_key_exists('pd_price_member', $row) ? $this->toOptionalNumber($row['pd_price_member']) : null);
+
+            if ($sku === '' && $id <= 0) {
+                $failed++;
+                $results[] = [
+                    'row' => $rowNumber,
+                    'status' => 'failed',
+                    'product_id' => null,
+                    'sku' => $sku !== '' ? $sku : null,
+                    'name' => null,
+                    'message' => 'SKU or Product ID is required.',
+                ];
+                continue;
+            }
+
+            if ($priceSrp === null && $priceDp === null && $priceMember === null) {
+                $failed++;
+                $results[] = [
+                    'row' => $rowNumber,
+                    'status' => 'failed',
+                    'product_id' => null,
+                    'sku' => $sku !== '' ? $sku : null,
+                    'name' => null,
+                    'message' => 'At least one price field is required.',
+                ];
+                continue;
+            }
+
+            $productQuery = Product::query();
+            if ($id > 0) {
+                $productQuery->where('pd_id', $id);
+            } else {
+                $productQuery->where('pd_parent_sku', $sku);
+            }
+            $this->scopeQueryToActor($productQuery, $admin, $supplierUser);
+            $product = $productQuery->first();
+
+            if (!$product) {
+                $failed++;
+                $results[] = [
+                    'row' => $rowNumber,
+                    'status' => 'failed',
+                    'product_id' => null,
+                    'sku' => $sku !== '' ? $sku : null,
+                    'name' => null,
+                    'message' => 'Product not found or not accessible.',
+                ];
+                continue;
+            }
+
+            if (($priceSrp !== null && $priceSrp < 0) || ($priceDp !== null && $priceDp < 0) || ($priceMember !== null && $priceMember < 0)) {
+                $failed++;
+                $results[] = [
+                    'row' => $rowNumber,
+                    'status' => 'failed',
+                    'product_id' => (int) $product->pd_id,
+                    'sku' => $product->pd_parent_sku ?: null,
+                    'name' => $product->pd_name,
+                    'message' => 'Price values must be zero or greater.',
+                ];
+                continue;
+            }
+
+            try {
+                $beforeProduct = clone $product;
+
+                if ($priceSrp !== null) {
+                    $product->pd_price_srp = $priceSrp;
+                }
+                if ($priceDp !== null) {
+                    $product->pd_price_dp = $priceDp;
+                }
+                if ($priceMember !== null) {
+                    $product->pd_price_member = $priceMember;
+                }
+                $product->pd_last_update = $now;
+                $product->save();
+
+                $changes = $this->buildProductChangeLog($beforeProduct, $product);
+                $this->recordProductActivity('updated', $product, $admin, $supplierUser, $product->pd_name, $product->pd_parent_sku, $changes);
+
+                $updated++;
+                $results[] = [
+                    'row' => $rowNumber,
+                    'status' => 'updated',
+                    'product_id' => (int) $product->pd_id,
+                    'sku' => $product->pd_parent_sku ?: null,
+                    'name' => $product->pd_name,
+                    'message' => 'Price updated.',
+                ];
+            } catch (\Throwable $e) {
+                $failed++;
+                $this->recordFailedProductActivity('updated', $admin, $supplierUser, $product, $product->pd_name, $product->pd_parent_sku);
+
+                $results[] = [
+                    'row' => $rowNumber,
+                    'status' => 'failed',
+                    'product_id' => (int) $product->pd_id,
+                    'sku' => $product->pd_parent_sku ?: null,
+                    'name' => $product->pd_name,
+                    'message' => $e->getMessage(),
+                ];
+            }
+        }
+
+        return response()->json([
+            'message' => $failed > 0
+                ? 'Bulk price update finished with some row errors.'
+                : 'Bulk price update completed successfully.',
+            'summary' => [
+                'total' => count($rows),
+                'updated' => $updated,
+                'failed' => $failed,
+            ],
+            'results' => $results,
+        ]);
+    }
+
     public function store(Request $request): JsonResponse
     {
         $admin = $this->resolveAdmin($request);

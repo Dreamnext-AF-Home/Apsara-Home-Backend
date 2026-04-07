@@ -57,9 +57,24 @@ def embed_image(payload: EmbedRequest):
     if payload.image_url:
         import requests
 
-        res = requests.get(payload.image_url, timeout=10)
+        try:
+            res = requests.get(
+            payload.image_url,
+            timeout=20,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; AFHomeVision/1.0)",
+                "Accept": "image/*,*/*;q=0.8",
+            },
+            allow_redirects=True,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Failed to fetch image URL. {exc}")
         if res.status_code >= 400:
-            raise HTTPException(status_code=400, detail="Failed to fetch image URL.")
+            snippet = (res.text or "")[:200]
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to fetch image URL. HTTP {res.status_code}. {snippet}",
+            )
         try:
             img = image_from_bytes(res.content)
         except Exception as exc:
@@ -68,3 +83,10 @@ def embed_image(payload: EmbedRequest):
 
     raise HTTPException(status_code=400, detail="image_url or image_data is required.")
 
+
+if __name__ == "__main__":
+    import uvicorn
+
+    host = os.environ.get("VISION_HOST", "0.0.0.0")
+    port = int(os.environ.get("VISION_PORT", "8001"))
+    uvicorn.run("vision_embed_server:app", host=host, port=port, reload=False)

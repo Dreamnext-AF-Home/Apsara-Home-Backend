@@ -74,7 +74,7 @@ class PaymentController extends Controller
         $authenticatedCustomer = $customerId
             ? \App\Models\Customer::query()
                 ->select(['c_userid', 'c_sponsor'])
-                ->with('sponsor:c_userid,c_username,c_acct_status,c_lockstatus')
+                ->with('sponsor:c_userid,c_username,c_accnt_status,c_lockstatus')
                 ->find((int) $customerId)
             : null;
 
@@ -373,14 +373,27 @@ class PaymentController extends Controller
     private function sendCheckoutCompletedEmailIfNeeded(string $checkoutId, array $attrs): void
     {
         $customer = Cache::get("checkout_customer:{$checkoutId}");
-        if (!$customer || empty($customer['email'])) {
-            Log::warning('Checkout email skipped: missing cached customer/email', [
+        $cachedEmail = is_array($customer) ? trim((string) ($customer['email'] ?? '')) : '';
+        $recipient = $cachedEmail;
+
+        $order = null;
+        if ($recipient === '') {
+            $order = CheckoutHistory::query()
+                ->where('ch_checkout_id', $checkoutId)
+                ->first();
+            $recipient = $order ? trim((string) ($order->ch_customer_email ?? '')) : '';
+        }
+
+        if ($recipient === '') {
+            Log::warning('Checkout email skipped: missing customer email', [
                 'checkout_id' => $checkoutId,
-                'has_customer' => (bool) $customer,
+                'has_cached_customer' => (bool) $customer,
+                'has_order_record' => (bool) $order,
             ]);
             return;
         }
-        $recipient = env('MAIL_TEST_TO') ?: $customer['email'];
+
+        $recipient = env('MAIL_TEST_TO') ?: $recipient;
 
         $notifiedKey = "checkout_email_sent:{$checkoutId}";
         if (!Cache::add($notifiedKey, true, now()->addDays(7))) {
@@ -389,24 +402,34 @@ class PaymentController extends Controller
         }
 
         try {
-            $order = is_array($customer['order'] ?? null) ? $customer['order'] : [];
+            $orderDetails = is_array($customer['order'] ?? null) ? $customer['order'] : [];
+            if ($order) {
+                $orderDetails = [
+                    'product_name' => $order->ch_product_name ?? null,
+                    'product_sku' => $order->ch_product_sku ?? null,
+                    'quantity' => $order->ch_quantity ?? 1,
+                    'selected_color' => $order->ch_selected_color ?? null,
+                    'selected_size' => $order->ch_selected_size ?? null,
+                    'selected_type' => $order->ch_selected_type ?? null,
+                ];
+            }
 
             Mail::mailer('resend')->to($recipient)->send(new CheckoutCompletedMail([
                 'checkout_id' => $checkoutId,
-                'customer_name' => $customer['name'] ?? 'Customer',
-                'description' => $customer['description'] ?? 'Order',
-                'amount' => $customer['amount'] ?? 0,
-                'payment_method' => $customer['payment_method'] ?? null,
+                'customer_name' => $customer['name'] ?? ($order?->ch_customer_name ?? 'Customer'),
+                'description' => $customer['description'] ?? ($order?->ch_description ?? 'Order'),
+                'amount' => $customer['amount'] ?? ($order?->ch_amount ?? 0),
+                'payment_method' => $customer['payment_method'] ?? ($order?->ch_payment_method ?? null),
                 'status' => $attrs['status'] ?? 'paid',
                 'payment_intent_id' => $attrs['payment_intent']['id'] ?? null,
-                'shipping_address' => $customer['address'] ?? null,
+                'shipping_address' => $customer['address'] ?? ($order?->ch_customer_address ?? null),
                 'order' => [
-                    'product_name' => $order['product_name'] ?? null,
-                    'product_sku' => $order['product_sku'] ?? null,
-                    'quantity' => $order['quantity'] ?? 1,
-                    'selected_color' => $order['selected_color'] ?? null,
-                    'selected_size' => $order['selected_size'] ?? null,
-                    'selected_type' => $order['selected_type'] ?? null,
+                    'product_name' => $orderDetails['product_name'] ?? null,
+                    'product_sku' => $orderDetails['product_sku'] ?? null,
+                    'quantity' => $orderDetails['quantity'] ?? 1,
+                    'selected_color' => $orderDetails['selected_color'] ?? null,
+                    'selected_size' => $orderDetails['selected_size'] ?? null,
+                    'selected_type' => $orderDetails['selected_type'] ?? null,
                 ],
             ]));
 
