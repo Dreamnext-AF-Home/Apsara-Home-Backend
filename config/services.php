@@ -129,4 +129,10 @@ return [
         'timeout' => (int) env('JNT_TIMEOUT', 20),
     ],
 
+    'zq' => [
+        'base_url' => env('ZQ_API_BASE_URL', 'https://system.zqdropshipping.com/api/v2/openapi'),
+        'api_key' => env('ZQ_API_KEY'),
+        'timeout' => (int) env('ZQ_TIMEOUT', 30),
+    ],
+
 ];

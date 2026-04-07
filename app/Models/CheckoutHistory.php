@@ -45,6 +45,12 @@ class CheckoutHistory extends Model
         'ch_shipment_status',
         'ch_shipment_payload',
         'ch_shipped_at',
+        'ch_zq_platform_order_id',
+        'ch_zq_order_id',
+        'ch_zq_status',
+        'ch_zq_payload',
+        'ch_zq_response',
+        'ch_zq_synced_at',
         'ch_paid_at',
     ];
 
@@ -59,5 +65,8 @@ class CheckoutHistory extends Model
         'ch_pv_posted_at' => 'datetime',
         'ch_shipped_at' => 'datetime',
         'ch_shipment_payload' => 'array',
+        'ch_zq_payload' => 'array',
+        'ch_zq_response' => 'array',
+        'ch_zq_synced_at' => 'datetime',
     ];
 }

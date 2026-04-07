@@ -17,6 +17,7 @@ class ProductVariant extends Model
         'pv_color',
         'pv_color_hex',
         'pv_size',
+        'pv_style',
         'pv_width',
         'pv_dimension',
         'pv_height',

@@ -634,6 +634,7 @@ class ProductController extends Controller
                 'color'    => (string) ($variant->pv_color ?? ''),
                 'colorHex' => (string) ($variant->pv_color_hex ?? ''),
                 'size'     => (string) ($variant->pv_size ?? ''),
+                'style'    => (string) ($variant->pv_style ?? ''),
                 'width'    => $this->toOptionalNumber($variant->pv_width),
                 'dimension' => $this->toOptionalNumber($variant->pv_dimension),
                 'height'   => $this->toOptionalNumber($variant->pv_height),
@@ -688,6 +689,7 @@ class ProductController extends Controller
             $name = isset($variant['pv_name']) ? trim((string) $variant['pv_name']) : '';
             $color = isset($variant['pv_color']) ? trim((string) $variant['pv_color']) : '';
             $size = isset($variant['pv_size']) ? trim((string) $variant['pv_size']) : '';
+            $style = isset($variant['pv_style']) ? trim((string) $variant['pv_style']) : '';
             $width = isset($variant['pv_width']) && $variant['pv_width'] !== '' ? $variant['pv_width'] : null;
             $dimension = isset($variant['pv_dimension']) && $variant['pv_dimension'] !== '' ? $variant['pv_dimension'] : null;
             $height = isset($variant['pv_height']) && $variant['pv_height'] !== '' ? $variant['pv_height'] : null;
@@ -696,7 +698,7 @@ class ProductController extends Controller
                 ->values()
                 ->all();
 
-            if ($sku === '' && $name === '' && $color === '' && $size === '' && $width === null && $dimension === null && $height === null && empty($images)) {
+            if ($sku === '' && $name === '' && $color === '' && $size === '' && $style === '' && $width === null && $dimension === null && $height === null && empty($images)) {
                 continue;
             }
 
@@ -707,6 +709,7 @@ class ProductController extends Controller
                 'pv_color'     => $color !== '' ? $color : null,
                 'pv_color_hex' => isset($variant['pv_color_hex']) ? trim((string) $variant['pv_color_hex']) : null,
                 'pv_size'      => $size !== '' ? $size : null,
+                'pv_style'     => $style !== '' ? $style : null,
                 'pv_width'     => $width,
                 'pv_dimension' => $dimension,
                 'pv_height'    => $height,
@@ -810,7 +813,7 @@ class ProductController extends Controller
             ->with([
                 'photos:pp_id,pp_pdid,pp_filename,pp_varone,pp_date',
                 'brand:pb_id,pb_name,pb_status',
-                'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_width,pv_dimension,pv_height,pv_price_srp,pv_price_dp,pv_price_member,pv_prodpv,pv_qty,pv_status,pv_date',
+                'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_style,pv_width,pv_dimension,pv_height,pv_price_srp,pv_price_dp,pv_price_member,pv_prodpv,pv_qty,pv_status,pv_date',
                 'variants.photos:pvp_id,pvp_pvid,pvp_filename,pvp_sort,pvp_date',
             ])
             ->tap(fn ($query) => $this->applyPublicVisibility($query))
@@ -842,7 +845,7 @@ class ProductController extends Controller
             ])
             ->with([
                 'photos:pp_id,pp_pdid,pp_filename,pp_varone,pp_date',
-                'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_width,pv_dimension,pv_height,pv_price_srp,pv_price_dp,pv_price_member,pv_prodpv,pv_qty,pv_status,pv_date',
+                'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_style,pv_width,pv_dimension,pv_height,pv_price_srp,pv_price_dp,pv_price_member,pv_prodpv,pv_qty,pv_status,pv_date',
                 'variants.photos:pvp_id,pvp_pvid,pvp_filename,pvp_sort,pvp_date',
             ])
             ->tap(fn ($query) => $this->applyPublicVisibility($query))
@@ -887,7 +890,7 @@ class ProductController extends Controller
                     'brand:pb_id,pb_name,pb_status',
                     'supplier:s_id,s_company,s_name',
                     'creationActivity:pal_id,pal_product_id,pal_actor_name,pal_actor_email,pal_actor_role,pal_created_at',
-                    'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_width,pv_dimension,pv_height,pv_price_srp,pv_price_dp,pv_price_member,pv_prodpv,pv_qty,pv_status,pv_date',
+                    'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_style,pv_width,pv_dimension,pv_height,pv_price_srp,pv_price_dp,pv_price_member,pv_prodpv,pv_qty,pv_status,pv_date',
                     'variants.photos:pvp_id,pvp_pvid,pvp_filename,pvp_sort,pvp_date',
                 ])
                 ->when($search !== '', function ($q) use ($search) {
@@ -1210,6 +1213,7 @@ class ProductController extends Controller
             'pd_variants.*.pv_color'     => 'nullable|string|max:80',
             'pd_variants.*.pv_color_hex' => 'nullable|string|max:16',
             'pd_variants.*.pv_size'      => 'nullable|string|max:40',
+            'pd_variants.*.pv_style'     => 'nullable|string|max:80',
             'pd_variants.*.pv_width'     => 'nullable|numeric|min:0',
             'pd_variants.*.pv_dimension' => 'nullable|numeric|min:0',
             'pd_variants.*.pv_height'    => 'nullable|numeric|min:0',
@@ -1381,7 +1385,7 @@ class ProductController extends Controller
                 'brand:pb_id,pb_name,pb_status',
                 'supplier:s_id,s_company,s_name',
                 'creationActivity:pal_id,pal_product_id,pal_actor_name,pal_actor_email,pal_actor_role,pal_created_at',
-                'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_width,pv_dimension,pv_height,pv_price_srp,pv_price_dp,pv_price_member,pv_prodpv,pv_qty,pv_status,pv_date',
+                'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_style,pv_width,pv_dimension,pv_height,pv_price_srp,pv_price_dp,pv_price_member,pv_prodpv,pv_qty,pv_status,pv_date',
                 'variants.photos:pvp_id,pvp_pvid,pvp_filename,pvp_sort,pvp_date',
             ])
             ->findOrFail($product->pd_id);
@@ -1441,6 +1445,7 @@ class ProductController extends Controller
             'pd_variants.*.pv_color'     => 'nullable|string|max:80',
             'pd_variants.*.pv_color_hex' => 'nullable|string|max:16',
             'pd_variants.*.pv_size'      => 'nullable|string|max:40',
+            'pd_variants.*.pv_style'     => 'nullable|string|max:80',
             'pd_variants.*.pv_width'     => 'nullable|numeric|min:0',
             'pd_variants.*.pv_dimension' => 'nullable|numeric|min:0',
             'pd_variants.*.pv_height'    => 'nullable|numeric|min:0',
@@ -1661,7 +1666,7 @@ class ProductController extends Controller
         $product->load([
             'photos:pp_id,pp_pdid,pp_filename,pp_varone,pp_date',
             'brand:pb_id,pb_name,pb_status',
-            'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_width,pv_dimension,pv_height,pv_price_srp,pv_price_dp,pv_price_member,pv_prodpv,pv_qty,pv_status,pv_date',
+            'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_style,pv_width,pv_dimension,pv_height,pv_price_srp,pv_price_dp,pv_price_member,pv_prodpv,pv_qty,pv_status,pv_date',
             'variants.photos:pvp_id,pvp_pvid,pvp_filename,pvp_sort,pvp_date',
         ]);
 

@@ -12,6 +12,7 @@ use App\Models\Customer;
 use App\Models\CustomerWalletLedger;
 use App\Services\Shipping\JntShippingService;
 use App\Services\Shipping\XdeShippingService;
+use App\Services\Zq\ZqApiService;
 use App\Support\AdminAccess;
 use App\Support\DirectAffiliatePerformanceBonus;
 use App\Support\DirectReferralCommission;
@@ -29,7 +30,8 @@ class AdminOrderController extends Controller
 {
     public function __construct(
         private readonly XdeShippingService $xdeShippingService,
-        private readonly JntShippingService $jntShippingService
+        private readonly JntShippingService $jntShippingService,
+        private readonly ZqApiService $zqApiService
     )
     {
     }
@@ -316,7 +318,14 @@ class AdminOrderController extends Controller
                 'ch_courier',
                 'ch_tracking_no',
                 'ch_shipment_status',
+                'ch_shipment_payload',
                 'ch_shipped_at',
+                'ch_zq_platform_order_id',
+                'ch_zq_order_id',
+                'ch_zq_status',
+                'ch_zq_payload',
+                'ch_zq_response',
+                'ch_zq_synced_at',
                 'ch_product_name',
                 'ch_product_id',
                 'ch_product_sku',
@@ -380,6 +389,12 @@ class AdminOrderController extends Controller
                 'shipment_status' => $shipmentStatus,
                 'shipment_payload' => !empty($shipmentPayload) ? $shipmentPayload : null,
                 'shipped_at' => optional($order->ch_shipped_at)->toDateTimeString(),
+                'zq_platform_order_id' => $order->ch_zq_platform_order_id,
+                'zq_order_id' => $order->ch_zq_order_id,
+                'zq_status' => $order->ch_zq_status,
+                'zq_payload' => is_array($order->ch_zq_payload) ? $order->ch_zq_payload : null,
+                'zq_response' => is_array($order->ch_zq_response) ? $order->ch_zq_response : null,
+                'zq_synced_at' => optional($order->ch_zq_synced_at)->toDateTimeString(),
                 'product_name' => $order->ch_product_name ?? ($order->ch_description ?? 'Order Item'),
                 'product_id' => $order->ch_product_id ? (int) $order->ch_product_id : null,
                 'product_sku' => $order->ch_product_sku,
@@ -445,7 +460,97 @@ class AdminOrderController extends Controller
 
         $this->sendCustomerOrderStatusEmail($order, 'approval_approved');
 
-        return response()->json(['message' => 'Order approved.']);
+        $message = 'Order approved.';
+        try {
+            $zqResult = $this->pushOrderToZqIfEligible($order->fresh());
+            if ($zqResult !== null) {
+                $message .= ' Pushed to ZQ successfully.';
+            }
+        } catch (\Throwable $e) {
+            Log::warning('ZQ auto-push after approval failed.', [
+                'order_id' => (int) $order->ch_id,
+                'checkout_id' => (string) $order->ch_checkout_id,
+                'error' => $e->getMessage(),
+            ]);
+            $message .= ' Approval completed, but ZQ push failed.';
+        }
+
+        return response()->json(['message' => $message]);
+    }
+
+    public function pushToZq(Request $request, int $id)
+    {
+        $admin = $this->resolveAdmin($request);
+        if (!$admin) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+        if (!$this->canApprove($admin)) {
+            return response()->json(['message' => 'Forbidden: approval access is limited.'], 403);
+        }
+
+        $order = CheckoutHistory::query()->where('ch_id', $id)->firstOrFail();
+        if (($order->ch_approval_status ?? 'pending_approval') !== 'approved') {
+            return response()->json(['message' => 'Order must be approved before pushing to ZQ.'], 422);
+        }
+
+        $response = $this->pushOrderToZq($order);
+
+        return response()->json([
+            'message' => 'Order pushed to ZQ successfully.',
+            'zq' => $response,
+        ]);
+    }
+
+    public function fetchZqDetail(Request $request, int $id)
+    {
+        $admin = $this->resolveAdmin($request);
+        if (!$admin) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+        if (!$this->canUpdateFulfillment($admin)) {
+            return response()->json(['message' => 'Forbidden: tracking access is limited.'], 403);
+        }
+
+        $order = CheckoutHistory::query()->where('ch_id', $id)->firstOrFail();
+        $platformOrderId = $this->resolveZqPlatformOrderId($order);
+
+        if ($platformOrderId === '') {
+            return response()->json(['message' => 'Order has no ZQ platform order ID yet.'], 422);
+        }
+
+        $response = $this->zqApiService->getOrderDetail($platformOrderId);
+        $this->persistZqDetail($order, $response);
+
+        return response()->json([
+            'message' => 'ZQ order detail fetched successfully.',
+            'zq' => $response,
+        ]);
+    }
+
+    public function syncZqTracking(Request $request, int $id)
+    {
+        $admin = $this->resolveAdmin($request);
+        if (!$admin) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+        if (!$this->canUpdateFulfillment($admin)) {
+            return response()->json(['message' => 'Forbidden: tracking access is limited.'], 403);
+        }
+
+        $order = CheckoutHistory::query()->where('ch_id', $id)->firstOrFail();
+        $platformOrderId = $this->resolveZqPlatformOrderId($order);
+
+        if ($platformOrderId === '') {
+            return response()->json(['message' => 'Order has no ZQ platform order ID yet.'], 422);
+        }
+
+        $response = $this->zqApiService->getTracking($platformOrderId);
+        $this->persistZqTracking($order, $response);
+
+        return response()->json([
+            'message' => 'ZQ tracking synced successfully.',
+            'zq' => $response,
+        ]);
     }
 
     public function reject(Request $request, int $id)
@@ -692,6 +797,194 @@ class AdminOrderController extends Controller
     {
         $normalized = strtolower(trim((string) $courier));
         return in_array($normalized, ['jnt', 'xde'], true) ? $normalized : null;
+    }
+
+    private function pushOrderToZqIfEligible(CheckoutHistory $order): ?array
+    {
+        if (! $this->zqApiService->isConfigured()) {
+            return null;
+        }
+
+        return $this->pushOrderToZq($order);
+    }
+
+    private function pushOrderToZq(CheckoutHistory $order): array
+    {
+        $payload = [$this->buildZqOrderPayload($order)];
+        $response = $this->zqApiService->createOrder($payload);
+
+        $responseData = is_array($response['data'] ?? null) ? $response['data'] : [];
+        $platformOrderId = $payload[0]['orderNumber'] ?? (string) $order->ch_checkout_id;
+
+        $order->fill([
+            'ch_zq_platform_order_id' => $platformOrderId,
+            'ch_zq_status' => $this->mapZqStateToLocalStatus((string) ($responseData['state'] ?? 'submitted')),
+            'ch_zq_payload' => $payload[0],
+            'ch_zq_response' => $response,
+            'ch_zq_synced_at' => now(),
+        ])->save();
+
+        return $response;
+    }
+
+    private function buildZqOrderPayload(CheckoutHistory $order): array
+    {
+        $quantity = max(1, (int) ($order->ch_quantity ?? 1));
+        $lineAmount = (int) round((((float) ($order->ch_amount ?? 0)) / $quantity) * 100);
+        $parsedAddress = $this->parseOrderAddress((string) ($order->ch_customer_address ?? ''));
+        $variantLabel = $this->buildZqVariantLabel($order);
+        $sku = trim((string) ($order->ch_product_sku ?? '')) !== ''
+            ? trim((string) $order->ch_product_sku)
+            : ('ORDER-' . (string) $order->ch_id);
+        $imageUrl = trim((string) ($order->ch_product_image ?? ''));
+
+        return [
+            'orderNumber' => (string) $order->ch_checkout_id,
+            'countryCode' => 'PH',
+            'city' => $parsedAddress['city'],
+            'province' => $parsedAddress['province'],
+            'postCode' => $parsedAddress['postCode'],
+            'consignee' => (string) ($order->ch_customer_name ?? 'Customer'),
+            'addressDetail' => $parsedAddress['addressDetail'],
+            'address2' => $parsedAddress['address2'],
+            'phone1' => (string) ($order->ch_customer_phone ?? ''),
+            'email' => (string) ($order->ch_customer_email ?? ''),
+            'amount' => (int) round(((float) ($order->ch_amount ?? 0)) * 100),
+            'commodities' => [[
+                'sku' => $sku,
+                'productName' => (string) ($order->ch_product_name ?: ($order->ch_description ?? 'Order Item')),
+                'variant' => $variantLabel,
+                'quantity' => $quantity,
+                'amount' => max(0, $lineAmount),
+                'productImgUrls' => $imageUrl !== '' ? [$imageUrl] : [],
+            ]],
+        ];
+    }
+
+    private function buildZqVariantLabel(CheckoutHistory $order): string
+    {
+        $parts = array_values(array_filter([
+            trim((string) ($order->ch_selected_color ?? '')),
+            trim((string) ($order->ch_selected_size ?? '')),
+            trim((string) ($order->ch_selected_type ?? '')),
+        ], fn ($value) => $value !== ''));
+
+        return ! empty($parts) ? implode(' / ', $parts) : 'Default';
+    }
+
+    private function parseOrderAddress(string $address): array
+    {
+        $parts = array_values(array_filter(array_map(
+            fn ($part) => trim($part),
+            explode(',', $address)
+        ), fn ($part) => $part !== ''));
+
+        $addressDetail = $parts[0] ?? $address;
+        $address2 = $parts[1] ?? '';
+        $city = $parts[2] ?? ($parts[1] ?? 'Metro Manila');
+        $province = $parts[3] ?? ($parts[2] ?? 'Metro Manila');
+        $postCodeSource = end($parts) ?: '';
+        preg_match('/\b(\d{4,6})\b/', (string) $postCodeSource, $matches);
+
+        return [
+            'addressDetail' => $addressDetail !== '' ? $addressDetail : 'Address not provided',
+            'address2' => $address2,
+            'city' => $city !== '' ? $city : 'Metro Manila',
+            'province' => $province !== '' ? $province : 'Metro Manila',
+            'postCode' => $matches[1] ?? '0000',
+        ];
+    }
+
+    private function resolveZqPlatformOrderId(CheckoutHistory $order): string
+    {
+        $stored = trim((string) ($order->ch_zq_platform_order_id ?? ''));
+        if ($stored !== '') {
+            return $stored;
+        }
+
+        return trim((string) ($order->ch_checkout_id ?? ''));
+    }
+
+    private function persistZqDetail(CheckoutHistory $order, array $response): void
+    {
+        $data = is_array($response['data'] ?? null) ? $response['data'] : [];
+        $state = (string) ($data['state'] ?? '');
+        $trackingNo = trim((string) ($data['trackNumber'] ?? ''));
+        $trackingNoFirstMile = trim((string) ($data['trackNumber1'] ?? ''));
+
+        $shipmentPayload = is_array($order->ch_shipment_payload) ? $order->ch_shipment_payload : [];
+        $shipmentPayload['zq_detail'] = $response;
+
+        $order->fill([
+            'ch_zq_platform_order_id' => (string) ($data['platformOrderId'] ?? $this->resolveZqPlatformOrderId($order)),
+            'ch_zq_order_id' => (string) ($data['orderId'] ?? ($order->ch_zq_order_id ?? '')),
+            'ch_zq_status' => $state !== '' ? $state : ($order->ch_zq_status ?? null),
+            'ch_zq_response' => $response,
+            'ch_zq_synced_at' => now(),
+            'ch_shipment_payload' => $shipmentPayload,
+        ]);
+
+        if ($trackingNo !== '') {
+            $order->ch_courier = $order->ch_courier ?: 'zq';
+            $order->ch_tracking_no = $trackingNo;
+            $order->ch_shipped_at = $order->ch_shipped_at ?: now();
+        } elseif ($trackingNoFirstMile !== '' && trim((string) ($order->ch_tracking_no ?? '')) === '') {
+            $order->ch_courier = $order->ch_courier ?: 'zq';
+            $order->ch_tracking_no = $trackingNoFirstMile;
+            $order->ch_shipped_at = $order->ch_shipped_at ?: now();
+        }
+
+        $mappedStatus = $this->mapZqStateToLocalStatus($state);
+        if ($mappedStatus !== null) {
+            $order->ch_fulfillment_status = $mappedStatus;
+        }
+
+        $order->save();
+    }
+
+    private function persistZqTracking(CheckoutHistory $order, array $response): void
+    {
+        $data = is_array($response['data'] ?? null) ? $response['data'] : [];
+        $trackingNo = trim((string) ($data['trackNumber'] ?? ''));
+        $trackingNoFirstMile = trim((string) ($data['trackNumber1'] ?? ''));
+
+        $shipmentPayload = is_array($order->ch_shipment_payload) ? $order->ch_shipment_payload : [];
+        $shipmentPayload['zq_tracking'] = $response;
+
+        $order->fill([
+            'ch_shipment_payload' => $shipmentPayload,
+            'ch_zq_response' => $response,
+            'ch_zq_synced_at' => now(),
+        ]);
+
+        if ($trackingNo !== '') {
+            $order->ch_courier = 'zq';
+            $order->ch_tracking_no = $trackingNo;
+            $order->ch_shipment_status = 'in_transit';
+            $order->ch_fulfillment_status = in_array((string) ($order->ch_fulfillment_status ?? ''), ['delivered', 'out_for_delivery'], true)
+                ? $order->ch_fulfillment_status
+                : 'shipped';
+            $order->ch_shipped_at = $order->ch_shipped_at ?: now();
+        } elseif ($trackingNoFirstMile !== '') {
+            $order->ch_courier = 'zq';
+            $order->ch_tracking_no = $trackingNoFirstMile;
+            $order->ch_shipment_status = $order->ch_shipment_status ?: 'for_pickup';
+        }
+
+        $order->save();
+    }
+
+    private function mapZqStateToLocalStatus(string $state): ?string
+    {
+        return match (strtoupper(trim($state))) {
+            'UNFULFILLED' => 'pending',
+            'PAID' => 'processing',
+            'PROCESSING' => 'processing',
+            'SUCCESS' => 'delivered',
+            'CLOSE' => 'cancelled',
+            'SUBMITTED' => 'processing',
+            default => null,
+        };
     }
 
     private function defaultCourier(): ?string

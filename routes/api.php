@@ -153,6 +153,9 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,csr,merchant_ad
     Route::patch('/admin/orders/{id}/reject', [AdminOrderController::class, 'reject']);
     Route::patch('/admin/orders/{id}/status', [AdminOrderController::class, 'updateStatus']);
     Route::patch('/admin/orders/{id}/shipment-status', [AdminOrderController::class, 'updateShipmentStatus']);
+    Route::post('/admin/orders/{id}/zq/push', [AdminOrderController::class, 'pushToZq']);
+    Route::get('/admin/orders/{id}/zq/detail', [AdminOrderController::class, 'fetchZqDetail']);
+    Route::get('/admin/orders/{id}/zq/tracking', [AdminOrderController::class, 'syncZqTracking']);
     Route::post('/admin/orders/{id}/shipping/xde/book', [XdeShippingController::class, 'bookForOrder']);
     Route::get('/admin/orders/{id}/shipping/xde/track', [XdeShippingController::class, 'trackByOrder']);
     Route::get('/admin/orders/{id}/shipping/xde/waybill', [XdeShippingController::class, 'waybillByOrder']);
