@@ -68,3 +68,10 @@ def embed_image(payload: EmbedRequest):
 
     raise HTTPException(status_code=400, detail="image_url or image_data is required.")
 
+
+if __name__ == "__main__":
+    import uvicorn
+
+    host = os.environ.get("VISION_HOST", "0.0.0.0")
+    port = int(os.environ.get("VISION_PORT", "8001"))
+    uvicorn.run("vision_embed_server:app", host=host, port=port, reload=False)
