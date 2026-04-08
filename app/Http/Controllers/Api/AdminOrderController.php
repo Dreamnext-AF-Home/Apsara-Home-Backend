@@ -814,7 +814,16 @@ class AdminOrderController extends Controller
         $response = $this->zqApiService->createOrder($payload);
 
         $responseData = is_array($response['data'] ?? null) ? $response['data'] : [];
-        $platformOrderId = $payload[0]['orderNumber'] ?? (string) $order->ch_checkout_id;
+        $platformOrderIds = $responseData['platformOrderIds'] ?? [];
+        $platformOrderId = '';
+
+        if (is_array($platformOrderIds) && ! empty($platformOrderIds[0])) {
+            $platformOrderId = trim((string) $platformOrderIds[0]);
+        }
+
+        if ($platformOrderId === '') {
+            $platformOrderId = (string) ($payload[0]['orderNumber'] ?? $order->ch_checkout_id);
+        }
 
         $order->fill([
             'ch_zq_platform_order_id' => $platformOrderId,
@@ -908,16 +917,16 @@ class AdminOrderController extends Controller
     private function persistZqDetail(CheckoutHistory $order, array $response): void
     {
         $data = is_array($response['data'] ?? null) ? $response['data'] : [];
-        $state = (string) ($data['state'] ?? '');
-        $trackingNo = trim((string) ($data['trackNumber'] ?? ''));
-        $trackingNoFirstMile = trim((string) ($data['trackNumber1'] ?? ''));
+        $state = $this->normalizeZqStringValue($data['state'] ?? '');
+        $trackingNo = $this->normalizeZqStringValue($data['trackNumber'] ?? '');
+        $trackingNoFirstMile = $this->normalizeZqStringValue($data['trackNumber1'] ?? '');
 
         $shipmentPayload = is_array($order->ch_shipment_payload) ? $order->ch_shipment_payload : [];
         $shipmentPayload['zq_detail'] = $response;
 
         $order->fill([
-            'ch_zq_platform_order_id' => (string) ($data['platformOrderId'] ?? $this->resolveZqPlatformOrderId($order)),
-            'ch_zq_order_id' => (string) ($data['orderId'] ?? ($order->ch_zq_order_id ?? '')),
+            'ch_zq_platform_order_id' => $this->normalizeZqStringValue($data['platformOrderId'] ?? $this->resolveZqPlatformOrderId($order)),
+            'ch_zq_order_id' => $this->normalizeZqStringValue($data['orderId'] ?? ($order->ch_zq_order_id ?? '')),
             'ch_zq_status' => $state !== '' ? $state : ($order->ch_zq_status ?? null),
             'ch_zq_response' => $response,
             'ch_zq_synced_at' => now(),
@@ -945,8 +954,8 @@ class AdminOrderController extends Controller
     private function persistZqTracking(CheckoutHistory $order, array $response): void
     {
         $data = is_array($response['data'] ?? null) ? $response['data'] : [];
-        $trackingNo = trim((string) ($data['trackNumber'] ?? ''));
-        $trackingNoFirstMile = trim((string) ($data['trackNumber1'] ?? ''));
+        $trackingNo = $this->normalizeZqStringValue($data['trackNumber'] ?? '');
+        $trackingNoFirstMile = $this->normalizeZqStringValue($data['trackNumber1'] ?? '');
 
         $shipmentPayload = is_array($order->ch_shipment_payload) ? $order->ch_shipment_payload : [];
         $shipmentPayload['zq_tracking'] = $response;
@@ -972,6 +981,26 @@ class AdminOrderController extends Controller
         }
 
         $order->save();
+    }
+
+    private function normalizeZqStringValue(mixed $value): string
+    {
+        if (is_array($value)) {
+            foreach ($value as $item) {
+                $normalized = $this->normalizeZqStringValue($item);
+                if ($normalized !== '') {
+                    return $normalized;
+                }
+            }
+
+            return '';
+        }
+
+        if ($value === null) {
+            return '';
+        }
+
+        return trim((string) $value);
     }
 
     private function mapZqStateToLocalStatus(string $state): ?string
