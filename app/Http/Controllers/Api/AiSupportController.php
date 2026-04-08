@@ -46,7 +46,7 @@ class AiSupportController extends Controller
         if ($strictFromQuery !== '') {
             $nameQuery = $strictFromQuery;
         }
-        $isStrictNameQuery = in_array(strtolower(trim($nameQuery)), ['bed', 'pillow', 'sofa', 'bench', 'mirror', 'tv'], true);
+        $isStrictNameQuery = in_array(strtolower(trim($nameQuery)), ['bed', 'pillow', 'sofa', 'bench', 'mirror', 'tv', 'speaker', 'redmi pad', 'mouse', 'monitor', 'cellphone', 'cctv camera', 'router', 'wifi extender', 'vacuum cleaner', 'massage', 'garment steamer', 'refrigerator', 'electric shaver', 'grooming kit', 'wall mounted split inverter', 'motor range', 'gas range', 'abstract', 'flower', 'fish', 'geometry', 'sediment curve', 'panda', 'football', 'tree of life', 'candle holder', 'chain link', 'tray', 'mat', 'crate', 'hair dryer'], true);
 
         foreach ($this->tagalogIntentAliases() as $pattern => $append) {
             if (preg_match($pattern, $question)) {
@@ -286,8 +286,9 @@ class AiSupportController extends Controller
                             if ($isStrictNameQuery) {
                                 $strictKeywords = $this->getStrictNameKeywords($nameQuery);
                                 $merged = [];
+                                $strictLimit = $nameQuery === 'speaker' ? 20 : 10;
                                 foreach ($strictKeywords as $keyword) {
-                                    $merged = $this->mergeCardLists($merged, $this->searchProductsByNameOnly($keyword, $detectedBrandId, 10));
+                                    $merged = $this->mergeCardLists($merged, $this->searchProductsByNameOnly($keyword, $detectedBrandId, $strictLimit));
                                 }
                                 if (empty($merged)) {
                                     foreach ($strictKeywords as $keyword) {
@@ -298,8 +299,9 @@ class AiSupportController extends Controller
                             } elseif ($nameQuery === 'aircon') {
                                 $strictKeywords = $this->getStrictNameKeywords($nameQuery);
                                 $merged = [];
+                                $strictLimit = $nameQuery === 'speaker' ? 20 : 10;
                                 foreach ($strictKeywords as $keyword) {
-                                    $merged = $this->mergeCardLists($merged, $this->searchProductsByNameOnly($keyword, $detectedBrandId, 10));
+                                    $merged = $this->mergeCardLists($merged, $this->searchProductsByNameOnly($keyword, $detectedBrandId, $strictLimit));
                                 }
                                 if (empty($merged)) {
                                     foreach ($strictKeywords as $keyword) {
@@ -725,7 +727,7 @@ class AiSupportController extends Controller
                             $reply = 'I could not find a matching product right now. Please try a more specific product name.';
                         }
                     } else {
-                        $reply = 'I can help with order tracking, payment methods, contact details, and product prices. Tell me what you need.';
+                        $reply = "Hmm, I didn't catch that. You can rephrase your chat.";
                     }
                 }
             }
@@ -739,7 +741,7 @@ class AiSupportController extends Controller
                 'file' => $e->getFile(),
                 'line' => $e->getLine(),
             ]);
-            $reply = "I’m not sure I understood your question. Could you rephrase it or choose one of the common topics below?";
+            $reply = "Hmm, I didn't catch that. You can rephrase your chat.";
         }
 
         return response()->json([
@@ -804,7 +806,11 @@ class AiSupportController extends Controller
     {
         $base = trim($value);
         $clean = preg_replace('/\b(do you have|do you|have|show|find|give me|please|looking for|need|want|recommend|suggest|a|an|the)\b/i', ' ', $base) ?? '';
+        $clean = preg_replace('/[^a-z0-9\s]/i', ' ', $clean) ?? '';
         $clean = trim(preg_replace('/\s+/', ' ', $clean) ?? '');
+        if (strlen($clean) < 3) {
+            return '';
+        }
         $lower = strtolower($clean);
 
         $extras = [];
@@ -826,6 +832,127 @@ class AiSupportController extends Controller
             $extras[] = 'air conditioner';
             $extras[] = 'ac';
         }
+        if (preg_match('/\b(redmi|redmi pad|xiaomi pad|mi pad|pad)\b/i', $lower)) {
+            $extras[] = 'redmi';
+            $extras[] = 'xiaomi';
+            $extras[] = 'pad';
+            $extras[] = 'tablet';
+        }
+        if (preg_match('/\b(speaker|speakers|sound|soundbar|sound bar|audio)\b/i', $lower)) {
+            $extras[] = 'speaker';
+            $extras[] = 'sound';
+            $extras[] = 'soundbar';
+            $extras[] = 'audio';
+        }
+        if (preg_match('/\b(mouse|mice)\b/i', $lower)) {
+            $extras[] = 'mouse';
+        }
+        if (preg_match('/\b(gaming monitor|monitor)\b/i', $lower)) {
+            $extras[] = 'monitor';
+        }
+        if (preg_match('/\b(cellphone|cell phone|phone|smartphone|cp)\b/i', $lower)) {
+            $extras[] = 'cellphone';
+            $extras[] = 'xiaomi';
+            $extras[] = 'redmi';
+            $extras[] = 'note';
+            $extras[] = '15';
+        }
+        if (preg_match('/\b(cctv camera|cctv|camera)\b/i', $lower)) {
+            $extras[] = 'smart camera';
+            $extras[] = 'outdoor camera';
+            $extras[] = 'camera';
+        }
+        if (preg_match('/\b(router|wifi extender|wi-fi extender|wifi|wi-fi)\b/i', $lower)) {
+            $extras[] = 'router';
+            $extras[] = 'wifi extender';
+        }
+        if (preg_match('/\b(vacuum cleaner|vacuum|vacuuming)\b/i', $lower)) {
+            $extras[] = 'vacuum cleaner';
+            $extras[] = 'vacuum';
+        }
+        if (preg_match('/\b(massage gun|massage)\b/i', $lower)) {
+            $extras[] = 'massage gun';
+            $extras[] = 'massage';
+        }
+        if (preg_match('/\b(garment steamer|garment|steamer)\b/i', $lower)) {
+            $extras[] = 'garment steamer';
+            $extras[] = 'garment';
+            $extras[] = 'steamer';
+        }
+        if (preg_match('/\b(ref|refrigerator|refrigirator|refri|fridge)\b/i', $lower)) {
+            $extras[] = 'refrigerator';
+            $extras[] = 'ref';
+            $extras[] = 'fridge';
+        }
+        if (preg_match('/\b(electric shaver|shaver|uniblade)\b/i', $lower)) {
+            $extras[] = 'electric shaver';
+            $extras[] = 'shaver';
+            $extras[] = 'uniblade';
+        }
+        if (preg_match('/\b(grooming kit|grooming)\b/i', $lower)) {
+            $extras[] = 'grooming kit';
+            $extras[] = 'grooming';
+        }
+        if (preg_match('/\b(wall mounted split inverter|wall mounted|wall mount|inverter)\b/i', $lower)) {
+            $extras[] = 'wall mounted split inverter';
+            $extras[] = 'wall mounted';
+            $extras[] = 'inverter';
+        }
+        if (preg_match('/\b(motor range)\b/i', $lower)) {
+            $extras[] = 'motor range';
+        }
+        if (preg_match('/\b(gas range)\b/i', $lower)) {
+            $extras[] = 'gas range';
+        }
+        if (preg_match('/\b(abstract)\b/i', $lower)) {
+            $extras[] = 'abstract';
+        }
+        if (preg_match('/\b(flower|floral)\b/i', $lower)) {
+            $extras[] = 'flower';
+            $extras[] = 'floral';
+        }
+        if (preg_match('/\b(fish|fishes)\b/i', $lower)) {
+            $extras[] = 'fish';
+        }
+        if (preg_match('/\b(geometry|geometric)\b/i', $lower)) {
+            $extras[] = 'geometry';
+            $extras[] = 'geometric';
+        }
+        if (preg_match('/\b(sediment curve)\b/i', $lower)) {
+            $extras[] = 'sediment curve';
+        }
+        if (preg_match('/\b(panda)\b/i', $lower)) {
+            $extras[] = 'panda';
+        }
+        if (preg_match('/\b(football|sport|sports)\b/i', $lower)) {
+            $extras[] = 'football';
+            $extras[] = 'sport';
+        }
+        if (preg_match('/\b(tree of life|tree|leaves)\b/i', $lower)) {
+            $extras[] = 'tree of life';
+            $extras[] = 'tree';
+            $extras[] = 'leaves';
+        }
+        if (preg_match('/\b(candle holder|candleholders|candleholder)\b/i', $lower)) {
+            $extras[] = 'candle holder';
+        }
+        if (preg_match('/\b(chain link)\b/i', $lower)) {
+            $extras[] = 'chain link';
+        }
+        if (preg_match('/\b(pine tray|tray|storage tray|storage)\b/i', $lower)) {
+            $extras[] = 'pine tray';
+            $extras[] = 'tray';
+            $extras[] = 'storage tray';
+        }
+        if (preg_match('/\b(mat|mats)\b/i', $lower)) {
+            $extras[] = 'mat';
+        }
+        if (preg_match('/\b(crate|crates)\b/i', $lower)) {
+            $extras[] = 'crate';
+        }
+        if (preg_match('/\b(hair dryer|hairdryer)\b/i', $lower)) {
+            $extras[] = 'hair dryer';
+        }
 
         $cleanTokens = preg_split('/\s+/', trim(strtolower($clean))) ?: [];
         $tokens = array_filter($cleanTokens, fn ($token) => $token !== '');
@@ -839,7 +966,13 @@ class AiSupportController extends Controller
 
     private function normalizeNameQuery(string $value): string
     {
-        $normalized = strtolower(trim($value));
+        $normalized = $this->normalizeSimple($value);
+        if (strlen($normalized) < 3) {
+            return '';
+        }
+        if ($normalized === 'reg') {
+            return '';
+        }
         if ($normalized === 'bed' || $normalized === 'bedroom') {
             return 'bed';
         }
@@ -858,6 +991,96 @@ class AiSupportController extends Controller
         if (in_array($normalized, ['aircon', 'air conditioner', 'ac', 'ac unit', 'window type', 'window-type'], true)) {
             return 'aircon';
         }
+        if (in_array($normalized, ['redmi pad', 'redmi', 'xiaomi pad', 'mi pad', 'pad', 'tablet'], true)) {
+            return 'redmi pad';
+        }
+        if (in_array($normalized, ['speaker', 'speakers', 'sound', 'soundbar', 'sound bar', 'audio'], true)) {
+            return 'speaker';
+        }
+        if (in_array($normalized, ['mouse', 'mice'], true)) {
+            return 'mouse';
+        }
+        if (in_array($normalized, ['gaming monitor', 'monitor'], true)) {
+            return 'monitor';
+        }
+        if (in_array($normalized, ['cellphone', 'cell phone', 'phone', 'smartphone', 'cp'], true)) {
+            return 'cellphone';
+        }
+        if (in_array($normalized, ['cctv camera', 'cctv', 'camera'], true)) {
+            return 'cctv camera';
+        }
+        if (in_array($normalized, ['router', 'wifi extender', 'wi-fi extender', 'wifi', 'wi-fi'], true)) {
+            return $normalized === 'router' ? 'router' : 'wifi extender';
+        }
+        if (in_array($normalized, ['vacuum cleaner', 'vacuum', 'vacuuming'], true)) {
+            return 'vacuum cleaner';
+        }
+        if (in_array($normalized, ['massage gun', 'massage'], true)) {
+            return 'massage';
+        }
+        if (in_array($normalized, ['garment steamer', 'garment', 'steamer'], true)) {
+            return 'garment steamer';
+        }
+        if (in_array($normalized, ['ref', 'refrigerator', 'refrigirator', 'refri', 'fridge'], true)) {
+            return 'refrigerator';
+        }
+        if (in_array($normalized, ['electric shaver', 'shaver', 'uniblade'], true)) {
+            return 'electric shaver';
+        }
+        if (in_array($normalized, ['grooming kit', 'grooming'], true)) {
+            return 'grooming kit';
+        }
+        if (in_array($normalized, ['wall mounted split inverter', 'wall mounted', 'wall mount', 'inverter'], true)) {
+            return 'wall mounted split inverter';
+        }
+        if ($normalized === 'motor range') {
+            return 'motor range';
+        }
+        if ($normalized === 'gas range') {
+            return 'gas range';
+        }
+        if ($normalized === 'abstract') {
+            return 'abstract';
+        }
+        if (in_array($normalized, ['flower', 'floral'], true)) {
+            return 'flower';
+        }
+        if (in_array($normalized, ['fish', 'fishes'], true)) {
+            return 'fish';
+        }
+        if (in_array($normalized, ['geometry', 'geometric'], true)) {
+            return 'geometry';
+        }
+        if ($normalized === 'sediment curve') {
+            return 'sediment curve';
+        }
+        if ($normalized === 'panda') {
+            return 'panda';
+        }
+        if (in_array($normalized, ['football', 'sport', 'sports'], true)) {
+            return 'football';
+        }
+        if (in_array($normalized, ['tree of life', 'tree', 'leaves'], true)) {
+            return 'tree of life';
+        }
+        if (in_array($normalized, ['candle holder', 'candleholders', 'candleholder'], true)) {
+            return 'candle holder';
+        }
+        if ($normalized === 'chain link') {
+            return 'chain link';
+        }
+        if (in_array($normalized, ['pine tray', 'tray', 'storage tray', 'storage'], true)) {
+            return 'tray';
+        }
+        if (in_array($normalized, ['mat', 'mats'], true)) {
+            return 'mat';
+        }
+        if (in_array($normalized, ['crate', 'crates'], true)) {
+            return 'crate';
+        }
+        if (in_array($normalized, ['hair dryer', 'hairdryer'], true)) {
+            return 'hair dryer';
+        }
         if (in_array($normalized, ['tv', 'television', 'televison'], true)) {
             return 'tv';
         }
@@ -867,7 +1090,7 @@ class AiSupportController extends Controller
 
     private function getStrictNameKeywords(string $value): array
     {
-        $normalized = strtolower(trim($value));
+        $normalized = $this->normalizeSimple($value);
         if (in_array($normalized, ['sofa', 'sofas', 'bench', 'benches'], true)) {
             return ['sofa', 'bench'];
         }
@@ -882,6 +1105,99 @@ class AiSupportController extends Controller
         }
         if (in_array($normalized, ['aircon', 'air conditioner', 'ac', 'ac unit', 'window type', 'window-type'], true)) {
             return ['aircon', 'air conditioner', 'ac', 'window type'];
+        }
+        if (in_array($normalized, ['redmi pad', 'redmi', 'xiaomi pad', 'mi pad', 'pad', 'tablet'], true)) {
+            return ['redmi', 'xiaomi', 'pad', 'tablet'];
+        }
+        if (in_array($normalized, ['speaker', 'speakers', 'sound', 'soundbar', 'sound bar', 'audio'], true)) {
+            return ['speaker', 'sound', 'soundbar', 'audio'];
+        }
+        if (in_array($normalized, ['mouse', 'mice'], true)) {
+            return ['mouse'];
+        }
+        if (in_array($normalized, ['gaming monitor', 'monitor'], true)) {
+            return ['monitor'];
+        }
+        if (in_array($normalized, ['cellphone', 'cell phone', 'phone', 'smartphone', 'cp'], true)) {
+            return ['xiaomi redmi 15', 'xiaomi redmi note', 'xiaomi 15'];
+        }
+        if (in_array($normalized, ['cctv camera', 'cctv', 'camera'], true)) {
+            return ['smart camera', 'outdoor camera'];
+        }
+        if (in_array($normalized, ['router', 'wifi extender', 'wi-fi extender', 'wifi', 'wi-fi'], true)) {
+            if ($normalized === 'router') {
+                return ['router'];
+            }
+            return ['wifi extender', 'range extender', 'wi fi range extender', 'wifi range extender', 'extender'];
+        }
+        if (in_array($normalized, ['vacuum cleaner', 'vacuum', 'vacuuming'], true)) {
+            return ['vacuum cleaner', 'vacuum'];
+        }
+        if (in_array($normalized, ['massage gun', 'massage'], true)) {
+            return ['massage gun', 'massage'];
+        }
+        if (in_array($normalized, ['garment steamer', 'garment', 'steamer'], true)) {
+            return ['garment steamer', 'garment', 'steamer'];
+        }
+        if (in_array($normalized, ['ref', 'refrigerator', 'refrigirator', 'refri', 'fridge'], true)) {
+            return ['refrigerator', 'ref', 'fridge'];
+        }
+        if (in_array($normalized, ['electric shaver', 'shaver', 'uniblade'], true)) {
+            return ['electric shaver', 'shaver', 'uniblade'];
+        }
+        if (in_array($normalized, ['grooming kit', 'grooming'], true)) {
+            return ['grooming kit', 'grooming'];
+        }
+        if (in_array($normalized, ['wall mounted split inverter', 'wall mounted', 'wall mount', 'inverter'], true)) {
+            return ['wall mounted split inverter', 'wall mounted', 'inverter'];
+        }
+        if ($normalized === 'motor range') {
+            return ['motor range'];
+        }
+        if ($normalized === 'gas range') {
+            return ['gas range'];
+        }
+        if ($normalized === 'abstract') {
+            return ['abstract'];
+        }
+        if (in_array($normalized, ['flower', 'floral'], true)) {
+            return ['flower', 'floral'];
+        }
+        if (in_array($normalized, ['fish', 'fishes'], true)) {
+            return ['fish'];
+        }
+        if (in_array($normalized, ['geometry', 'geometric'], true)) {
+            return ['geometry', 'geometric'];
+        }
+        if ($normalized === 'sediment curve') {
+            return ['sediment curve'];
+        }
+        if ($normalized === 'panda') {
+            return ['panda'];
+        }
+        if (in_array($normalized, ['football', 'sport', 'sports'], true)) {
+            return ['football', 'sport'];
+        }
+        if (in_array($normalized, ['tree of life', 'tree', 'leaves'], true)) {
+            return ['tree of life', 'tree', 'leaves'];
+        }
+        if (in_array($normalized, ['candle holder', 'candleholders', 'candleholder'], true)) {
+            return ['candle holder'];
+        }
+        if ($normalized === 'chain link') {
+            return ['chain link'];
+        }
+        if (in_array($normalized, ['pine tray', 'tray', 'storage tray', 'storage'], true)) {
+            return ['pine tray', 'tray', 'storage tray'];
+        }
+        if (in_array($normalized, ['mat', 'mats'], true)) {
+            return ['mat', 'mats'];
+        }
+        if (in_array($normalized, ['crate', 'crates'], true)) {
+            return ['crate', 'crates'];
+        }
+        if (in_array($normalized, ['hair dryer', 'hairdryer'], true)) {
+            return ['hair dryer', 'hairdryer'];
         }
         if (in_array($normalized, ['tv', 'television', 'televison'], true)) {
             return ['tv', 'television'];
@@ -906,6 +1222,96 @@ class AiSupportController extends Controller
         }
         if (preg_match('/\b(aircon|air conditioner|ac unit|ac|window type|window-type)\b/i', $qLower)) {
             return 'aircon';
+        }
+        if (preg_match('/\b(redmi pad|redmi|xiaomi pad|mi pad|pad|tablet)\b/i', $qLower)) {
+            return 'redmi pad';
+        }
+        if (preg_match('/\b(speaker|speakers|soundbar|sound bar|sound|audio)\b/i', $qLower)) {
+            return 'speaker';
+        }
+        if (preg_match('/\b(mouse|mice)\b/i', $qLower)) {
+            return 'mouse';
+        }
+        if (preg_match('/\b(gaming monitor|monitor)\b/i', $qLower)) {
+            return 'monitor';
+        }
+        if (preg_match('/\b(cellphone|cell phone|phone|smartphone|cp)\b/i', $qLower)) {
+            return 'cellphone';
+        }
+        if (preg_match('/\b(cctv camera|cctv|camera)\b/i', $qLower)) {
+            return 'cctv camera';
+        }
+        if (preg_match('/\b(router|wifi extender|wi-fi extender|wifi|wi-fi)\b/i', $qLower)) {
+            return preg_match('/\b(router)\b/i', $qLower) ? 'router' : 'wifi extender';
+        }
+        if (preg_match('/\b(vacuum cleaner|vacuum|vacuuming)\b/i', $qLower)) {
+            return 'vacuum cleaner';
+        }
+        if (preg_match('/\b(massage gun|massage)\b/i', $qLower)) {
+            return 'massage';
+        }
+        if (preg_match('/\b(garment steamer|garment|steamer)\b/i', $qLower)) {
+            return 'garment steamer';
+        }
+        if (preg_match('/\b(ref|refrigerator|refrigirator|refri|fridge)\b/i', $qLower)) {
+            return 'refrigerator';
+        }
+        if (preg_match('/\b(electric shaver|shaver|uniblade)\b/i', $qLower)) {
+            return 'electric shaver';
+        }
+        if (preg_match('/\b(grooming kit|grooming)\b/i', $qLower)) {
+            return 'grooming kit';
+        }
+        if (preg_match('/\b(wall mounted split inverter|wall mounted|wall mount|inverter)\b/i', $qLower)) {
+            return 'wall mounted split inverter';
+        }
+        if (preg_match('/\b(motor range)\b/i', $qLower)) {
+            return 'motor range';
+        }
+        if (preg_match('/\b(gas range)\b/i', $qLower)) {
+            return 'gas range';
+        }
+        if (preg_match('/\b(abstract)\b/i', $qLower)) {
+            return 'abstract';
+        }
+        if (preg_match('/\b(flower|floral)\b/i', $qLower)) {
+            return 'flower';
+        }
+        if (preg_match('/\b(fish|fishes)\b/i', $qLower)) {
+            return 'fish';
+        }
+        if (preg_match('/\b(geometry|geometric)\b/i', $qLower)) {
+            return 'geometry';
+        }
+        if (preg_match('/\b(sediment curve)\b/i', $qLower)) {
+            return 'sediment curve';
+        }
+        if (preg_match('/\b(panda)\b/i', $qLower)) {
+            return 'panda';
+        }
+        if (preg_match('/\b(football|sport|sports)\b/i', $qLower)) {
+            return 'football';
+        }
+        if (preg_match('/\b(tree of life|tree|leaves)\b/i', $qLower)) {
+            return 'tree of life';
+        }
+        if (preg_match('/\b(candle holder|candleholders|candleholder)\b/i', $qLower)) {
+            return 'candle holder';
+        }
+        if (preg_match('/\b(chain link)\b/i', $qLower)) {
+            return 'chain link';
+        }
+        if (preg_match('/\b(pine tray|tray|storage tray|storage)\b/i', $qLower)) {
+            return 'tray';
+        }
+        if (preg_match('/\b(mat|mats)\b/i', $qLower)) {
+            return 'mat';
+        }
+        if (preg_match('/\b(crate|crates)\b/i', $qLower)) {
+            return 'crate';
+        }
+        if (preg_match('/\b(hair dryer|hairdryer)\b/i', $qLower)) {
+            return 'hair dryer';
         }
         if (preg_match('/\b(tv|television|televison)\b/i', $qLower)) {
             return 'tv';
@@ -1349,6 +1755,8 @@ class AiSupportController extends Controller
                 $name = html_entity_decode($name, ENT_QUOTES, 'UTF-8');
                 $name = str_replace(['&nbsp;', '&amp;nbsp;', '&quot;', '&amp;quot;'], ' ', $name);
                 $name = str_replace(["\xc2\xa0", "\xa0"], ' ', $name);
+                $name = @mb_convert_encoding($name, 'UTF-8', 'UTF-8');
+                $name = preg_replace('/[^\x09\x0A\x0D\x20-\x7E]/u', ' ', $name) ?? $name;
                 $name = trim(preg_replace('/\s+/', ' ', $name) ?? '');
             }
 
@@ -1377,6 +1785,8 @@ class AiSupportController extends Controller
                 $decoded = html_entity_decode($descRaw, ENT_QUOTES, 'UTF-8');
                 $decoded = str_replace(['&nbsp;', '&amp;nbsp;'], ' ', $decoded);
                 $decoded = str_replace(["\xc2\xa0", "\xa0"], ' ', $decoded);
+                $decoded = @mb_convert_encoding($decoded, 'UTF-8', 'UTF-8');
+                $decoded = preg_replace('/[^\x09\x0A\x0D\x20-\x7E]/u', ' ', $decoded) ?? $decoded;
                 $descText = trim(preg_replace('/\s+/', ' ', strip_tags($decoded)) ?? '');
                 if (strlen($descText) > 140) {
                     $descText = substr($descText, 0, 137) . '...';
@@ -1470,13 +1880,18 @@ class AiSupportController extends Controller
             ->groupBy('pp_pdid');
 
         $query = DB::table('tbl_product as p')
-            ->join('tbl_product_variant as v', 'v.pv_pdid', '=', 'p.pd_id')
+            ->leftJoin('tbl_product_variant as v', 'v.pv_pdid', '=', 'p.pd_id')
             ->leftJoinSub($photoSub, 'fp', function ($join) {
                 $join->on('fp.pp_pdid', '=', 'p.pd_id');
             })
             ->leftJoin('tbl_product_photo as pp', 'pp.pp_id', '=', 'fp.min_pp_id')
-            ->where('p.pd_status', 1)
-            ->where('v.pv_price_srp', '>', 0)
+            ->whereIn('p.pd_status', [1, 2])
+            ->where(function ($q) {
+                $q->where('v.pv_price_srp', '>', 0)
+                  ->orWhere('v.pv_price_member', '>', 0)
+                  ->orWhere('p.pd_price_srp', '>', 0)
+                  ->orWhere('p.pd_price_member', '>', 0);
+            })
             ->whereRaw("LOWER(TRIM(p.pd_name)) !~ '^(test|sample|demo)[0-9 _-]*$'");
 
         if ($brandId > 0) {
@@ -1495,10 +1910,20 @@ class AiSupportController extends Controller
     private function priceExpression(bool $forMember): string
     {
         if ($forMember) {
-            return 'MIN(CASE WHEN v.pv_price_member IS NOT NULL AND v.pv_price_member > 0 THEN v.pv_price_member ELSE v.pv_price_srp END)';
+            return 'MIN(CASE
+                WHEN v.pv_price_member IS NOT NULL AND v.pv_price_member > 0 THEN v.pv_price_member
+                WHEN v.pv_price_srp IS NOT NULL AND v.pv_price_srp > 0 THEN v.pv_price_srp
+                WHEN p.pd_price_member IS NOT NULL AND p.pd_price_member > 0 THEN p.pd_price_member
+                WHEN p.pd_price_srp IS NOT NULL AND p.pd_price_srp > 0 THEN p.pd_price_srp
+                ELSE 0 END)';
         }
 
-        return 'MIN(v.pv_price_srp)';
+        return 'MIN(CASE
+            WHEN v.pv_price_srp IS NOT NULL AND v.pv_price_srp > 0 THEN v.pv_price_srp
+            WHEN v.pv_price_member IS NOT NULL AND v.pv_price_member > 0 THEN v.pv_price_member
+            WHEN p.pd_price_srp IS NOT NULL AND p.pd_price_srp > 0 THEN p.pd_price_srp
+            WHEN p.pd_price_member IS NOT NULL AND p.pd_price_member > 0 THEN p.pd_price_member
+            ELSE 0 END)';
     }
 
     private function selectProductFields($query, bool $forMember)

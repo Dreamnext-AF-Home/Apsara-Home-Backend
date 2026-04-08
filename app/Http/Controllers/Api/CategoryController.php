@@ -59,8 +59,8 @@ class CategoryController extends Controller
             ->get()
             ->map(fn (Category $c) => [
                 'id'          => (int)    $c->cat_id,
-                'name'        => (string) ($c->cat_name ?? ''),
-                'description' => (string) ($c->cat_description ?? ''),
+                'name'        => $this->normalizeText((string) ($c->cat_name ?? '')),
+                'description' => $this->normalizeText((string) ($c->cat_description ?? '')),
                 'url'         => (string) ($c->cat_url ?? ''),
                 'image'       => $this->normalizeCategoryImage($c->cat_image),
                 'order'       => (int)    $c->cat_order,
@@ -179,5 +179,23 @@ class CategoryController extends Controller
 
         $base = rtrim((string) config('app.url'), '/');
         return $base !== '' ? $base . '/' . ltrim($image, '/') : $image;
+    }
+
+    private function normalizeText(string $value): string
+    {
+        $clean = trim($value);
+        if ($clean === '') {
+            return '';
+        }
+
+        if (preg_match('/Ã.|Â./', $clean)) {
+            $decoded = @utf8_decode($clean);
+            $converted = @mb_convert_encoding($decoded, 'UTF-8', 'ISO-8859-1');
+            if (is_string($converted) && $converted !== '') {
+                $clean = $converted;
+            }
+        }
+
+        return $clean;
     }
 }

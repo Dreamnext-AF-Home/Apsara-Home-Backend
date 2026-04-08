@@ -35,6 +35,85 @@ class ProductController extends Controller
         return $query->whereIn('pd_status', [1, 2]);
     }
 
+    public function reviews(int $id): JsonResponse
+    {
+        $exists = Product::query()->where('pd_id', $id)->exists();
+        if (!$exists) {
+            return response()->json(['message' => 'Product not found.'], 404);
+        }
+
+        $baseQuery = DB::table('tbl_product_reviews as r')
+            ->leftJoin('tbl_customer as c', 'c.c_userid', '=', 'r.pr_customer_id')
+            ->where('r.pr_product_id', $id);
+
+        $summaryRow = (clone $baseQuery)
+            ->selectRaw('AVG(r.pr_rating) as avg_rating, COUNT(*) as review_count')
+            ->first();
+
+        $average = $summaryRow && $summaryRow->avg_rating !== null
+            ? round((float) $summaryRow->avg_rating, 1)
+            : 0.0;
+        $count = (int) ($summaryRow->review_count ?? 0);
+
+        $breakdown = [1 => 0, 2 => 0, 3 => 0, 4 => 0, 5 => 0];
+        $breakdownRows = (clone $baseQuery)
+            ->select('r.pr_rating', DB::raw('COUNT(*) as total'))
+            ->groupBy('r.pr_rating')
+            ->get();
+
+        foreach ($breakdownRows as $row) {
+            $rating = (int) ($row->pr_rating ?? 0);
+            if (isset($breakdown[$rating])) {
+                $breakdown[$rating] = (int) ($row->total ?? 0);
+            }
+        }
+
+        $reviews = (clone $baseQuery)
+            ->orderByDesc('r.created_at')
+            ->get([
+                'r.pr_id',
+                'r.pr_rating',
+                'r.pr_review',
+                'r.created_at',
+                'c.c_username',
+                'c.c_fname',
+                'c.c_lname',
+                'c.c_avatar_url',
+            ])
+            ->map(function ($row) {
+                $first = trim((string) ($row->c_fname ?? ''));
+                $last = trim((string) ($row->c_lname ?? ''));
+                $username = trim((string) ($row->c_username ?? ''));
+                $displayName = trim($first . ' ' . $last);
+                if ($displayName === '') {
+                    $displayName = $username !== '' ? $username : 'Customer';
+                }
+                $createdAt = $row->created_at ?? null;
+                if ($createdAt instanceof \DateTimeInterface) {
+                    $createdAt = $createdAt->format('Y-m-d H:i:s');
+                }
+
+                return [
+                    'id' => (int) $row->pr_id,
+                    'rating' => (int) $row->pr_rating,
+                    'review' => (string) $row->pr_review,
+                    'customer_name' => $displayName,
+                    'customer_avatar' => $row->c_avatar_url ?: null,
+                    'created_at' => $createdAt ? (string) $createdAt : null,
+                ];
+            })
+            ->values();
+
+        return response()->json([
+            'summary' => [
+                'average' => $average,
+                'count' => $count,
+                'breakdown' => $breakdown,
+            ],
+            'reviews' => $reviews,
+        ]);
+    }
+
     private function resolveAdmin(Request $request): ?Admin
     {
         $user = $request->user();
@@ -221,7 +300,13 @@ class ProductController extends Controller
     {
         $like = '%' . $search . '%';
 
-        $query->where('pd_name', 'ilike', $like);
+        $query->where(function ($inner) use ($like) {
+            $inner->where('pd_name', 'ilike', $like)
+                ->orWhere('pd_parent_sku', 'ilike', $like)
+                ->orWhereHas('variants', function ($variantQuery) use ($like) {
+                    $variantQuery->where('pv_sku', 'ilike', $like);
+                });
+        });
     }
 
     private function inferRoomTypeFromCategory(?Category $category): int

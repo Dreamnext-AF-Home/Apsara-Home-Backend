@@ -50,6 +50,7 @@ Route::post('/payments/webhooks/test-paid', [PaymentController::class, 'handleTe
 Route::get('/orders/track', [PaymentController::class, 'trackGuestOrder']);
 Route::get('/categories', [CategoryController::class, 'index']);
 Route::get('/products/slug/{slug}', [ProductController::class, 'showBySlug']);
+Route::get('/products/{id}/reviews', [ProductController::class, 'reviews']);
 Route::get('/products/{id}', [ProductController::class, 'show']);
 Route::get('/products', [ProductController::class, 'index']);
 Route::get('/product-brands', [ProductBrandController::class, 'publicIndex']);
@@ -79,6 +80,7 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::post('/auth/addresses', [CustomerAddressController::class, 'store']);
     Route::patch('/auth/addresses/{id}/default', [CustomerAddressController::class, 'setDefault']);
     Route::get('/orders/history', [PaymentController::class, 'checkoutHistory']);
+    Route::post('/orders/{id}/confirm', [PaymentController::class, 'confirmOrder']);
     Route::post('/encashment/requests', [EncashmentController::class, 'store']);
     Route::get('/encashment/requests', [EncashmentController::class, 'myRequests']);
     Route::post('/encashment/payout-methods', [EncashmentController::class, 'storePayoutMethod']);
@@ -116,7 +118,10 @@ Route::middleware(['auth:sanctum', 'admin.or_supplier'])->group(function () {
     Route::post('/admin/products/import', [ProductController::class, 'import']);
     Route::post('/admin/products/bulk-price/preview', [ProductController::class, 'bulkPricePreview']);
     Route::post('/admin/products/bulk-price/apply', [ProductController::class, 'bulkPriceApply']);
+    Route::get('/admin/webpages/adds-content', [AddsContentController::class, 'index']);
     Route::post('/admin/webpages/adds-content', [AddsContentController::class, 'store']);
+    Route::patch('/admin/webpages/adds-content/{id}', [AddsContentController::class, 'update']);
+    Route::patch('/admin/webpages/adds-content/{id}/status', [AddsContentController::class, 'updateStatus']);
     Route::put('/admin/products/{id}', [ProductController::class, 'update']);
     Route::delete('/admin/products/{id}', [ProductController::class, 'destroy']);
     Route::get('/admin/product-brands', [ProductBrandController::class, 'index']);

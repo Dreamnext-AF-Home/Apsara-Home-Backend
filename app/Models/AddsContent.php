@@ -13,6 +13,7 @@ class AddsContent extends Model
         'ac_image_path',
         'ac_video_path',
         'ac_date_created',
+        'ac_status',
     ];
 
     protected $casts = [
