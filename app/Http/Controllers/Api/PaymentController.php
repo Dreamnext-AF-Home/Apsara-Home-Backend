@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\AdminNotification;
 use App\Mail\Checkout\CheckoutCompletedMail;
 use App\Models\CheckoutHistory;
+use App\Models\ProductReview;
 use App\Models\Product;
 use App\Support\DirectReferralCommission;
 use Illuminate\Http\Request;
@@ -475,6 +476,7 @@ class PaymentController extends Controller
                     'status' => $status,
                     'items' => [[
                         'id' => (int) $order->ch_id,
+                        'product_id' => $order->ch_product_id ? (int) $order->ch_product_id : null,
                         'name' => $itemName,
                         'image' => $order->ch_product_image ?: '/Images/HeroSection/sofas.jpg',
                         'quantity' => $quantity,
@@ -499,6 +501,64 @@ class PaymentController extends Controller
 
         return response()->json([
             'orders' => $orders,
+        ]);
+    }
+
+    public function confirmOrder(Request $request, int $id): \Illuminate\Http\JsonResponse
+    {
+        $customer = $request->user();
+        if (!$customer) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        $validated = $request->validate([
+            'rating' => 'required|integer|min:1|max:5',
+            'review' => 'required|string|min:3|max:2000',
+        ]);
+
+        $order = CheckoutHistory::query()
+            ->where('ch_id', $id)
+            ->where('ch_customer_id', (int) $customer->getAuthIdentifier())
+            ->first();
+
+        if (!$order) {
+            return response()->json(['message' => 'Order not found.'], 404);
+        }
+
+        if ($order->ch_fulfillment_status !== 'out_for_delivery') {
+            return response()->json(['message' => 'Order is not eligible for confirmation.'], 422);
+        }
+
+        $existingReview = ProductReview::query()
+            ->where('pr_order_id', (int) $order->ch_id)
+            ->where('pr_customer_id', (int) $customer->getAuthIdentifier())
+            ->first();
+
+        if ($existingReview) {
+            return response()->json(['message' => 'Review already submitted.'], 409);
+        }
+
+        \Illuminate\Support\Facades\DB::transaction(function () use ($order, $customer, $validated) {
+            ProductReview::create([
+                'pr_product_id' => (int) ($order->ch_product_id ?? 0),
+                'pr_customer_id' => (int) $customer->getAuthIdentifier(),
+                'pr_order_id' => (int) $order->ch_id,
+                'pr_rating' => (int) $validated['rating'],
+                'pr_review' => (string) $validated['review'],
+            ]);
+
+            $order->ch_fulfillment_status = 'delivered';
+            if (empty($order->ch_shipment_status) || $order->ch_shipment_status === 'out_for_delivery') {
+                $order->ch_shipment_status = 'delivered';
+            }
+            if (!$order->ch_shipped_at) {
+                $order->ch_shipped_at = now();
+            }
+            $order->save();
+        });
+
+        return response()->json([
+            'message' => 'Order confirmed and review submitted.',
         ]);
     }
 
@@ -1142,6 +1202,7 @@ class PaymentController extends Controller
             'status' => $status,
             'items' => [[
                 'id' => (int) $order->ch_id,
+                'product_id' => $order->ch_product_id ? (int) $order->ch_product_id : null,
                 'name' => $itemName,
                 'image' => $order->ch_product_image ?: '/Images/HeroSection/sofas.jpg',
                 'quantity' => $quantity,

@@ -13,6 +13,7 @@ return new class extends Migration
             $table->string('ac_image_path')->nullable();
             $table->string('ac_video_path')->nullable();
             $table->date('ac_date_created')->nullable();
+            $table->integer('ac_status')->default(0);
             $table->timestamps();
         });
     }
