@@ -21,9 +21,38 @@ use Pusher\Pusher;
 
 class PaymentController extends Controller
 {
+    private const LOCAL_PAYMENT_HOSTS = ['localhost', '127.0.0.1', '::1'];
+
     private function isLocalPaymentEnvironment(): bool
     {
         return app()->environment(['local', 'development', 'dev']);
+    }
+
+    private function isLocalPaymentHost(?string $host): bool
+    {
+        $normalized = strtolower(trim((string) $host));
+        return in_array($normalized, self::LOCAL_PAYMENT_HOSTS, true);
+    }
+
+    private function requestCanUseTestPaymongoMode(?Request $request = null): bool
+    {
+        if ($request === null) {
+            return $this->isLocalPaymentEnvironment();
+        }
+
+        $hostCandidates = [
+            $request->getHost(),
+            parse_url((string) $request->headers->get('origin', ''), PHP_URL_HOST),
+            parse_url((string) $request->headers->get('referer', ''), PHP_URL_HOST),
+        ];
+
+        foreach ($hostCandidates as $candidate) {
+            if ($this->isLocalPaymentHost(is_string($candidate) ? $candidate : null)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function paymongoDefaultMode(): string
@@ -37,9 +66,13 @@ class PaymentController extends Controller
         return (bool) config('services.paymongo.allow_mode_switch', false);
     }
 
-    private function resolveRequestedPaymongoMode(?string $requestedMode = null): string
+    private function resolveRequestedPaymongoMode(?string $requestedMode = null, ?Request $request = null): string
     {
         $requestedMode = strtolower(trim((string) $requestedMode));
+
+        if (!$this->requestCanUseTestPaymongoMode($request)) {
+            return 'live';
+        }
 
         if (!$this->canSwitchPaymongoMode()) {
             return 'live';
@@ -52,9 +85,9 @@ class PaymentController extends Controller
         return $this->paymongoDefaultMode();
     }
 
-    private function getPaymongoConfig(?string $requestedMode = null): array
+    private function getPaymongoConfig(?string $requestedMode = null, ?Request $request = null): array
     {
-        $mode = $this->resolveRequestedPaymongoMode($requestedMode);
+        $mode = $this->resolveRequestedPaymongoMode($requestedMode, $request);
         $config = (array) config("services.paymongo.modes.{$mode}", []);
 
         return [
@@ -66,10 +99,14 @@ class PaymentController extends Controller
         ];
     }
 
-    private function resolveCheckoutPaymentMode(string $checkoutId, ?string $requestedMode = null): string
+    private function resolveCheckoutPaymentMode(string $checkoutId, ?string $requestedMode = null, ?Request $request = null): string
     {
+        if (!$this->requestCanUseTestPaymongoMode($request)) {
+            return 'live';
+        }
+
         if ($requestedMode !== null && $requestedMode !== '' && $this->canSwitchPaymongoMode()) {
-            return $this->resolveRequestedPaymongoMode($requestedMode);
+            return $this->resolveRequestedPaymongoMode($requestedMode, $request);
         }
 
         $cachedCustomer = Cache::get("checkout_customer:{$checkoutId}");
@@ -211,7 +248,7 @@ class PaymentController extends Controller
             }
         }
 
-        $paymongoConfig = $this->getPaymongoConfig($validated['payment_mode'] ?? null);
+        $paymongoConfig = $this->getPaymongoConfig($validated['payment_mode'] ?? null, $request);
         $secretKey = $paymongoConfig['secret_key'];
         if (!$secretKey) {
             return response()->json(['message' => sprintf('PayMongo %s secret key is missing.', $paymongoConfig['mode'])], 500);
@@ -340,8 +377,8 @@ class PaymentController extends Controller
 
     public function verifyCheckoutSession(Request $request, string $checkoutId)
     {
-        $paymentMode = $this->resolveCheckoutPaymentMode($checkoutId, $request->query('payment_mode'));
-        $secretKey = $this->getPaymongoConfig($paymentMode)['secret_key'];
+        $paymentMode = $this->resolveCheckoutPaymentMode($checkoutId, $request->query('payment_mode'), $request);
+        $secretKey = $this->getPaymongoConfig($paymentMode, $request)['secret_key'];
         if (!$secretKey) {
             return response()->json(['message' => sprintf('PayMongo %s secret key is missing.', $paymentMode)], 500);
         }
