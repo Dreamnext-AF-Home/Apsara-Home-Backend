@@ -151,7 +151,7 @@ class PaymentController extends Controller
     {
         $resolvedMode = strtolower(trim((string) $paymentMode));
         if ($resolvedMode === 'live') {
-            return ['dob', 'ubp'];
+            return ['dob'];
         }
 
         return [$this->resolveOnlineBankingProvider($provider)];
