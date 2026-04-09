@@ -21,20 +21,114 @@ use Pusher\Pusher;
 
 class PaymentController extends Controller
 {
-    private function mapMethods(string $method): array
+    private function isLocalPaymentEnvironment(): bool
+    {
+        return app()->environment(['local', 'development', 'dev']);
+    }
+
+    private function paymongoDefaultMode(): string
+    {
+        $mode = strtolower((string) config('services.paymongo.default_mode', 'live'));
+        return in_array($mode, ['test', 'live'], true) ? $mode : 'live';
+    }
+
+    private function canSwitchPaymongoMode(): bool
+    {
+        return (bool) config('services.paymongo.allow_mode_switch', false);
+    }
+
+    private function resolveRequestedPaymongoMode(?string $requestedMode = null): string
+    {
+        $requestedMode = strtolower(trim((string) $requestedMode));
+
+        if (!$this->canSwitchPaymongoMode()) {
+            return 'live';
+        }
+
+        if (in_array($requestedMode, ['test', 'live'], true)) {
+            return $requestedMode;
+        }
+
+        return $this->paymongoDefaultMode();
+    }
+
+    private function getPaymongoConfig(?string $requestedMode = null): array
+    {
+        $mode = $this->resolveRequestedPaymongoMode($requestedMode);
+        $config = (array) config("services.paymongo.modes.{$mode}", []);
+
+        return [
+            'mode' => $mode,
+            'secret_key' => (string) ($config['secret_key'] ?? ''),
+            'public_key' => (string) ($config['public_key'] ?? ''),
+            'webhook_secret' => (string) ($config['webhook_secret'] ?? ''),
+            'api_base_url' => (string) config('services.paymongo.api_base_url', 'https://api.paymongo.com'),
+        ];
+    }
+
+    private function resolveCheckoutPaymentMode(string $checkoutId, ?string $requestedMode = null): string
+    {
+        if ($requestedMode !== null && $requestedMode !== '' && $this->canSwitchPaymongoMode()) {
+            return $this->resolveRequestedPaymongoMode($requestedMode);
+        }
+
+        $cachedCustomer = Cache::get("checkout_customer:{$checkoutId}");
+        if (is_array($cachedCustomer) && in_array(($cachedCustomer['payment_mode'] ?? null), ['test', 'live'], true)) {
+            return (string) $cachedCustomer['payment_mode'];
+        }
+
+        return $this->paymongoDefaultMode();
+    }
+
+    private function getValidPaymongoWebhookSecrets(?string $requestedMode = null): array
+    {
+        if ($requestedMode !== null && $requestedMode !== '') {
+            $config = $this->getPaymongoConfig($requestedMode);
+            return array_values(array_filter([(string) ($config['webhook_secret'] ?? '')]));
+        }
+
+        if ($this->canSwitchPaymongoMode()) {
+            return array_values(array_filter([
+                (string) config('services.paymongo.modes.test.webhook_secret', ''),
+                (string) config('services.paymongo.modes.live.webhook_secret', ''),
+            ]));
+        }
+
+        return array_values(array_filter([
+            (string) config('services.paymongo.modes.live.webhook_secret', ''),
+        ]));
+    }
+
+    private function mapMethods(string $method, ?string $onlineBankingProvider = null, ?string $paymentMode = null): array
     {
         return match ($method) {
             'card' => ['card'],
             'gcash' => ['gcash'],
             'maya' => ['paymaya'],
-            'online_banking' => ['dob', 'ubp'], // adjust based on enabled methods in your PayMongo account
+            'online_banking' => $this->resolveOnlineBankingMethods($onlineBankingProvider, $paymentMode),
             default => ['gcash'],
         };
     }
 
-    private function paymongoApiUrl(string $path): string
+    private function resolveOnlineBankingMethods(?string $provider = null, ?string $paymentMode = null): array
     {
-        $base = rtrim((string) config('services.paymongo.api_base_url', 'https://api.paymongo.com'), '/');
+        $resolvedMode = strtolower(trim((string) $paymentMode));
+        if ($resolvedMode === 'live') {
+            return ['dob', 'ubp'];
+        }
+
+        return [$this->resolveOnlineBankingProvider($provider)];
+    }
+
+    private function resolveOnlineBankingProvider(?string $provider = null): string
+    {
+        $provider = strtolower(trim((string) $provider));
+        return in_array($provider, ['dob', 'ubp'], true) ? $provider : 'dob';
+    }
+
+    private function paymongoApiUrl(string $path, ?string $requestedMode = null): string
+    {
+        $base = rtrim((string) ($this->getPaymongoConfig($requestedMode)['api_base_url'] ?? 'https://api.paymongo.com'), '/');
         return $base . '/' . ltrim($path, '/');
     }
 
@@ -44,6 +138,8 @@ class PaymentController extends Controller
             'amount' => 'required|numeric|min:1',
             'description' => 'required|string|max:255',
             'payment_method' => 'required|in:online_banking,card,gcash,maya',
+            'payment_mode' => 'nullable|in:test,live',
+            'online_banking_provider' => 'nullable|in:dob,ubp',
             'voucher_code' => 'nullable|string|max:80',
 
             'customer' => 'nullable|array',
@@ -115,9 +211,10 @@ class PaymentController extends Controller
             }
         }
 
-        $secretKey = config('services.paymongo.secret_key');
+        $paymongoConfig = $this->getPaymongoConfig($validated['payment_mode'] ?? null);
+        $secretKey = $paymongoConfig['secret_key'];
         if (!$secretKey) {
-            return response()->json(['message' => 'PAYMONGO_SECRET_KEY missing'], 500);
+            return response()->json(['message' => sprintf('PayMongo %s secret key is missing.', $paymongoConfig['mode'])], 500);
         }
 
         $frontend = env('FRONTEND_URL', 'http://localhost:3000');
@@ -149,7 +246,11 @@ class PaymentController extends Controller
                         'name' => $validated['description'],
                         'quantity' => 1,
                     ]],
-                    'payment_method_types' => $this->mapMethods($validated['payment_method']),
+                    'payment_method_types' => $this->mapMethods(
+                        $validated['payment_method'],
+                        $validated['online_banking_provider'] ?? null,
+                        $paymongoConfig['mode']
+                    ),
                     'success_url' => $frontend . '/checkout/success',
                     'cancel_url' => $frontend . '/checkout/failed',
                     'description' => $validated['description'],
@@ -158,11 +259,12 @@ class PaymentController extends Controller
         ];
 
         $res = Http::withBasicAuth($secretKey, '')
-            ->post($this->paymongoApiUrl('/v1/checkout_sessions'), $payload);
+            ->post($this->paymongoApiUrl('/v1/checkout_sessions', $paymongoConfig['mode']), $payload);
 
         if ($res->failed()) {
             return response()->json([
                 'message' => 'PayMongo create session failed',
+                'provider' => $validated['online_banking_provider'] ?? null,
                 'error' => $res->json(),
             ], $res->status());
         }
@@ -182,6 +284,8 @@ class PaymentController extends Controller
                 'description' => $validated['description'],
                 'amount' => (float) $computedAmount,
                 'payment_method' => $validated['payment_method'],
+                'online_banking_provider' => $validated['online_banking_provider'] ?? null,
+                'payment_mode' => $paymongoConfig['mode'],
                 'order' => $resolvedOrderSnapshot,
                 'voucher' => $voucher ? [
                     'id' => (int) $voucher->avi_id,
@@ -201,6 +305,7 @@ class PaymentController extends Controller
         return response()->json([
             'checkout_id' => $checkoutId,
             'checkout_url' => $data['attributes']['checkout_url'] ?? null,
+            'payment_mode' => $paymongoConfig['mode'],
         ]);
     }
 
@@ -235,13 +340,14 @@ class PaymentController extends Controller
 
     public function verifyCheckoutSession(Request $request, string $checkoutId)
     {
-        $secretKey = config('services.paymongo.secret_key');
+        $paymentMode = $this->resolveCheckoutPaymentMode($checkoutId, $request->query('payment_mode'));
+        $secretKey = $this->getPaymongoConfig($paymentMode)['secret_key'];
         if (!$secretKey) {
-            return response()->json(['message' => 'PAYMONGO_SECRET_KEY missing'], 500);
+            return response()->json(['message' => sprintf('PayMongo %s secret key is missing.', $paymentMode)], 500);
         }
 
         $res = Http::withBasicAuth($secretKey, '')
-            ->get($this->paymongoApiUrl("/v1/checkout_sessions/{$checkoutId}"));
+            ->get($this->paymongoApiUrl("/v1/checkout_sessions/{$checkoutId}", $paymentMode));
 
         if ($res->failed()) {
             return response()->json([
@@ -270,6 +376,7 @@ class PaymentController extends Controller
             'checkout_id' => $checkoutId,
             'payment_intent_id' => $attrs['payment_intent']['id'] ?? null,
             'status' => $status, // usually paid / unpaid / failed
+            'payment_mode' => $paymentMode,
             'raw' => $attrs,
         ]);
     }
@@ -1114,14 +1221,15 @@ class PaymentController extends Controller
             return $attrs;
         }
 
-        $secretKey = config('services.paymongo.secret_key');
+        $paymentMode = $this->resolveCheckoutPaymentMode($checkoutId);
+        $secretKey = $this->getPaymongoConfig($paymentMode)['secret_key'];
         if (!$secretKey) {
             return $attrs;
         }
 
         try {
             $res = Http::withBasicAuth($secretKey, '')
-                ->get($this->paymongoApiUrl("/v1/checkout_sessions/{$checkoutId}"));
+                ->get($this->paymongoApiUrl("/v1/checkout_sessions/{$checkoutId}", $paymentMode));
 
             if ($res->failed()) {
                 Log::warning('Failed to hydrate checkout attributes from PayMongo API.', [
@@ -1146,11 +1254,11 @@ class PaymentController extends Controller
         }
     }
 
-    private function isValidPaymongoWebhookSignature(string $rawBody, string $header): bool
+    private function isValidPaymongoWebhookSignature(string $rawBody, string $header, ?string $requestedMode = null): bool
     {
-        $secret = (string) config('services.paymongo.webhook_secret', '');
-        if ($secret === '') {
-            Log::warning('PAYMONGO_WEBHOOK_SECRET is not configured. Skipping signature verification (testing mode).');
+        $secrets = $this->getValidPaymongoWebhookSecrets($requestedMode);
+        if ($secrets === []) {
+            Log::warning('PAYMONGO webhook secret is not configured. Skipping signature verification in the current environment.');
             return true;
         }
 
@@ -1171,7 +1279,6 @@ class PaymentController extends Controller
             return false;
         }
 
-        $expected = hash_hmac('sha256', "{$timestamp}.{$rawBody}", $secret);
         $signatures = array_filter([
             $parts['te'] ?? null,
             $parts['li'] ?? null,
@@ -1179,9 +1286,12 @@ class PaymentController extends Controller
             $parts['s'] ?? null,
         ]);
 
-        foreach ($signatures as $signature) {
-            if (hash_equals($expected, $signature)) {
-                return true;
+        foreach ($secrets as $secret) {
+            $expected = hash_hmac('sha256', "{$timestamp}.{$rawBody}", $secret);
+            foreach ($signatures as $signature) {
+                if (hash_equals($expected, $signature)) {
+                    return true;
+                }
             }
         }
 

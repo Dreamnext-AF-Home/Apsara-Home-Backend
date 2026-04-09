@@ -36,9 +36,30 @@ return [
     ],
 
     'paymongo' => [
-        'secret_key' => env('PAYMONGO_SECRET_KEY'),
-        'webhook_secret' => env('PAYMONGO_WEBHOOK_SECRET'),
+        'default_mode' => env(
+            'PAYMONGO_DEFAULT_MODE',
+            in_array((string) env('APP_ENV', 'production'), ['local', 'development', 'dev'], true) ? 'test' : 'live'
+        ),
+        'allow_mode_switch' => filter_var(
+            env(
+                'PAYMONGO_ALLOW_MODE_SWITCH',
+                in_array((string) env('APP_ENV', 'production'), ['local', 'development', 'dev'], true) ? 'true' : 'false'
+            ),
+            FILTER_VALIDATE_BOOL
+        ),
         'api_base_url' => env('PAYMONGO_API_URL', 'https://api.paymongo.com'),
+        'modes' => [
+            'test' => [
+                'secret_key' => env('PAYMONGO_SECRET_KEY'),
+                'public_key' => env('PAYMONGO_PUBLIC_KEY'),
+                'webhook_secret' => env('PAYMONGO_WEBHOOK_SECRET'),
+            ],
+            'live' => [
+                'secret_key' => env('PAYMONGO_LIVE_SECRET_KEY'),
+                'public_key' => env('PAYMONGO_LIVE_PUBLIC_KEY'),
+                'webhook_secret' => env('PAYMONGO_LIVE_WEBHOOK_SECRET'),
+            ],
+        ],
     ],
 
     'pusher' => [
