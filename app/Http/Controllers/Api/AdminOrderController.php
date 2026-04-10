@@ -10,6 +10,7 @@ use App\Models\AdminNotificationRead;
 use App\Models\CheckoutHistory;
 use App\Models\Customer;
 use App\Models\CustomerWalletLedger;
+use App\Services\Payments\PaymongoPaymentSyncService;
 use App\Services\Shipping\JntShippingService;
 use App\Services\Shipping\XdeShippingService;
 use App\Services\Zq\ZqApiService;
@@ -29,6 +30,7 @@ use RuntimeException;
 class AdminOrderController extends Controller
 {
     public function __construct(
+        private readonly PaymongoPaymentSyncService $paymongoPaymentSyncService,
         private readonly XdeShippingService $xdeShippingService,
         private readonly JntShippingService $jntShippingService,
         private readonly ZqApiService $zqApiService
@@ -43,6 +45,7 @@ class AdminOrderController extends Controller
             return response()->json(['message' => 'Unauthorized'], 401);
         }
 
+        $this->syncRecentPendingPayments();
         $this->backfillOrderNotificationsIfEmpty();
 
         $limit = max(10, min(50, (int) $request->query('limit', 20)));
@@ -297,6 +300,8 @@ class AdminOrderController extends Controller
             return response()->json(['message' => 'Unauthorized'], 401);
         }
 
+        $this->syncRecentPendingPayments();
+
         $validated = $request->validate([
             'filter' => 'nullable|string|max:40',
             'q' => 'nullable|string|max:120',
@@ -432,6 +437,17 @@ class AdminOrderController extends Controller
             ],
             'counts' => $this->counts(),
         ]);
+    }
+
+    private function syncRecentPendingPayments(): void
+    {
+        try {
+            $this->paymongoPaymentSyncService->syncPendingOrders(25);
+        } catch (\Throwable $e) {
+            Log::warning('Admin order page pending payment sync failed.', [
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     public function approve(Request $request, int $id)
