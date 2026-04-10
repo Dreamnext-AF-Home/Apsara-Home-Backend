@@ -1,5 +1,6 @@
 <?php
 
+use App\Services\Payments\PaymongoPaymentSyncService;
 use App\Services\Zq\ZqTrackingSyncService;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
@@ -30,6 +31,28 @@ Artisan::command('backend:check', function () {
     $this->newLine();
 })->purpose('Print a quick backend and migration status check');
 
+Artisan::command('payments:sync-pending {--limit=25}', function () {
+    /** @var PaymongoPaymentSyncService $service */
+    $service = app(PaymongoPaymentSyncService::class);
+    $summary = $service->syncPendingOrders((int) $this->option('limit'));
+
+    $this->newLine();
+    $this->info('PayMongo pending payment sync completed.');
+    $this->line('Processed: ' . (int) ($summary['processed'] ?? 0));
+    $this->line('Updated: ' . (int) ($summary['updated'] ?? 0));
+    $this->line('Skipped: ' . (int) ($summary['skipped'] ?? 0));
+
+    $errors = $summary['errors'] ?? [];
+    if (! empty($errors)) {
+        $this->warn('Errors:');
+        foreach ($errors as $error) {
+            $this->line('- ' . $error);
+        }
+    }
+
+    $this->newLine();
+})->purpose('Reconcile recent pending checkout sessions with PayMongo');
+
 Artisan::command('zq:sync-tracking {--limit=25}', function () {
     /** @var ZqTrackingSyncService $service */
     $service = app(ZqTrackingSyncService::class);
@@ -51,6 +74,10 @@ Artisan::command('zq:sync-tracking {--limit=25}', function () {
 
     $this->newLine();
 })->purpose('Sync pending ZQ tracking updates into local orders');
+
+Schedule::command('payments:sync-pending --limit=25')
+    ->everyFiveMinutes()
+    ->withoutOverlapping();
 
 Schedule::command('zq:sync-tracking --limit=25')
     ->everyFiveMinutes()
