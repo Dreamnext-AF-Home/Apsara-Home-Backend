@@ -480,22 +480,9 @@ class AdminOrderController extends Controller
 
         $this->sendCustomerOrderStatusEmail($order, 'approval_approved');
 
-        $message = 'Order approved.';
-        try {
-            $zqResult = $this->pushOrderToZqIfEligible($order->fresh());
-            if ($zqResult !== null) {
-                $message .= ' Pushed to ZQ successfully.';
-            }
-        } catch (\Throwable $e) {
-            Log::warning('ZQ auto-push after approval failed.', [
-                'order_id' => (int) $order->ch_id,
-                'checkout_id' => (string) $order->ch_checkout_id,
-                'error' => $e->getMessage(),
-            ]);
-            $message .= ' Approval completed, but ZQ push failed.';
-        }
-
-        return response()->json(['message' => $message]);
+        return response()->json([
+            'message' => 'Order approved. Push to ZQ manually only for ZQ supplier orders.',
+        ]);
     }
 
     public function pushToZq(Request $request, int $id)

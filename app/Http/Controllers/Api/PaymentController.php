@@ -201,7 +201,10 @@ class PaymentController extends Controller
         ]);
 
         $isMember = (bool) data_get($validated, 'customer.is_member', false);
-        $customerId = auth('sanctum')->id();
+        $authenticatedRequestUser = $request->user();
+        $customerId = $authenticatedRequestUser instanceof \App\Models\Customer
+            ? (int) $authenticatedRequestUser->getAuthIdentifier()
+            : (auth('sanctum')->id() ? (int) auth('sanctum')->id() : null);
         $requiresReferral = !$customerId;
         $normalizedReferral = $this->normalizeReferralValue((string) data_get($validated, 'customer.referred_by', ''));
         $referrer = null;
