@@ -337,6 +337,17 @@ class PaymentController extends Controller
                 'customer_email' => $validated['customer']['email'] ?? null,
                 'payment_method' => $validated['payment_method'],
             ]);
+
+            try {
+                $this->persistCheckoutHistoryIfNeeded($checkoutId, [
+                    'status' => 'pending',
+                ]);
+            } catch (\Throwable $e) {
+                Log::warning('Failed to persist pending checkout history after session creation.', [
+                    'checkout_id' => $checkoutId,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
 
         return response()->json([
