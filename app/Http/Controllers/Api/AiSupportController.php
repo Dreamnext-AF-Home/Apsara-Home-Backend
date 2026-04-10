@@ -46,13 +46,23 @@ class AiSupportController extends Controller
         if ($strictFromQuery !== '') {
             $nameQuery = $strictFromQuery;
         }
-        $isStrictNameQuery = in_array(strtolower(trim($nameQuery)), ['bed', 'pillow', 'sofa', 'bench', 'mirror', 'tv', 'speaker', 'redmi pad', 'mouse', 'monitor', 'cellphone', 'cctv camera', 'router', 'wifi extender', 'vacuum cleaner', 'massage', 'garment steamer', 'refrigerator', 'electric shaver', 'grooming kit', 'wall mounted split inverter', 'motor range', 'gas range', 'abstract', 'flower', 'fish', 'geometry', 'sediment curve', 'panda', 'football', 'tree of life', 'candle holder', 'chain link', 'tray', 'mat', 'crate', 'hair dryer'], true);
+        $normalizedNameQuery = $this->normalizeSimple($nameQuery);
+        $isStrictNameQuery = in_array(strtolower(trim($nameQuery)), ['bed', 'pillow', 'sofa', 'bench', 'mirror', 'tv', 'speaker', 'redmi pad', 'mouse', 'monitor', 'cellphone', 'cctv camera', 'router', 'wifi extender', 'vacuum cleaner', 'washing machine', 'laundry machine', 'front load', 'washer', 'built in hob', 'gas stove', 'gas hob', 'cooktop', 'kitchen stove', 'food keeper', 'food container', 'food storage', 'storage container', 'storage box', 'utility box', 'soap case', 'groove cover', 'bread box', 'breadbox', 'bread loaf box', 'bread container', 'bread storage', 'spoon', 'cooking spoon', 'soup ladle', 'wood slice', 'wooden slice', 'wood slab', 'wooden serving board', 'wood slice tray', 'wood cutting board', 'bowl', 'food bowl', 'serving bowl', 'wooden coaster', 'coaster set', 'square coaster set', 'round coaster set', 'coaster holder set', 'table coaster set', 'plate', 'plato', 'platter', 'food plate', 'dinner plate', 'serving plate', 'dish plate', 'utensil holder', 'utensil organizer', 'kitchen utensil holder', 'cutlery holder', 'pizza board', 'pizza serving board', 'pizza tray', 'pizza plate', 'steak board', 'round steak board', 'steak serving board', 'steak plate board', 'meat board', 'cheese board', 'cheese serving board', 'cheese platter', 'charcuterie board', 'wood butter', 'wood conditioner', 'wood polish', 'wood balm', 'wood care cream', 'chooping board', 'cutting board', 'kitchen board', 'food prep board', 'chopping block', 'chopping board', 'fliptop wide', 'wide fliptop container', 'wide storage container', 'fliptop narrow', 'narrow fliptop container', 'fk seal ware', 'sealware', 'sealed container', 'baby basin', 'baby bath', 'baby bathtub', 'baby wash basin', 'infant bath tub', 'cleaning caddy', 'cleaning organizer', 'cleaning basket', 'cleaning storage', 'utility caddy', 'plastic organizer basket', 'plastic storage basket', 'organizer bin', 'storage bin', 'multipurpose basket', 'utility basket', 'shelf basket', 'cabinet basket', 'rack organizer', 'shelf storage basket', 'closet basket', 'drawer basket', 'massage', 'garment steamer', 'refrigerator', 'electric shaver', 'grooming kit', 'wall mounted split inverter', 'motor range', 'gas range', 'abstract', 'flower', 'fish', 'geometry', 'sediment curve', 'panda', 'football', 'tree of life', 'candle holder', 'chain link', 'tray', 'mat', 'crate', 'hair dryer', 'flashdrive', 'flash drive', 'usb', 'bookshelf', 'shelf', 'door', 'sliding door', 'wardrobe', 'drawer', 'fragrance', 'fresh series for car/home', 'car/home', 'car fragrance', 'home fragrance', 'house fragrance', 'foam', 'cushioning', 'padding', 'sponge', 'insulation', 'foldable mattress', 'trifold mattress', 'foam bed', 'portable mattress', 'floor mattress', 'bed rest cushion', 'mattress', 'bean bag', 'teardrop', 'ottoman'], true)
+            || in_array($normalizedNameQuery, ['bed', 'pillow', 'sofa', 'bench', 'mirror', 'tv', 'speaker', 'redmipad', 'mouse', 'monitor', 'cellphone', 'cctvcamera', 'router', 'wifiextender', 'vacuumcleaner', 'washingmachine', 'laundrymachine', 'frontload', 'washer', 'massage', 'garmentsteamer', 'refrigerator', 'electricshaver', 'groomingkit', 'wallmountedsplitinverter', 'motorrange', 'gasrange', 'abstract', 'flower', 'fish', 'geometry', 'sedimentcurve', 'panda', 'football', 'treeoflife', 'candleholder', 'chainlink', 'tray', 'mat', 'crate', 'hairdryer', 'flashdrive', 'usb', 'bookshelf', 'shelf', 'door', 'slidingdoor', 'wardrobe', 'drawer', 'fragrance', 'freshseriesforcarhome', 'carhome', 'carfragrance', 'homefragrance', 'housefragrance', 'foam', 'cushioning', 'padding', 'sponge', 'insulation', 'foldablemattress', 'trifoldmattress', 'foambed', 'portablemattress', 'floormattress', 'bedrestcushion', 'mattress', 'beanbag', 'teardrop', 'ottoman', 'plasticorganizerbasket', 'plasticstoragebasket', 'organizerbin', 'storagebin', 'multipurposebasket', 'utilitybasket', 'shelfbasket', 'cabinetbasket', 'rackorganizer', 'shelfstoragebasket', 'closetbasket', 'drawerbasket'], true);
 
         foreach ($this->tagalogIntentAliases() as $pattern => $append) {
             if (preg_match($pattern, $question)) {
                 $qLower .= $append;
             }
         }
+        $strictFromQuery = $this->detectStrictNameQuery($qLower, $searchQuestion);
+        if ($strictFromQuery !== '') {
+            $nameQuery = $strictFromQuery;
+        }
+        $normalizedNameQuery = $this->normalizeSimple($nameQuery);
+        $isStrictNameQuery = $isStrictNameQuery
+            || in_array(strtolower(trim($nameQuery)), ['bed', 'pillow', 'sofa', 'bench', 'mirror', 'tv', 'speaker', 'redmi pad', 'mouse', 'monitor', 'cellphone', 'cctv camera', 'router', 'wifi extender', 'vacuum cleaner', 'washing machine', 'laundry machine', 'front load', 'washer', 'built in hob', 'built-in hob', 'builtin hob', 'gas stove', 'gas hob', 'cooktop', 'kitchen stove', 'food keeper', 'food container', 'food storage', 'storage container', 'storage box', 'utility box', 'soap case', 'groove cover', 'bread box', 'breadbox', 'bread loaf box', 'bread container', 'bread storage', 'spoon', 'cooking spoon', 'soup ladle', 'wood slice', 'wooden slice', 'wood slab', 'wooden serving board', 'wood slice tray', 'wood cutting board', 'bowl', 'food bowl', 'serving bowl', 'wooden coaster', 'coaster set', 'square coaster set', 'round coaster set', 'coaster holder set', 'table coaster set', 'plate', 'plato', 'platter', 'food plate', 'dinner plate', 'serving plate', 'dish plate', 'utensil holder', 'utensil organizer', 'kitchen utensil holder', 'cutlery holder', 'pizza board', 'pizza serving board', 'pizza tray', 'pizza plate', 'steak board', 'round steak board', 'steak serving board', 'steak plate board', 'meat board', 'cheese board', 'cheese serving board', 'cheese platter', 'charcuterie board', 'wood butter', 'wood conditioner', 'wood polish', 'wood balm', 'wood care cream', 'chooping board', 'cutting board', 'kitchen board', 'food prep board', 'chopping block', 'chopping board', 'plastic organizer basket', 'plastic storage basket', 'organizer bin', 'storage bin', 'multipurpose basket', 'utility basket', 'shelf basket', 'cabinet basket', 'rack organizer', 'shelf storage basket', 'closet basket', 'drawer basket', 'massage', 'garment steamer', 'refrigerator', 'electric shaver', 'grooming kit', 'wall mounted split inverter', 'motor range', 'gas range', 'abstract', 'flower', 'fish', 'geometry', 'sediment curve', 'panda', 'football', 'tree of life', 'candle holder', 'chain link', 'tray', 'mat', 'crate', 'hair dryer', 'flashdrive', 'flash drive', 'usb', 'bookshelf', 'shelf', 'door', 'sliding door', 'wardrobe', 'drawer', 'fragrance', 'fresh series for car/home', 'car/home', 'car fragrance', 'home fragrance', 'house fragrance', 'foam', 'cushioning', 'padding', 'sponge', 'insulation', 'foldable mattress', 'trifold mattress', 'foam bed', 'portable mattress', 'floor mattress', 'bed rest cushion', 'mattress', 'bean bag', 'teardrop', 'ottoman'], true)
+            || in_array($normalizedNameQuery, ['bed', 'pillow', 'sofa', 'bench', 'mirror', 'tv', 'speaker', 'redmipad', 'mouse', 'monitor', 'cellphone', 'cctvcamera', 'router', 'wifiextender', 'vacuumcleaner', 'washingmachine', 'laundrymachine', 'frontload', 'washer', 'builtin hob', 'builtinhob', 'built-in hob', 'gasstove', 'gashob', 'cooktop', 'kitchenstove', 'foodkeeper', 'foodcontainer', 'foodstorage', 'storagecontainer', 'storagebox', 'utilitybox', 'soapcase', 'groovecover', 'breadbox', 'breadloafbox', 'breadcontainer', 'breadstorage', 'spoon', 'cookingspoon', 'soupladle', 'woodslice', 'woodenslice', 'woodslab', 'woodenservingboard', 'woodslicetray', 'woodcuttingboard', 'bowl', 'foodbowl', 'servingbowl', 'woodencoaster', 'coasterset', 'squarecoasterset', 'roundcoasterset', 'coasterholderset', 'tablecoasterset', 'plate', 'plato', 'platter', 'foodplate', 'dinnerplate', 'servingplate', 'dishplate', 'utensilholder', 'utensilorganizer', 'kitchenutensilholder', 'cutleryholder', 'pizzaboard', 'pizzaservingboard', 'pizzatray', 'pizzaplate', 'steakboard', 'roundsteakboard', 'steakservingboard', 'steakplateboard', 'meatboard', 'cheeseboard', 'cheeseservingboard', 'cheeseplatter', 'charcuterieboard', 'woodbutter', 'woodconditioner', 'woodpolish', 'woodbalm', 'woodcarecream', 'choopingboard', 'cuttingboard', 'kitchenboard', 'foodprepboard', 'choppingblock', 'choppingboard', 'fliptopwide', 'widefliptopcontainer', 'widestoragecontainer', 'fliptopnarrow', 'narrowfliptopcontainer', 'fksealware', 'sealware', 'sealedcontainer', 'babybasin', 'babybath', 'babybathtub', 'babywashbasin', 'infantbathtub', 'cleaningcaddy', 'cleaningorganizer', 'cleaningbasket', 'cleaningstorage', 'utilitycaddy', 'plasticorganizerbasket', 'plasticstoragebasket', 'organizerbin', 'storagebin', 'multipurposebasket', 'utilitybasket', 'shelfbasket', 'cabinetbasket', 'rackorganizer', 'shelfstoragebasket', 'closetbasket', 'drawerbasket', 'massage', 'garmentsteamer', 'refrigerator', 'electricshaver', 'groomingkit', 'wallmountedsplitinverter', 'motorrange', 'gasrange', 'abstract', 'flower', 'fish', 'geometry', 'sedimentcurve', 'panda', 'football', 'treeoflife', 'candleholder', 'chainlink', 'tray', 'mat', 'crate', 'hairdryer', 'flashdrive', 'usb', 'bookshelf', 'shelf', 'door', 'slidingdoor', 'wardrobe', 'drawer', 'fragrance', 'freshseriesforcarhome', 'carhome', 'carfragrance', 'homefragrance', 'housefragrance', 'foam', 'cushioning', 'padding', 'sponge', 'insulation', 'foldablemattress', 'trifoldmattress', 'foambed', 'portablemattress', 'floormattress', 'bedrestcushion', 'mattress', 'beanbag', 'teardrop', 'ottoman'], true);
 
         $memberId = 0;
         try {
@@ -88,7 +98,7 @@ class AiSupportController extends Controller
         $detectedBrandName = (string) ($detectedBrand['name'] ?? '');
 
         try {
-            if ($this->isRegistrationIntent($qLower)) {
+            if ($this->isRegistrationIntent($qLower) || $this->isRegistrationIntent($qNormSimple)) {
                 $frontendBase = $this->frontendBaseUrl();
                 $loginUrl = ($frontendBase !== '' ? $frontendBase : '') . '/login';
                 $reply = "1. Go to the website homepage.\n"
@@ -101,10 +111,12 @@ class AiSupportController extends Controller
                     . "The complete guide for registration or login is shown in the image below.";
 
                 $stepImages = [
-                    ['url' => ($frontendBase !== '' ? $frontendBase : '') . '/images/steps/r1.png', 'caption' => 'Open the login page'],
-                    ['url' => ($frontendBase !== '' ? $frontendBase : '') . '/images/steps/r2.png', 'caption' => 'Choose Sign up'],
-                    ['url' => ($frontendBase !== '' ? $frontendBase : '') . '/images/steps/r3.png', 'caption' => 'Fill in your details'],
-                    ['url' => ($frontendBase !== '' ? $frontendBase : '') . '/images/steps/r4.png', 'caption' => 'Verify and log in'],
+                    ['url' => ($frontendBase !== '' ? $frontendBase : '') . '/Images/steps/r1.png', 'caption' => 'Open the login page'],
+                    ['url' => ($frontendBase !== '' ? $frontendBase : '') . '/Images/steps/r2.png', 'caption' => 'Choose Sign up'],
+                    ['url' => ($frontendBase !== '' ? $frontendBase : '') . '/Images/steps/r3.png', 'caption' => 'Fill in your details'],
+                    ['url' => ($frontendBase !== '' ? $frontendBase : '') . '/Images/steps/rr3.png', 'caption' => 'Extra step'],
+                    ['url' => ($frontendBase !== '' ? $frontendBase : '') . '/Images/steps/r4.png', 'caption' => 'Verify and log in'],
+                    ['url' => ($frontendBase !== '' ? $frontendBase : '') . '/Images/steps/r5.png', 'caption' => 'Complete setup'],
                 ];
 
                 return response()->json([
@@ -190,6 +202,44 @@ class AiSupportController extends Controller
                 ]);
             }
 
+            if ($isStrictNameQuery && $nameQuery !== '') {
+                $strictKeywords = $this->getStrictNameKeywords($nameQuery);
+                $merged = [];
+                $strictLimit = $nameQuery === 'speaker' ? 20 : 10;
+                foreach ($strictKeywords as $keyword) {
+                    $merged = $this->mergeCardLists($merged, $this->searchProductsByNameOnly($keyword, $detectedBrandId, $strictLimit));
+                }
+                if (empty($merged)) {
+                    foreach ($strictKeywords as $keyword) {
+                        $merged = $this->mergeCardLists($merged, $this->searchProductsByNameNoPrice($keyword, 10));
+                    }
+                }
+
+                if (!empty($merged)) {
+                    return response()->json([
+                        'status' => 'ok',
+                        'reply' => 'Here are matching products for "' . $question . '".',
+                        'quick_replies' => ['Show lowest price', 'Best product', 'Track my order'],
+                        'product_cards' => $merged,
+                        'brand_cards' => $brandCards,
+                        'category_cards' => $categoryCards,
+                        'brand_view_all_url' => $brandViewAllUrl,
+                        'step_images' => $stepImages,
+                    ]);
+                }
+
+                return response()->json([
+                    'status' => 'ok',
+                    'reply' => 'I could not find a matching product right now. Please try a more specific product name.',
+                    'quick_replies' => ['Show lowest price', 'Best product', 'Track my order'],
+                    'product_cards' => [],
+                    'brand_cards' => $brandCards,
+                    'category_cards' => $categoryCards,
+                    'brand_view_all_url' => $brandViewAllUrl,
+                    'step_images' => $stepImages,
+                ]);
+            }
+
             $faq = $this->faqMap();
             if (array_key_exists($qNormSimple, $faq)) {
                 $reply = $faq[$qNormSimple];
@@ -207,6 +257,43 @@ class AiSupportController extends Controller
                     $reply = $matchedFaq;
                     $quickReplies = ['Track my order', 'Payment methods', 'Contact support'];
                 } else {
+                    $forcedStrict = '';
+                    if (preg_match('/\b(washing machine|laundry machine|washer|washers|front load|frontload)\b/i', $qLower)) {
+                        $forcedStrict = 'washing machine';
+                    }
+                    if ($forcedStrict !== '') {
+                        $strictKeywords = $this->getStrictNameKeywords($forcedStrict);
+                        $merged = [];
+                        $strictLimit = 10;
+                        foreach ($strictKeywords as $keyword) {
+                            $merged = $this->mergeCardLists($merged, $this->searchProductsByNameOnly($keyword, $detectedBrandId, $strictLimit));
+                        }
+                        if (empty($merged)) {
+                            foreach ($strictKeywords as $keyword) {
+                                $merged = $this->mergeCardLists($merged, $this->searchProductsByNameNoPrice($keyword, 10));
+                            }
+                        }
+                        if (!empty($merged)) {
+                            $productCards = $merged;
+                            $reply = 'Here are matching products for "' . $question . '".';
+                            $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
+                        } else {
+                            $reply = 'I could not find a matching product right now. Please try a more specific product name.';
+                            $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
+                        }
+
+                        return response()->json([
+                            'status' => 'ok',
+                            'reply' => $reply,
+                            'quick_replies' => $quickReplies,
+                            'product_cards' => $productCards,
+                            'brand_cards' => $brandCards,
+                            'category_cards' => $categoryCards,
+                            'brand_view_all_url' => $brandViewAllUrl,
+                            'step_images' => $stepImages,
+                        ]);
+                    }
+
                     if (preg_match('/\b(how are you|how\'?s it going|kamusta ka|kumusta ka|ayos ka ba|mabuti ka ba)\b/i', $qLower)) {
                         $greetReplies = [
                             'I am doing great and ready to help. What do you need today?',
@@ -230,7 +317,7 @@ class AiSupportController extends Controller
                         $reply = $diningIntent['reply'];
                         $quickReplies = $diningIntent['quickReplies'];
                         $productCards = $diningIntent['productCards'];
-                    } elseif (preg_match('/\b(hi|hello|hey|hi there|assistant|chatbot|ai|good morning|good afternoon|good evening|kamusta|kumusta|magandang umaga|magandang hapon|magandang gabi|magandang araw)\b/i', $qLower) || (mb_strlen($question, 'UTF-8') <= 2 && $strictFromQuery === '')) {
+                    } elseif ((preg_match('/\b(hi|hello|hey|hi there|assistant|chatbot|ai|good morning|good afternoon|good evening|kamusta|kumusta|magandang umaga|magandang hapon|magandang gabi|magandang araw)\b/i', $qLower) && !$isStrictNameQuery && $strictFromQuery === '') || (mb_strlen($question, 'UTF-8') <= 2 && $strictFromQuery === '')) {
                         $helloReplies = [
                             'Hi! Welcome. I can help with product details, shipping, payment options, and order tracking.',
                             'Hello! I am ShopBuddy AI. Ask me anything about products, checkout, delivery, or your orders.',
@@ -760,6 +847,9 @@ class AiSupportController extends Controller
     {
         $pattern = '/\b('
             . 'sign ?up|signup|register|registration|create (an )?account|make (an )?account|open (an )?account|get started|join|log in|login|sign in'
+            . '|create a account|make a account|open a account|sign up for (your )?site|register here|where do i sign up'
+            . '|how do i sign up|how can i sign up|how do i create an account|how do i create a account|how to create an account|how to create a account'
+            . '|how do i register|how to register an account|how can i make an account|i want to create an account|can i register here|how do i get started'
             . '|paano mag log ?in|paano mag login|paano ako makakapag-?login|paano ako mag sign in|paano mag sign in sa account'
             . '|paano pumasok sa account( ko)?|paano ako makakapasok sa account( ko)?|hindi ako makalogin|saan ako mag login|paano gamitin ang login'
             . '|paano mag sign ?up|paano mag register|paano gumawa ng account|paano mag create ng account|paano mag open ng account|paano mag join|paano mag simula|paano magsimula'
@@ -1133,6 +1223,75 @@ class AiSupportController extends Controller
         if (in_array($normalized, ['vacuum cleaner', 'vacuum', 'vacuuming'], true)) {
             return ['vacuum cleaner', 'vacuum'];
         }
+        if (in_array($normalized, ['washing machine', 'washingmachine', 'washer', 'washers', 'laundry machine', 'laundrymachine', 'front load', 'frontload'], true)) {
+            return ['washing machine', 'washer', 'laundry machine', 'front load'];
+        }
+        if (in_array($normalized, ['built in hob', 'builtin hob', 'built-in hob', 'gas stove', 'gas hob', 'cooktop', 'kitchen stove'], true)) {
+            return ['built in hob', 'built-in hob', 'builtin hob', 'gas hob', 'gas stove', 'cooktop', 'kitchen stove'];
+        }
+        if (in_array($normalized, ['food keeper', 'food container', 'food storage', 'storage container'], true)) {
+            return ['food keeper', 'food container', 'food storage', 'storage container'];
+        }
+        if (in_array($normalized, ['storage box', 'utility box', 'storage container'], true)) {
+            return ['storage box', 'utility box', 'storage container'];
+        }
+        if (in_array($normalized, ['soap case', 'soapcase', 'soap holder', 'soap dish'], true)) {
+            return ['soap case', 'soap holder', 'soap dish'];
+        }
+        if (in_array($normalized, ['groove cover', 'groovecover'], true)) {
+            return ['groove cover'];
+        }
+        if (in_array($normalized, ['bread box', 'breadbox', 'bread loaf box', 'bread container', 'bread storage'], true)) {
+            return ['bread box', 'breadbox', 'bread loaf box', 'bread container', 'bread storage'];
+        }
+        if (in_array($normalized, ['spoon', 'cooking spoon', 'soup ladle', 'ladle'], true)) {
+            return ['spoon', 'cooking spoon', 'soup ladle', 'ladle'];
+        }
+        if (in_array($normalized, ['wood slice', 'wooden slice', 'wood slab', 'wooden serving board', 'wood slice tray', 'wood cutting board'], true)) {
+            return ['wood slice', 'wooden slice', 'wood slab', 'wooden serving board', 'wood slice tray', 'wood cutting board'];
+        }
+        if (in_array($normalized, ['bowl', 'food bowl', 'serving bowl'], true)) {
+            return ['bowl', 'food bowl', 'serving bowl'];
+        }
+        if (in_array($normalized, ['wooden coaster', 'coaster set', 'square coaster set', 'round coaster set', 'coaster holder set', 'table coaster set'], true)) {
+            return ['wooden coaster', 'coaster set', 'square coaster set', 'round coaster set', 'coaster holder set', 'table coaster set'];
+        }
+        if (in_array($normalized, ['plate', 'plato', 'platter', 'food plate', 'dinner plate', 'serving plate', 'dish plate'], true)) {
+            return ['plate', 'plato', 'platter', 'food plate', 'dinner plate', 'serving plate', 'dish plate'];
+        }
+        if (in_array($normalized, ['utensil holder', 'utensil organizer', 'kitchen utensil holder', 'cutlery holder'], true)) {
+            return ['utensil holder', 'utensil organizer', 'kitchen utensil holder', 'cutlery holder'];
+        }
+        if (in_array($normalized, ['pizza board', 'pizza serving board', 'pizza tray', 'pizza plate'], true)) {
+            return ['pizza board', 'pizza serving board', 'pizza tray', 'pizza plate'];
+        }
+        if (in_array($normalized, ['steak board', 'round steak board', 'steak serving board', 'steak plate board', 'meat board'], true)) {
+            return ['steak board', 'round steak board', 'steak serving board', 'steak plate board', 'meat board'];
+        }
+        if (in_array($normalized, ['cheese board', 'cheese serving board', 'cheese platter', 'charcuterie board'], true)) {
+            return ['cheese board', 'cheese serving board', 'cheese platter', 'charcuterie board'];
+        }
+        if (in_array($normalized, ['wood butter', 'wood conditioner', 'wood polish', 'wood balm', 'wood care cream'], true)) {
+            return ['wood butter', 'wood conditioner', 'wood polish', 'wood balm', 'wood care cream'];
+        }
+        if (in_array($normalized, ['chooping board', 'cutting board', 'kitchen board', 'food prep board', 'chopping block', 'chopping board'], true)) {
+            return ['chooping board', 'cutting board', 'kitchen board', 'food prep board', 'chopping block', 'chopping board'];
+        }
+        if (in_array($normalized, ['fliptop wide', 'wide fliptop container', 'wide storage container', 'fliptop narrow', 'narrow fliptop container'], true)) {
+            return ['fliptop wide', 'wide fliptop container', 'wide storage container', 'fliptop narrow', 'narrow fliptop container'];
+        }
+        if (in_array($normalized, ['fk seal ware', 'sealware', 'sealed container', 'food container'], true)) {
+            return ['fk seal ware', 'sealware', 'sealed container', 'food container'];
+        }
+        if (in_array($normalized, ['baby basin', 'baby bath', 'baby bathtub', 'baby wash basin', 'infant bath tub'], true)) {
+            return ['baby basin', 'baby bath', 'baby bathtub', 'baby wash basin', 'infant bath tub'];
+        }
+        if (in_array($normalized, ['cleaning caddy', 'cleaning organizer', 'cleaning basket', 'cleaning storage', 'utility caddy'], true)) {
+            return ['cleaning caddy', 'cleaning organizer', 'cleaning basket', 'cleaning storage', 'utility caddy'];
+        }
+        if (in_array($normalized, ['plastic organizer basket', 'plastic storage basket', 'organizer bin', 'storage bin', 'multipurpose basket', 'utility basket', 'shelf basket', 'cabinet basket', 'rack organizer', 'shelf storage basket', 'closet basket', 'drawer basket'], true)) {
+            return ['plastic organizer basket', 'plastic storage basket', 'organizer bin', 'storage bin', 'multipurpose basket', 'utility basket', 'shelf basket', 'cabinet basket', 'rack organizer', 'shelf storage basket', 'closet basket', 'drawer basket'];
+        }
         if (in_array($normalized, ['massage gun', 'massage'], true)) {
             return ['massage gun', 'massage'];
         }
@@ -1202,6 +1361,24 @@ class AiSupportController extends Controller
         if (in_array($normalized, ['tv', 'television', 'televison'], true)) {
             return ['tv', 'television'];
         }
+        if (in_array($normalized, ['carhome', 'freshseriesforcarhome', 'car home', 'fresh series for car home', 'car/home', 'fresh series for car/home', 'carfragrance', 'homefragrance', 'housefragrance', 'fragrance'], true)) {
+            return ['airpro', 'fresh series', 'car home', 'car/home', 'car fragrance', 'home fragrance', 'house fragrance', 'fragrance'];
+        }
+        if (in_array($normalized, ['foam', 'cushioning', 'padding', 'sponge', 'insulation'], true)) {
+            return ['foam', 'cushion', 'padding', 'sponge', 'insulation'];
+        }
+        if (in_array($normalized, ['foldablemattress', 'trifoldmattress', 'foambed', 'portablemattress', 'floormattress', 'bedrestcushion', 'mattress'], true)) {
+            return ['mattress', 'foam', 'foldable', 'trifold', 'portable', 'floor mattress', 'bed rest', 'cushion'];
+        }
+        if (in_array($normalized, ['beanbag', 'bean bag'], true)) {
+            return ['bean bag', 'beanbag'];
+        }
+        if ($normalized === 'teardrop') {
+            return ['teardrop'];
+        }
+        if ($normalized === 'ottoman') {
+            return ['ottoman'];
+        }
 
         return $normalized !== '' ? [$normalized] : [];
     }
@@ -1246,6 +1423,78 @@ class AiSupportController extends Controller
         }
         if (preg_match('/\b(vacuum cleaner|vacuum|vacuuming)\b/i', $qLower)) {
             return 'vacuum cleaner';
+        }
+        if (preg_match('/\b(washing machine|washingmachine|washer|washers|laundry machine|laundrymachine|front load|frontload)\b/i', $qLower)) {
+            return 'washing machine';
+        }
+        if (preg_match('/\b(built in hob|built-in hob|builtin hob|gas stove|gas hob|cooktop|kitchen stove)\b/i', $qLower)) {
+            return 'built in hob';
+        }
+        if (preg_match('/\b(food keeper|food container|food storage|storage container)\b/i', $qLower)) {
+            return 'food container';
+        }
+        if (preg_match('/\b(storage box|utility box|storage container)\b/i', $qLower)) {
+            return 'storage box';
+        }
+        if (preg_match('/\b(soap case|soapcase|soap holder|soap dish)\b/i', $qLower)) {
+            return 'soap case';
+        }
+        if (preg_match('/\b(groove cover|groovecover)\b/i', $qLower)) {
+            return 'groove cover';
+        }
+        if (preg_match('/\b(bread box|breadbox|bread loaf box|bread container|bread storage)\b/i', $qLower)) {
+            return 'bread box';
+        }
+        if (preg_match('/\b(spoon|cooking spoon|soup ladle|ladle)\b/i', $qLower)) {
+            return 'spoon';
+        }
+        if (preg_match('/\b(wood slice|wooden slice|wood slab|wooden serving board|wood slice tray|wood cutting board)\b/i', $qLower)) {
+            return 'wood slice';
+        }
+        if (preg_match('/\b(bowl|food bowl|serving bowl)\b/i', $qLower)) {
+            return 'bowl';
+        }
+        if (preg_match('/\b(wooden coaster|coaster set|square coaster set|round coaster set|coaster holder set|table coaster set)\b/i', $qLower)) {
+            return 'coaster set';
+        }
+        if (preg_match('/\b(plate|plato|platter|food plate|dinner plate|serving plate|dish plate)\b/i', $qLower)) {
+            return 'plate';
+        }
+        if (preg_match('/\b(utensil holder|utensil organizer|kitchen utensil holder|cutlery holder)\b/i', $qLower)) {
+            return 'utensil holder';
+        }
+        if (preg_match('/\b(pizza board|pizza serving board|pizza tray|pizza plate)\b/i', $qLower)) {
+            return 'pizza board';
+        }
+        if (preg_match('/\b(steak board|round steak board|steak serving board|steak plate board|meat board)\b/i', $qLower)) {
+            return 'steak board';
+        }
+        if (preg_match('/\b(cheese board|cheese serving board|cheese platter|charcuterie board)\b/i', $qLower)) {
+            return 'cheese board';
+        }
+        if (preg_match('/\b(wood butter|wood conditioner|wood polish|wood balm|wood care cream)\b/i', $qLower)) {
+            return 'wood butter';
+        }
+        if (preg_match('/\b(chooping board|cutting board|kitchen board|food prep board|chopping block|chopping board)\b/i', $qLower)) {
+            return 'cutting board';
+        }
+        if (preg_match('/\b(fliptop wide|wide fliptop container|wide storage container|fliptop narrow|narrow fliptop container)\b/i', $qLower)) {
+            return 'fliptop';
+        }
+        if (preg_match('/\b(fk seal ware|sealware|sealed container|food container)\b/i', $qLower)) {
+            return 'sealware';
+        }
+        if (preg_match('/\b(baby basin|baby bath|baby bathtub|baby wash basin|infant bath tub)\b/i', $qLower)) {
+            return 'baby bath';
+        }
+        if (preg_match('/\b(cleaning caddy|cleaning organizer|cleaning basket|cleaning storage|utility caddy)\b/i', $qLower)) {
+            return 'cleaning caddy';
+        }
+        if (preg_match('/\b(plastic organizer basket|plastic storage basket|organizer bin|storage bin|multipurpose basket|utility basket|shelf basket|cabinet basket|rack organizer|shelf storage basket|closet basket|drawer basket)\b/i', $qLower)) {
+            return 'storage bin';
+        }
+        if (preg_match('/\b(fragrance|fresh series for car\/home|car\/home|car fragrance|home fragrance|house fragrance|fresh series)\b/i', $qLower)) {
+            return 'fragrance';
         }
         if (preg_match('/\b(massage gun|massage)\b/i', $qLower)) {
             return 'massage';
