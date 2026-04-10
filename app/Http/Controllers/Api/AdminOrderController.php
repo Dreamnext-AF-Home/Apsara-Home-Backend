@@ -174,14 +174,18 @@ class AdminOrderController extends Controller
 
     private function backfillOrderNotificationsIfEmpty(): void
     {
-        if (AdminNotification::query()->exists()) {
-            return;
-        }
-
         $orders = CheckoutHistory::query()
+            ->where(function ($query) {
+                $query->whereNotNull('ch_paid_at')
+                    ->orWhereIn('ch_status', ['paid', 'succeeded', 'success']);
+            })
+            ->where(function ($query) {
+                $query->where('created_at', '>=', now()->subDays(3))
+                    ->orWhere('ch_paid_at', '>=', now()->subDays(3));
+            })
             ->orderByDesc('ch_paid_at')
             ->orderByDesc('ch_id')
-            ->limit(100)
+            ->limit(150)
             ->get([
                 'ch_id',
                 'ch_checkout_id',
