@@ -7,6 +7,7 @@ use App\Models\CheckoutHistory;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Pusher\Pusher;
 
 class PaymongoPaymentSyncService
 {
@@ -138,7 +139,7 @@ class PaymongoPaymentSyncService
         $checkoutId = trim((string) ($order->ch_checkout_id ?? ''));
         $amount = (float) ($order->ch_amount ?? 0);
 
-        AdminNotification::query()->firstOrCreate(
+        $notification = AdminNotification::query()->firstOrCreate(
             [
                 'an_type' => 'order_created',
                 'an_source_type' => 'order',
@@ -163,6 +164,52 @@ class PaymongoPaymentSyncService
                 'an_created_at' => now(),
             ]
         );
+
+        $appId = (string) config('services.pusher.app_id', '');
+        $key = (string) config('services.pusher.key', '');
+        $secret = (string) config('services.pusher.secret', '');
+
+        if ($appId === '' || $key === '' || $secret === '') {
+            return;
+        }
+
+        $cluster = (string) config('services.pusher.cluster', 'ap1');
+        $useTls = (bool) config('services.pusher.use_tls', true);
+
+        try {
+            $pusher = new Pusher(
+                $key,
+                $secret,
+                $appId,
+                [
+                    'cluster' => $cluster,
+                    'useTLS' => $useTls,
+                ]
+            );
+
+            $pusher->trigger('private-admin-orders', 'order.created', [
+                'order_id' => (int) $order->ch_id,
+                'checkout_id' => (string) $order->ch_checkout_id,
+                'notification_id' => (int) $notification->an_id,
+                'type' => 'order_created',
+                'title' => (string) $notification->an_title,
+                'description' => (string) $notification->an_message,
+                'created_at' => now()->toDateTimeString(),
+            ]);
+            $pusher->trigger('private-admin-orders', 'notification.created', [
+                'id' => (int) $notification->an_id,
+                'type' => 'order_created',
+                'title' => (string) $notification->an_title,
+                'description' => (string) $notification->an_message,
+                'href' => (string) ($notification->an_href ?? '/admin/orders/pending'),
+                'created_at' => now()->toDateTimeString(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('Failed to publish admin realtime order notification from payment sync.', [
+                'checkout_id' => (string) $order->ch_checkout_id,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     private function isPaidStatus(mixed $status): bool
