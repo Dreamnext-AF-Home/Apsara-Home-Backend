@@ -157,20 +157,20 @@ class AdminOrderController extends Controller
         }
 
         $now = now();
-        $rows = array_map(
-            fn (int $notificationId) => [
-                'anr_notification_id' => $notificationId,
-                'anr_admin_id' => (int) $admin->id,
-                'anr_read_at' => $now,
-            ],
-            $ids
-        );
 
-        DB::table('tbl_admin_notification_reads')->upsert(
-            $rows,
-            ['anr_notification_id', 'anr_admin_id'],
-            ['anr_read_at']
-        );
+        DB::transaction(function () use ($ids, $admin, $now) {
+            foreach ($ids as $notificationId) {
+                AdminNotificationRead::query()->updateOrCreate(
+                    [
+                        'anr_notification_id' => (int) $notificationId,
+                        'anr_admin_id' => (int) $admin->id,
+                    ],
+                    [
+                        'anr_read_at' => $now,
+                    ]
+                );
+            }
+        });
 
         return response()->json(['message' => 'All notifications marked as read.']);
     }
