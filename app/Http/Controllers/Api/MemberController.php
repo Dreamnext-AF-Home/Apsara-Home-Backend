@@ -11,8 +11,10 @@ use Illuminate\Http\Request;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
+use Illuminate\Support\Str;
 
 class MemberController extends Controller
 {
@@ -404,6 +406,35 @@ class MemberController extends Controller
         ]);
     }
 
+    public function generateTemporaryPassword(int $id): JsonResponse
+    {
+        $customer = Customer::query()->where('c_userid', $id)->first();
+
+        if (! $customer) {
+            return response()->json([
+                'message' => 'Member not found.',
+            ], 404);
+        }
+
+        $temporaryPassword = $this->makeTemporaryPassword();
+
+        $customer->c_password = Hash::make($temporaryPassword);
+        $customer->c_password_pin = '';
+        $customer->c_password_change_required = true;
+        $customer->c_lockstatus = (int) ($customer->c_lockstatus ?? 0);
+        $customer->save();
+
+        $this->bustMembersCache();
+
+        return response()->json([
+            'message' => 'Temporary password generated successfully.',
+            'temporary_password' => $temporaryPassword,
+            'username' => (string) ($customer->c_username ?? ''),
+            'member_name' => $this->displayName($customer),
+            'password_change_required' => true,
+        ]);
+    }
+
     public function referralTree(): JsonResponse
     {
         $payload = Cache::remember('admin:members:referral-tree:' . $this->membersCacheVersion(), now()->addMinutes(2), function () {
@@ -557,6 +588,22 @@ class MemberController extends Controller
             'totalEarnings' => (float) ($summary->total_earnings ?? 0),
             'totalReferrals' => (int) ($summary->total_referrals ?? 0),
         ];
+    }
+
+    private function makeTemporaryPassword(): string
+    {
+        return 'Afh#' . random_int(1000, 9999) . Str::upper(Str::random(4));
+    }
+
+    private function displayName(Customer $customer): string
+    {
+        $fullName = trim(implode(' ', array_filter([
+            (string) ($customer->c_fname ?? ''),
+            (string) ($customer->c_mname ?? ''),
+            (string) ($customer->c_lname ?? ''),
+        ])));
+
+        return $fullName !== '' ? $fullName : (string) ($customer->c_username ?: ('Member #' . $customer->c_userid));
     }
 
     private function mapStatus(int $lockStatus, int $accountStatus): string

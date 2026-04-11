@@ -140,6 +140,7 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,merchant_admin,
 });
 
 Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin'])->group(function () {
+    Route::post('/admin/members/{id}/temporary-password', [MemberController::class, 'generateTemporaryPassword']);
     Route::post('/admin/suppliers', [SupplierController::class, 'store']);
     Route::put('/admin/suppliers/{id}', [SupplierController::class, 'update']);
     Route::delete('/admin/suppliers/{id}', [SupplierController::class, 'destroy']);
