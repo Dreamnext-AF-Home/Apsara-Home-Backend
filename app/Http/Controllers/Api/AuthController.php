@@ -152,29 +152,39 @@ class AuthController extends Controller
             ]);
         }
 
-        $customer = Customer::create([
-            'c_fname'        => $registration['first_name'],
-            'c_lname'        => $registration['last_name'],
-            'c_mname'        => $registration['middle_name'] ?? null,
-            'c_username'     => $registration['username'],
-            'c_email'        => $registration['email'],
-            'c_mobile'       => $registration['phone'] ?? '0',
-            'c_bdate'        => $registration['birth_date'] ?? null,
-            'c_gender'       => $this->mapGenderToInt($registration['gender'] ?? null),
-            'c_occupation'   => $registration['occupation'] ?? 'None',
-            'c_country'      => $registration['country'] ?? (($registration['work_location'] ?? 'local') === 'overseas' ? 'Overseas' : 'Philippines'),
-            'c_password'     => Hash::make($registration['password']),
-            'c_password_pin' => '',
-            'c_rank'         => 0,
-            'c_sponsor'      => $referrerUserId,
-            'c_date_started' => now(),
-            'c_address'      => $registration['address'] ?? null,
-            'c_barangay'     => $registration['barangay'] ?? null,
-            'c_city'         => $registration['city'] ?? null,
-            'c_province'     => $registration['province'] ?? null,
-            'c_region'       => $registration['region'] ?? null,
-            'c_zipcode'      => $registration['zip_code'] ?? null,
-        ]);
+        $customer = DB::transaction(function () use ($registration, $referrerUserId) {
+            DB::statement('LOCK TABLE tbl_customer IN EXCLUSIVE MODE');
+
+            $nextCustomerId = ((int) DB::table('tbl_customer')->whereNotNull('c_userid')->max('c_userid')) + 1;
+
+            return Customer::create([
+                'c_userid'       => $nextCustomerId,
+                'c_fname'        => $registration['first_name'],
+                'c_lname'        => $registration['last_name'],
+                'c_mname'        => $registration['middle_name'] ?? null,
+                'c_username'     => $registration['username'],
+                'c_email'        => $registration['email'],
+                'c_mobile'       => $registration['phone'] ?? '0',
+                'c_bdate'        => $registration['birth_date'] ?? null,
+                'c_gender'       => $this->mapGenderToInt($registration['gender'] ?? null),
+                'c_occupation'   => $registration['occupation'] ?? 'None',
+                'c_country'      => $registration['country'] ?? (($registration['work_location'] ?? 'local') === 'overseas' ? 'Overseas' : 'Philippines'),
+                'c_password'     => Hash::make($registration['password']),
+                'c_password_pin' => '',
+                'c_password_change_required' => false,
+                'c_rank'         => 0,
+                'c_accnt_status' => 0,
+                'c_lockstatus'   => 0,
+                'c_sponsor'      => $referrerUserId,
+                'c_date_started' => now(),
+                'c_address'      => $registration['address'] ?? null,
+                'c_barangay'     => $registration['barangay'] ?? null,
+                'c_city'         => $registration['city'] ?? null,
+                'c_province'     => $registration['province'] ?? null,
+                'c_region'       => $registration['region'] ?? null,
+                'c_zipcode'      => $registration['zip_code'] ?? null,
+            ]);
+        });
 
         $this->createPrimaryAddressRecord($customer);
         $referrer = Customer::query()->where('c_userid', $referrerUserId)->first();
@@ -256,6 +266,21 @@ class AuthController extends Controller
                 'message' => 'Your account has been banned. Please contact support for assistance.',
                 'reason' => 'banned',
             ], 403);
+        }
+
+        $modernPasswordInUse = $hashMatch
+            && ! $legacyDirectMatch
+            && ! $legacyCaseInsensitiveMatch
+            && $this->passwordMeetsModernRequirements($password);
+
+        // Auto-heal newly registered accounts that were incorrectly flagged
+        // even though they already use a modern hashed password and no legacy pin.
+        if (
+            $modernPasswordInUse
+            && trim((string) ($customer->c_password_pin ?? '')) === ''
+            && $this->customerRequiresPasswordChange($customer)
+        ) {
+            $customer->c_password_change_required = false;
         }
 
         $mustChangePassword = $this->customerRequiresPasswordChange($customer)
