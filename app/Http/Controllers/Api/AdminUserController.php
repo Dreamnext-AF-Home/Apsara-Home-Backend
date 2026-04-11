@@ -206,12 +206,15 @@ class AdminUserController extends Controller
             'supplier_id' => 'nullable|integer|exists:tbl_supplier,s_id',
             'admin_permissions' => 'nullable|array',
             'admin_permissions.*' => ['string', Rule::in(AdminAccess::availablePermissions())],
+            'storefront_ids' => 'nullable|array',
+            'storefront_ids.*' => 'integer|min:1',
         ]);
 
         $validated['admin_permissions'] = AdminAccess::sanitizePermissionsForLevel(
             (int) $validated['user_level_id'],
             $validated['admin_permissions'] ?? [],
         );
+        $validated['storefront_ids'] = $this->normalizeStorefrontIds($validated['storefront_ids'] ?? []);
 
         $this->ensureSupplierSelection($validated);
 
@@ -304,10 +307,12 @@ class AdminUserController extends Controller
             'passworde' => Hash::make((string) $validated['password']),
             'user_level_id' => (int) $payload['user_level_id'],
             'supplier_id' => isset($payload['supplier_id']) ? (int) $payload['supplier_id'] : null,
-            'admin_permissions' => AdminAccess::sanitizePermissionsForLevel(
-                (int) $payload['user_level_id'],
-                $payload['admin_permissions'] ?? [],
-            ),
+            'admin_permissions' => (int) $payload['user_level_id'] === 4
+                ? $this->normalizeStorefrontIds($payload['storefront_ids'] ?? [])
+                : AdminAccess::sanitizePermissionsForLevel(
+                    (int) $payload['user_level_id'],
+                    $payload['admin_permissions'] ?? [],
+                ),
         ]);
 
         $payload['status'] = 'accepted';
@@ -356,6 +361,8 @@ class AdminUserController extends Controller
             'supplier_id' => 'nullable|integer|exists:tbl_supplier,s_id',
             'admin_permissions' => 'nullable|array',
             'admin_permissions.*' => ['string', Rule::in(AdminAccess::availablePermissions())],
+            'storefront_ids' => 'nullable|array',
+            'storefront_ids.*' => 'integer|min:1',
         ]);
 
         $nextLevel = array_key_exists('user_level_id', $validated)
@@ -378,7 +385,13 @@ class AdminUserController extends Controller
         if (array_key_exists('user_level_id', $validated)) {
             $admin->user_level_id = (int) $validated['user_level_id'];
         }
-        if (array_key_exists('admin_permissions', $validated) || (int) $admin->user_level_id !== 2) {
+        if ((int) $admin->user_level_id === 4) {
+            if (array_key_exists('storefront_ids', $validated)) {
+                $admin->admin_permissions = $this->normalizeStorefrontIds($validated['storefront_ids'] ?? []);
+            } elseif (!is_array($admin->admin_permissions)) {
+                $admin->admin_permissions = [];
+            }
+        } elseif (array_key_exists('admin_permissions', $validated) || (int) $admin->user_level_id !== 2) {
             $admin->admin_permissions = AdminAccess::sanitizePermissionsForLevel(
                 (int) $admin->user_level_id,
                 $validated['admin_permissions'] ?? $admin->admin_permissions ?? [],
@@ -511,17 +524,19 @@ class AdminUserController extends Controller
         $lastSeenAt = $admin->last_seen_at ? Carbon::parse($admin->last_seen_at) : null;
         $minutesAgo = $lastSeenAt ? max(0, (int) floor($lastSeenAt->diffInMinutes(now(), true))) : null;
         $isOnline = $lastSeenAt ? $lastSeenAt->greaterThanOrEqualTo(now()->subMinutes(2)) : false;
+        $level = (int) $admin->user_level_id;
 
         return [
             'id' => (int) $admin->id,
             'name' => (string) ($admin->fname ?: $admin->username),
             'username' => (string) $admin->username,
             'email' => (string) $admin->user_email,
-            'user_level_id' => (int) $admin->user_level_id,
-            'role' => AdminAccess::roleFromLevel((int) $admin->user_level_id),
+            'user_level_id' => $level,
+            'role' => AdminAccess::roleFromLevel($level),
             'supplier_id' => $admin->supplier_id ? (int) $admin->supplier_id : null,
             'supplier_name' => $admin->supplier?->s_company ?: $admin->supplier?->s_name,
             'admin_permissions' => AdminAccess::permissionsForAdmin($admin),
+            'storefront_ids' => $level === 4 ? $this->normalizeStorefrontIds($admin->admin_permissions ?? []) : [],
             'is_banned' => (bool) $admin->is_banned,
             'is_online' => $isOnline,
             'last_seen_at' => $lastSeenAt?->toIso8601String(),
@@ -545,6 +560,7 @@ class AdminUserController extends Controller
                 (int) $validated['user_level_id'],
                 $validated['admin_permissions'] ?? [],
             ),
+            'storefront_ids' => $this->normalizeStorefrontIds($validated['storefront_ids'] ?? []),
             'created_by' => $actorId,
             'expires_at' => $expiresAt->toIso8601String(),
             'status' => 'pending',
@@ -587,8 +603,23 @@ class AdminUserController extends Controller
                 'role_label' => $this->roleLabel((int) $payload['user_level_id']),
                 'expires_at' => $expiresAt->toIso8601String(),
                 'admin_permissions' => $payload['admin_permissions'],
+                'storefront_ids' => $payload['storefront_ids'],
             ],
         ];
+    }
+
+    private function normalizeStorefrontIds(mixed $storefrontIds): array
+    {
+        if (!is_array($storefrontIds)) {
+            return [];
+        }
+
+        $ids = array_values(array_unique(array_filter(array_map(
+            static fn ($id) => is_numeric($id) ? (int) $id : null,
+            $storefrontIds,
+        ), static fn ($id) => is_int($id) && $id > 0)));
+
+        return $ids;
     }
 
     private function getInvitePayload(string $token): ?array
