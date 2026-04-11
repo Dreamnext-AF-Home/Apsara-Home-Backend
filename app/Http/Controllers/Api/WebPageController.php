@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Admin;
 use App\Models\WebPageContent;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -40,6 +41,9 @@ class WebPageController extends Controller
             return response()->json(['message' => 'Invalid web page content type.'], 422);
         }
 
+        $actor = $request->user();
+        $allowedStorefrontIds = $this->resolveStorefrontIds($actor);
+
         $validated = $request->validate([
             'q' => 'nullable|string|max:120',
             'status' => ['nullable', Rule::in(['active', 'inactive', 'all'])],
@@ -51,7 +55,7 @@ class WebPageController extends Controller
         $status = (string) ($validated['status'] ?? 'all');
         $perPage = (int) ($validated['per_page'] ?? 20);
 
-        $rows = WebPageContent::query()
+        $query = WebPageContent::query()
             ->where('wpc_type', $resolvedType)
             ->when($search !== '', function ($query) use ($search) {
                 $query->where(function ($inner) use ($search) {
@@ -66,8 +70,27 @@ class WebPageController extends Controller
                 $query->where('wpc_status', $status === 'active');
             })
             ->orderBy('wpc_sort')
-            ->orderByDesc('wpc_id')
-            ->paginate($perPage);
+            ->orderByDesc('wpc_id');
+
+        if ($resolvedType === 'partner-storefront' && $actor instanceof Admin && (int) $actor->user_level_id === 4) {
+            if (empty($allowedStorefrontIds)) {
+                return response()->json([
+                    'items' => [],
+                    'meta' => [
+                        'current_page' => 1,
+                        'last_page' => 1,
+                        'per_page' => $perPage,
+                        'total' => 0,
+                        'from' => null,
+                        'to' => null,
+                    ],
+                ]);
+            }
+
+            $query->whereIn('wpc_id', $allowedStorefrontIds);
+        }
+
+        $rows = $query->paginate($perPage);
 
         return response()->json([
             'items' => collect($rows->items())->map(fn (WebPageContent $item) => $this->transform($item))->values(),
@@ -87,6 +110,11 @@ class WebPageController extends Controller
         $resolvedType = $this->resolveType($type);
         if (!$resolvedType) {
             return response()->json(['message' => 'Invalid web page content type.'], 422);
+        }
+
+        $actor = $request->user();
+        if ($resolvedType === 'partner-storefront' && $actor instanceof Admin && (int) $actor->user_level_id === 4) {
+            return response()->json(['message' => 'Forbidden: partner storefronts are read-only for this account.'], 403);
         }
 
         $validated = $this->validatePayload($request);
@@ -118,6 +146,14 @@ class WebPageController extends Controller
         $resolvedType = $this->resolveType($type);
         if (!$resolvedType) {
             return response()->json(['message' => 'Invalid web page content type.'], 422);
+        }
+
+        $actor = $request->user();
+        if ($resolvedType === 'partner-storefront' && $actor instanceof Admin && (int) $actor->user_level_id === 4) {
+            $allowedStorefrontIds = $this->resolveStorefrontIds($actor);
+            if (! in_array($id, $allowedStorefrontIds, true)) {
+                return response()->json(['message' => 'Forbidden: you do not have access to this storefront.'], 403);
+            }
         }
 
         $item = WebPageContent::query()
@@ -166,6 +202,11 @@ class WebPageController extends Controller
             return response()->json(['message' => 'Invalid web page content type.'], 422);
         }
 
+        $actor = $request->user();
+        if ($resolvedType === 'partner-storefront' && $actor instanceof Admin && (int) $actor->user_level_id === 4) {
+            return response()->json(['message' => 'Forbidden: partner storefronts cannot be deleted by this account.'], 403);
+        }
+
         $item = WebPageContent::query()
             ->where('wpc_type', $resolvedType)
             ->where('wpc_id', $id)
@@ -190,6 +231,27 @@ class WebPageController extends Controller
             'partner-storefront', 'partner-storefronts', 'partner_storefront', 'partner_storefronts', 'storefront', 'storefronts' => 'partner-storefront',
             default => null,
         };
+    }
+
+    private function resolveStorefrontIds(mixed $actor): array
+    {
+        if (! ($actor instanceof Admin)) {
+            return [];
+        }
+
+        if ((int) $actor->user_level_id !== 4) {
+            return [];
+        }
+
+        $raw = $actor->admin_permissions ?? [];
+        if (! is_array($raw)) {
+            return [];
+        }
+
+        return array_values(array_unique(array_filter(array_map(
+            static fn ($id) => is_numeric($id) ? (int) $id : null,
+            $raw,
+        ), static fn ($id) => is_int($id) && $id > 0)));
     }
 
     private function buildPublicItems(string $type)

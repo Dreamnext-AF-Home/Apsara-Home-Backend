@@ -28,6 +28,7 @@ use App\Http\Controllers\Api\CustomerAddressController;
 use App\Http\Controllers\Api\InteriorRequestController;
 use App\Http\Controllers\Api\JntWebhookController;
 use App\Http\Controllers\Api\AdminInquiryController;
+use App\Http\Controllers\Api\PartnerUserController;
 
 
 // Public auth routes
@@ -200,6 +201,13 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,web_content'])-
     Route::post('/admin/web-pages/{type}', [WebPageController::class, 'adminStore']);
     Route::put('/admin/web-pages/{type}/{id}', [WebPageController::class, 'adminUpdate']);
     Route::delete('/admin/web-pages/{type}/{id}', [WebPageController::class, 'adminDestroy']);
+});
+
+Route::middleware(['auth:sanctum', 'admin.role:web_content'])->group(function () {
+    Route::get('/admin/partner-users', [PartnerUserController::class, 'index']);
+    Route::post('/admin/partner-users', [PartnerUserController::class, 'store']);
+    Route::put('/admin/partner-users/{id}', [PartnerUserController::class, 'update']);
+    Route::delete('/admin/partner-users/{id}', [PartnerUserController::class, 'destroy']);
 });
 
 Route::prefix('admin/auth')->group(function () {
