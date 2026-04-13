@@ -8,6 +8,10 @@ return new class extends Migration
 {
     public function up(): void
     {
+        if (DB::getDriverName() === 'sqlite') {
+            return;
+        }
+
         if (!Schema::hasTable('tbl_product_image_embeddings')) {
             DB::statement('CREATE EXTENSION IF NOT EXISTS vector');
             DB::statement(<<<'SQL'
@@ -30,6 +34,10 @@ return new class extends Migration
 
     public function down(): void
     {
+        if (DB::getDriverName() === 'sqlite') {
+            return;
+        }
+
         if (Schema::hasTable('tbl_product_image_embeddings')) {
             Schema::drop('tbl_product_image_embeddings');
         }

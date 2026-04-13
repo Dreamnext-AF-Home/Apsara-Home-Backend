@@ -465,6 +465,9 @@ class AdminOrderController extends Controller
         ]);
 
         $order = CheckoutHistory::query()->where('ch_id', $id)->firstOrFail();
+        if (($order->ch_approval_status ?? 'pending_approval') === 'approved') {
+            return response()->json(['message' => 'Order is already approved.'], 422);
+        }
 
         DB::transaction(function () use ($order, $admin, $validated) {
             $order->fill([

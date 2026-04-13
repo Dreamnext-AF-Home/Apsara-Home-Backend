@@ -574,18 +574,19 @@ class PaymentController extends Controller
                 ];
             }
 
-            Mail::mailer('resend')->to($recipient)->send(new CheckoutCompletedMail([
-                'checkout_id' => $checkoutId,
-                'customer_name' => $customer['name'] ?? ($order?->ch_customer_name ?? 'Customer'),
-                'description' => $customer['description'] ?? ($order?->ch_description ?? 'Order'),
-                'amount' => $customer['amount'] ?? ($order?->ch_amount ?? 0),
-                'payment_method' => $customer['payment_method'] ?? ($order?->ch_payment_method ?? null),
-                'status' => $attrs['status'] ?? 'paid',
-                'payment_intent_id' => $attrs['payment_intent']['id'] ?? null,
-                'shipping_address' => $customer['address'] ?? ($order?->ch_customer_address ?? null),
-                'order' => [
-                    'product_name' => $orderDetails['product_name'] ?? null,
-                    'product_sku' => $orderDetails['product_sku'] ?? null,
+              Mail::mailer('resend')->to($recipient)->send(new CheckoutCompletedMail([
+                  'checkout_id' => $checkoutId,
+                  'customer_name' => $customer['name'] ?? ($order?->ch_customer_name ?? 'Customer'),
+                  'description' => $customer['description'] ?? ($order?->ch_description ?? 'Order'),
+                  'amount' => $customer['amount'] ?? ($order?->ch_amount ?? 0),
+                  'payment_method' => $customer['payment_method'] ?? ($order?->ch_payment_method ?? null),
+                  'status' => $attrs['status'] ?? 'paid',
+                  'order_status_label' => 'pending approval',
+                  'payment_intent_id' => $attrs['payment_intent']['id'] ?? null,
+                  'shipping_address' => $customer['address'] ?? ($order?->ch_customer_address ?? null),
+                  'order' => [
+                      'product_name' => $orderDetails['product_name'] ?? null,
+                      'product_sku' => $orderDetails['product_sku'] ?? null,
                     'quantity' => $orderDetails['quantity'] ?? 1,
                     'selected_color' => $orderDetails['selected_color'] ?? null,
                     'selected_size' => $orderDetails['selected_size'] ?? null,

@@ -8,6 +8,10 @@ return new class extends Migration
 {
     public function up(): void
     {
+        if (!Schema::hasTable('tbl_product')) {
+            return;
+        }
+
         Schema::table('tbl_product', function (Blueprint $table) {
             if (!Schema::hasColumn('tbl_product', 'pd_material')) {
                 $table->text('pd_material')->nullable()->after('pd_specifications');
@@ -26,6 +30,10 @@ return new class extends Migration
 
     public function down(): void
     {
+        if (!Schema::hasTable('tbl_product')) {
+            return;
+        }
+
         Schema::table('tbl_product', function (Blueprint $table) {
             $table->dropColumn(array_filter(
                 ['pd_material', 'pd_pswidth', 'pd_assembly_required', 'pd_warranty'],

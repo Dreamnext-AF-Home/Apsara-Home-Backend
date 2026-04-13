@@ -8,6 +8,10 @@ return new class extends Migration
 {
     public function up(): void
     {
+        if (! Schema::hasTable('tbl_admin') || Schema::hasColumn('tbl_admin', 'is_banned')) {
+            return;
+        }
+
         Schema::table('tbl_admin', function (Blueprint $table) {
             $table->boolean('is_banned')->default(false)->after('avatar_url');
         });
@@ -15,6 +19,10 @@ return new class extends Migration
 
     public function down(): void
     {
+        if (! Schema::hasTable('tbl_admin') || ! Schema::hasColumn('tbl_admin', 'is_banned')) {
+            return;
+        }
+
         Schema::table('tbl_admin', function (Blueprint $table) {
             $table->dropColumn('is_banned');
         });
