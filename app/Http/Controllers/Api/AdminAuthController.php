@@ -54,6 +54,7 @@ class AdminAuthController extends Controller
 
         $token = $admin->createToken('admin_auth_token')->plainTextToken;
         $role = AdminAccess::roleFromLevel((int) $admin->user_level_id);
+        $storefrontIds = $this->resolveStorefrontIds($admin);
 
         return response()->json([
             'user' => [
@@ -64,6 +65,7 @@ class AdminAuthController extends Controller
                 'user_level_id' => (int) $admin->user_level_id,
                 'supplier_id' => $admin->supplier_id ? (int) $admin->supplier_id : null,
                 'admin_permissions' => AdminAccess::permissionsForAdmin($admin),
+                'storefront_ids' => $storefrontIds,
                 'avatar_url' => (string) ($admin->avatar_url ?? ''),
                 'is_banned' => (bool) $admin->is_banned,
             ],
@@ -100,10 +102,10 @@ class AdminAuthController extends Controller
             );
 
             Mail::to($payload['email'])->send(new AdminPasswordResetMail(
-                name: $payload['name'],
-                email: $payload['email'],
-                resetUrl: $resetUrl,
-                expiresAt: $expiresAt->toDayDateTimeString(),
+                $payload['name'],
+                $payload['email'],
+                $resetUrl,
+                $expiresAt->toDayDateTimeString(),
             ));
         }
 
@@ -186,6 +188,7 @@ class AdminAuthController extends Controller
             'user_level_id' => (int) $admin->user_level_id,
             'supplier_id' => $admin->supplier_id ? (int) $admin->supplier_id : null,
             'admin_permissions' => AdminAccess::permissionsForAdmin($admin),
+            'storefront_ids' => $this->resolveStorefrontIds($admin),
             'avatar_url' => (string) ($admin->avatar_url ?? ''),
         ]);
     }
@@ -235,9 +238,29 @@ class AdminAuthController extends Controller
                 'user_level_id' => (int) $admin->user_level_id,
                 'supplier_id' => $admin->supplier_id ? (int) $admin->supplier_id : null,
                 'admin_permissions' => AdminAccess::permissionsForAdmin($admin),
+                'storefront_ids' => $this->resolveStorefrontIds($admin),
                 'avatar_url' => (string) ($admin->avatar_url ?? ''),
             ],
         ]);
+    }
+
+    private function resolveStorefrontIds(?Admin $admin): array
+    {
+        if (! $admin || (int) $admin->user_level_id !== 4) {
+            return [];
+        }
+
+        $raw = $admin->admin_permissions ?? [];
+        if (! is_array($raw)) {
+            return [];
+        }
+
+        $ids = array_values(array_unique(array_filter(array_map(
+            static fn ($id) => is_numeric($id) ? (int) $id : null,
+            $raw,
+        ), static fn ($id) => is_int($id) && $id > 0)));
+
+        return $ids;
     }
 
     private function getResetPayload(string $token): ?array

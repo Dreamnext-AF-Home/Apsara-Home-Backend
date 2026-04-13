@@ -978,6 +978,10 @@ class ProductController extends Controller
                     'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_style,pv_width,pv_dimension,pv_height,pv_price_srp,pv_price_dp,pv_price_member,pv_prodpv,pv_qty,pv_status,pv_date',
                     'variants.photos:pvp_id,pvp_pvid,pvp_filename,pvp_sort,pvp_date',
                 ])
+                ->when(! $admin && ! $supplierUser, function ($q) {
+                    // Public catalog access should only expose active products.
+                    $this->applyPublicVisibility($q);
+                })
                 ->when($search !== '', function ($q) use ($search) {
                     $this->applyKeywordSearch($q, $search);
                 })

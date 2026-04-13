@@ -202,6 +202,70 @@ class AiSupportController extends Controller
                 ]);
             }
 
+            if (preg_match('/\b(modern luxury decor|glam interior accent|artistic home decor|contemporary statement piece)\b/i', $qLower)) {
+                $featuredNames = [
+                    'Philosopher Ape',
+                    'Gentleman Gorilla',
+                    'King Selfie Wacky',
+                    'Chill Champ',
+                    'Chief Gorilla',
+                    'Victory in Gold',
+                    'Liberty in White',
+                    'Chain Link Table Accent',
+                ];
+
+                $merged = [];
+                foreach ($featuredNames as $name) {
+                    $merged = $this->mergeCardLists($merged, $this->searchProductsByNameOnly($name, $detectedBrandId, 2));
+                }
+                if (empty($merged)) {
+                    foreach ($featuredNames as $name) {
+                        $merged = $this->mergeCardLists($merged, $this->searchProductsByNameNoPrice($name, 2));
+                    }
+                }
+
+                $productCards = $merged;
+                $reply = !empty($productCards)
+                    ? 'Here are standout pieces that match modern luxury and glam decor.'
+                    : 'I could not find those decor pieces right now. Please try again later.';
+                $quickReplies = ['Show lowest price', 'Best product', 'Track my order'];
+
+                return response()->json([
+                    'status' => 'ok',
+                    'reply' => $reply,
+                    'quick_replies' => $quickReplies,
+                    'product_cards' => $productCards,
+                    'brand_cards' => $brandCards,
+                    'category_cards' => $categoryCards,
+                    'brand_view_all_url' => $brandViewAllUrl,
+                    'step_images' => $stepImages,
+                ]);
+            }
+
+            if ($this->isTopRatedIntent($qLower, $this->normalizeSimple($qLower))) {
+                $productCards = $this->getTopRatedCards($detectedBrandId, 5);
+                if (!empty($productCards)) {
+                    $reply = 'Here are our highest-rated products based on customer reviews.';
+                } else {
+                    $productCards = $this->getBestSellingCards($detectedBrandId, 5);
+                    $reply = !empty($productCards)
+                        ? 'We do not have enough ratings yet, so here are our current best-sellers instead.'
+                        : 'I cannot find top-rated products right now. Please try again later.';
+                }
+                $quickReplies = ['What are your best-selling living room products?', 'Can you recommend a sofa for small spaces?', 'Do you have items on sale right now?'];
+
+                return response()->json([
+                    'status' => 'ok',
+                    'reply' => $reply,
+                    'quick_replies' => $quickReplies,
+                    'product_cards' => $productCards,
+                    'brand_cards' => $brandCards,
+                    'category_cards' => $categoryCards,
+                    'brand_view_all_url' => $brandViewAllUrl,
+                    'step_images' => $stepImages,
+                ]);
+            }
+
             if ($isStrictNameQuery && $nameQuery !== '') {
                 $strictKeywords = $this->getStrictNameKeywords($nameQuery);
                 $merged = [];
@@ -469,7 +533,7 @@ class AiSupportController extends Controller
                             6
                         );
                         $quickReplies = ['Suggest items under PHP 5,000.', 'What is the highest-rated product?', 'Show me trending home decor.'];
-                    } elseif (preg_match('/\b(highest-rated|highest rated|top rated|best rated)\b/i', $qLower)) {
+                    } elseif ($this->isTopRatedIntent($qLower, $qNormSimple)) {
                         $productCards = $this->getTopRatedCards($detectedBrandId, 5);
                         if (!empty($productCards)) {
                             $reply = 'Here are our highest-rated products based on customer reviews.';
@@ -2356,7 +2420,6 @@ class AiSupportController extends Controller
         try {
             $reviews = DB::table('tbl_product_reviews')
                 ->select('pr_product_id', DB::raw('AVG(pr_rating) AS avg_rating'), DB::raw('COUNT(*) AS review_count'))
-                ->where('pr_status', 1)
                 ->groupBy('pr_product_id');
 
             $query = $this->productBaseQuery($brandId)
@@ -3241,6 +3304,43 @@ class AiSupportController extends Controller
             '/\b(pa-help po|paano po ito|hindi gumagana|nag error)\b/i' => ' help support issue not working error ',
             '/\b(salamat|ok po|sige po|pasensya na)\b/i' => ' thank you ',
         ];
+    }
+
+    private function isTopRatedIntent(string $qLower, string $qNormSimple): bool
+    {
+        if (preg_match('/\b(highest-rated|highest rated|top rated|top-rated|best rated|best-rated|best reviews|best review|highest rating|best rating|top rating)\b/i', $qLower)) {
+            return true;
+        }
+
+        $simple = $qNormSimple !== '' ? $qNormSimple : $this->normalizeSimple($qLower);
+        $patterns = [
+            // Tagalog
+            'pinakamataasnarating',
+            'pinakamataasrating',
+            'pinakamagandangrating',
+            'pinakamagandangreview',
+            'pinakamagandangfeedback',
+            'pinakamataasmarka',
+            'topratednaproducto',
+            'topratednaproduct',
+            // Taglish
+            'highestrating',
+            'topratedproduct',
+            'toprateditem',
+            'bestrateditem',
+            'bestratedproduct',
+            'pinakabestrating',
+            'pinakamataasnaratingna',
+            'pinakamataasnareview',
+        ];
+
+        foreach ($patterns as $needle) {
+            if ($needle !== '' && str_contains($simple, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function extractImageInputs(Request $request): array
