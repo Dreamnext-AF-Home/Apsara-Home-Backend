@@ -171,6 +171,7 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,csr,merchant_ad
     Route::patch('/admin/orders/{id}/approve', [AdminOrderController::class, 'approve']);
     Route::patch('/admin/orders/{id}/reject', [AdminOrderController::class, 'reject']);
     Route::patch('/admin/orders/{id}/status', [AdminOrderController::class, 'updateStatus']);
+    Route::patch('/admin/orders/{id}/fulfillment-mode', [AdminOrderController::class, 'updateFulfillmentMode']);
     Route::patch('/admin/orders/{id}/shipment-status', [AdminOrderController::class, 'updateShipmentStatus']);
     Route::post('/admin/orders/{id}/zq/push', [AdminOrderController::class, 'pushToZq']);
     Route::get('/admin/orders/{id}/zq/detail', [AdminOrderController::class, 'fetchZqDetail']);
