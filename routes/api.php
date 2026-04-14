@@ -29,6 +29,7 @@ use App\Http\Controllers\Api\InteriorRequestController;
 use App\Http\Controllers\Api\JntWebhookController;
 use App\Http\Controllers\Api\AdminInquiryController;
 use App\Http\Controllers\Api\PartnerUserController;
+use App\Http\Controllers\Api\AdminSettingsController;
 
 
 // Public auth routes
@@ -58,6 +59,7 @@ Route::get('/product-brands', [ProductBrandController::class, 'publicIndex']);
 Route::get('/web-pages/home', [WebPageController::class, 'home']);
 Route::get('/web-pages/adds-content', [AddsContentController::class, 'publicIndex']);
 Route::get('/web-pages/{type}', [WebPageController::class, 'publicIndex']);
+Route::get('/settings/general', [AdminSettingsController::class, 'publicGeneral']);
 Route::get('/address/regions', [AddressController::class, 'regions']);
 Route::get('/address/provinces', [AddressController::class, 'provinces']);
 Route::get('/address/cities', [AddressController::class, 'cities']);
@@ -145,6 +147,8 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,merchant_admin,
 });
 
 Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin'])->group(function () {
+    Route::get('/admin/settings/general', [\App\Http\Controllers\Api\AdminSettingsController::class, 'showGeneral']);
+    Route::post('/admin/settings/general', [\App\Http\Controllers\Api\AdminSettingsController::class, 'updateGeneral']);
     Route::post('/admin/members/{id}/temporary-password', [MemberController::class, 'generateTemporaryPassword']);
     Route::post('/admin/suppliers', [SupplierController::class, 'store']);
     Route::put('/admin/suppliers/{id}', [SupplierController::class, 'update']);
