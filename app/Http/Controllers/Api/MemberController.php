@@ -27,6 +27,8 @@ class MemberController extends Controller
         $search = trim((string) $request->query('q', ''));
         $status = trim((string) $request->query('status', ''));
         $tier = trim((string) $request->query('tier', ''));
+        $registration = trim((string) $request->query('registration', ''));
+        $profilePhoto = trim((string) $request->query('profile_photo', ''));
         $sort = trim((string) $request->query('sort', 'default'));
         $cacheVersion = $this->membersCacheVersion();
 
@@ -37,10 +39,12 @@ class MemberController extends Controller
             'q' => $search,
             'status' => $status,
             'tier' => $tier,
+            'registration' => $registration,
+            'profile_photo' => $profilePhoto,
             'sort' => $sort,
         ]));
 
-        $payload = Cache::remember($cacheKey, now()->addMinutes(2), function () use ($perPage, $search, $status, $tier, $sort) {
+        $payloadBuilder = function () use ($perPage, $search, $status, $tier, $registration, $profilePhoto, $sort) {
             $paginator = Customer::query()
                 ->select([
                     'tbl_customer.c_userid',
@@ -63,6 +67,7 @@ class MemberController extends Controller
                     'tbl_customer.c_totalpair',
                     'tbl_customer.c_gpv',
                     'tbl_customer.c_totalincome',
+                    'tbl_customer.c_sponsor',
                     'tbl_customer.c_date_started',
                     'tbl_customer.c_last_logindate',
                 ])
@@ -125,6 +130,40 @@ class MemberController extends Controller
                         $query->where('tbl_customer.c_rank', '<=', 1);
                     }
                 })
+                ->when($registration !== '', function ($query) use ($registration) {
+                    if ($registration === 'new') {
+                        $query->whereNotNull('tbl_customer.c_date_started')
+                            ->whereRaw("tbl_customer.c_date_started >= (CURRENT_DATE - INTERVAL '6 days')");
+                        return;
+                    }
+
+                    if ($registration === 'referred') {
+                        $query->whereNotNull('tbl_customer.c_sponsor')
+                            ->where('tbl_customer.c_sponsor', '<>', 0);
+                        return;
+                    }
+
+                    if ($registration === 'direct') {
+                        $query->where(function ($inner) {
+                            $inner->whereNull('tbl_customer.c_sponsor')
+                                ->orWhere('tbl_customer.c_sponsor', 0);
+                        });
+                    }
+                })
+                ->when($profilePhoto !== '', function ($query) use ($profilePhoto) {
+                    if ($profilePhoto === 'with_photo') {
+                        $query->whereNotNull('tbl_customer.c_avatar_url')
+                            ->whereRaw("NULLIF(TRIM(tbl_customer.c_avatar_url), '') IS NOT NULL");
+                        return;
+                    }
+
+                    if ($profilePhoto === 'no_photo') {
+                        $query->where(function ($inner) {
+                            $inner->whereNull('tbl_customer.c_avatar_url')
+                                ->orWhereRaw("NULLIF(TRIM(tbl_customer.c_avatar_url), '') IS NULL");
+                        });
+                    }
+                })
                 ->when($sort === 'referrals_high_low', function ($query) {
                     $query
                         ->leftJoin('tbl_customer as referrals', 'referrals.c_sponsor', '=', 'tbl_customer.c_userid')
@@ -149,18 +188,40 @@ class MemberController extends Controller
                             'tbl_customer.c_totalpair',
                             'tbl_customer.c_gpv',
                             'tbl_customer.c_totalincome',
+                            'tbl_customer.c_sponsor',
                             'tbl_customer.c_date_started',
                             'tbl_customer.c_last_logindate',
                         )
                         ->selectRaw('COUNT(referrals.c_userid) as referral_sort_total')
                         ->orderByDesc('referral_sort_total')
                         ->orderByDesc('tbl_customer.c_userid');
-                }, function ($query) {
+                }, function ($query) use ($sort) {
+                    if ($sort === 'newest_registered') {
+                        $query
+                            ->orderByDesc('tbl_customer.c_date_started')
+                            ->orderByDesc('tbl_customer.c_userid');
+                        return;
+                    }
+
+                    if ($sort === 'oldest_registered') {
+                        $query
+                            ->orderBy('tbl_customer.c_date_started')
+                            ->orderBy('tbl_customer.c_userid');
+                        return;
+                    }
+
                     $query->orderByDesc('tbl_customer.c_userid');
                 })
                 ->paginate($perPage);
 
             $pageUserIds = collect($paginator->items())->pluck('c_userid')->all();
+            $sponsorIds = collect($paginator->items())
+                ->pluck('c_sponsor')
+                ->filter(fn ($value) => (int) $value > 0)
+                ->map(fn ($value) => (int) $value)
+                ->unique()
+                ->values()
+                ->all();
             $referralCounts = empty($pageUserIds)
                 ? collect()
                 : Customer::query()
@@ -168,6 +229,20 @@ class MemberController extends Controller
                     ->whereIn('c_sponsor', $pageUserIds)
                     ->groupBy('c_sponsor')
                     ->pluck('total', 'c_sponsor');
+
+            $sponsorsById = empty($sponsorIds)
+                ? collect()
+                : Customer::query()
+                    ->select([
+                        'c_userid',
+                        'c_username',
+                        'c_fname',
+                        'c_mname',
+                        'c_lname',
+                    ])
+                    ->whereIn('c_userid', $sponsorIds)
+                    ->get()
+                    ->keyBy('c_userid');
 
             $walletCreditsByCustomer = collect();
             if (!empty($pageUserIds) && Schema::hasTable('tbl_customer_wallet_ledger')) {
@@ -190,7 +265,7 @@ class MemberController extends Controller
             }
 
             $members = collect($paginator->items())
-                ->map(function (Customer $customer) use ($referralCounts, $walletCreditsByCustomer): array {
+                ->map(function (Customer $customer) use ($referralCounts, $walletCreditsByCustomer, $sponsorsById): array {
                     $fullName = trim(implode(' ', array_filter([
                         (string) $customer->c_fname,
                         (string) $customer->c_mname,
@@ -215,6 +290,8 @@ class MemberController extends Controller
                     $joinedAt = $this->formatDate($customer->c_date_started);
                     $lastActiveAt = $this->formatDate($customer->c_last_logindate) ?: $joinedAt;
                     $walletCredits = $walletCreditsByCustomer->get((int) $customer->c_userid, ['cash' => 0, 'pv' => 0]);
+                    $sponsor = $sponsorsById->get((int) ($customer->c_sponsor ?? 0));
+                    $sponsorName = $sponsor instanceof Customer ? $this->displayName($sponsor) : '';
                     $addressParts = array_filter([
                         (string) ($customer->c_address ?? ''),
                         (string) ($customer->c_barangay ?? ''),
@@ -229,6 +306,8 @@ class MemberController extends Controller
                         'name' => $fullName,
                         'username' => (string) ($customer->c_username ?? ''),
                         'email' => (string) ($customer->c_email ?: ''),
+                        'referredByName' => $sponsorName,
+                        'referredByUsername' => $sponsor instanceof Customer ? (string) ($sponsor->c_username ?? '') : '',
                         'contactNumber' => (string) ($customer->c_mobile ?: ''),
                         'avatar' => (string) ($customer->c_avatar_url ?: ''),
                         'verificationStatus' => $verificationStatus,
@@ -266,7 +345,13 @@ class MemberController extends Controller
                     'to' => $paginator->lastItem(),
                 ],
             ];
-        });
+        };
+
+        try {
+            $payload = Cache::remember($cacheKey, now()->addMinutes(2), $payloadBuilder);
+        } catch (\Throwable $exception) {
+            $payload = $payloadBuilder();
+        }
 
         return response()->json($payload);
     }
@@ -274,18 +359,32 @@ class MemberController extends Controller
     public function stats(): JsonResponse
     {
         $cacheKey = 'admin:members:stats:' . $this->membersCacheVersion();
-        $cached = Cache::get($cacheKey);
+        try {
+            $cached = Cache::get($cacheKey);
+        } catch (\Throwable $exception) {
+            $cached = null;
+        }
 
         if (is_array($cached)) {
             return response()->json($cached);
         }
 
-        $lock = Cache::lock('lock:' . $cacheKey, 30);
+        try {
+            $lock = Cache::lock('lock:' . $cacheKey, 30);
+            $hasLock = $lock->get();
+        } catch (\Throwable $exception) {
+            $payload = $this->buildStatsPayload();
+            return response()->json($payload);
+        }
 
-        if ($lock->get()) {
+        if ($hasLock) {
             try {
                 $payload = $this->buildStatsPayload();
-                Cache::put($cacheKey, $payload, now()->addMinutes(10));
+                try {
+                    Cache::put($cacheKey, $payload, now()->addMinutes(10));
+                } catch (\Throwable $exception) {
+                    // Ignore cache write failures in local/dev when Redis is unavailable.
+                }
                 return response()->json($payload);
             } finally {
                 $lock->release();
@@ -294,7 +393,11 @@ class MemberController extends Controller
 
         // Another request is currently computing stats. Wait briefly for cached result.
         usleep(250000);
-        $payload = Cache::get($cacheKey);
+        try {
+            $payload = Cache::get($cacheKey);
+        } catch (\Throwable $exception) {
+            $payload = null;
+        }
 
         if (is_array($payload)) {
             return response()->json($payload);
@@ -302,7 +405,11 @@ class MemberController extends Controller
 
         // Fallback in case lock holder failed; still return real data.
         $payload = $this->buildStatsPayload();
-        Cache::put($cacheKey, $payload, now()->addMinutes(10));
+        try {
+            Cache::put($cacheKey, $payload, now()->addMinutes(10));
+        } catch (\Throwable $exception) {
+            // Ignore cache write failures in local/dev when Redis is unavailable.
+        }
 
         return response()->json($payload);
     }
@@ -437,7 +544,7 @@ class MemberController extends Controller
 
     public function referralTree(): JsonResponse
     {
-        $payload = Cache::remember('admin:members:referral-tree:' . $this->membersCacheVersion(), now()->addMinutes(2), function () {
+        $payloadBuilder = function () {
             $members = Customer::query()
                 ->select([
                     'c_userid',
@@ -560,7 +667,17 @@ class MemberController extends Controller
                 ],
                 'roots' => $roots,
             ];
-        });
+        };
+
+        try {
+            $payload = Cache::remember(
+                'admin:members:referral-tree:' . $this->membersCacheVersion(),
+                now()->addMinutes(2),
+                $payloadBuilder
+            );
+        } catch (\Throwable $exception) {
+            $payload = $payloadBuilder();
+        }
 
         return response()->json($payload);
     }
@@ -573,6 +690,10 @@ class MemberController extends Controller
                 COUNT(*) FILTER (WHERE c_lockstatus = 0 AND c_accnt_status = 1)::bigint AS active,
                 COUNT(*) FILTER (WHERE c_lockstatus = 0 AND c_accnt_status IN (0, 2))::bigint AS pending,
                 COUNT(*) FILTER (WHERE c_lockstatus = 1)::bigint AS blocked,
+                COUNT(*) FILTER (
+                    WHERE c_date_started IS NOT NULL
+                    AND c_date_started >= (CURRENT_DATE - INTERVAL '6 days')
+                )::bigint AS new_members,
                 COALESCE(SUM(c_gpv), 0)::numeric AS total_spent,
                 COALESCE(SUM(c_totalincome), 0)::numeric AS total_earnings,
                 COUNT(*) FILTER (WHERE c_sponsor IS NOT NULL AND c_sponsor <> 0)::bigint AS total_referrals
@@ -584,6 +705,7 @@ class MemberController extends Controller
             'active' => (int) ($summary->active ?? 0),
             'pending' => (int) ($summary->pending ?? 0),
             'blocked' => (int) ($summary->blocked ?? 0),
+            'newMembers' => (int) ($summary->new_members ?? 0),
             'totalSpent' => (float) ($summary->total_spent ?? 0),
             'totalEarnings' => (float) ($summary->total_earnings ?? 0),
             'totalReferrals' => (int) ($summary->total_referrals ?? 0),
@@ -717,14 +839,22 @@ class MemberController extends Controller
 
     private function membersCacheVersion(): int
     {
-        return (int) Cache::get(self::MEMBERS_CACHE_VERSION_KEY, 1);
+        try {
+            return (int) Cache::get(self::MEMBERS_CACHE_VERSION_KEY, 1);
+        } catch (\Throwable $exception) {
+            return 1;
+        }
     }
 
     private function bustMembersCache(): void
     {
-        Cache::forever(
-            self::MEMBERS_CACHE_VERSION_KEY,
-            $this->membersCacheVersion() + 1
-        );
+        try {
+            Cache::forever(
+                self::MEMBERS_CACHE_VERSION_KEY,
+                $this->membersCacheVersion() + 1
+            );
+        } catch (\Throwable $exception) {
+            // Ignore cache bust failures in local/dev when Redis is unavailable.
+        }
     }
 }
