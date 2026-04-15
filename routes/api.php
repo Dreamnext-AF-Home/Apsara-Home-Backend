@@ -29,6 +29,7 @@ use App\Http\Controllers\Api\InteriorRequestController;
 use App\Http\Controllers\Api\JntWebhookController;
 use App\Http\Controllers\Api\AdminInquiryController;
 use App\Http\Controllers\Api\PartnerUserController;
+use App\Http\Controllers\Api\CartController;
 
 
 // Public auth routes
@@ -96,6 +97,11 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::get('/wishlist', [WishlistController::class, 'index']);
     Route::post('/wishlist', [WishlistController::class, 'store']);
     Route::delete('/wishlist/{productId}', [WishlistController::class, 'destroy']);
+    Route::post('/cart/add', [CartController::class, 'addToCart']);
+    Route::get('/cart', [CartController::class, 'getCart']);
+    Route::put('/cart/{id}', [CartController::class, 'updateCartItem']);
+    Route::delete('/cart/{id}', [CartController::class, 'removeCartItem']);
+    Route::delete('/cart', [CartController::class, 'clearCart']);
 });
 
 Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,csr'])->group(function () {
