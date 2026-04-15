@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -20,6 +21,7 @@ use App\Mail\Auth\RegistrationOtpMail;
 use App\Mail\Auth\CustomerPasswordResetMail;
 use App\Mail\Auth\UsernameChangeOtpMail;
 use App\Mail\Auth\ReferralRegistrationAlertMail;
+use Pusher\Pusher;
 
 class AuthController extends Controller
 {
@@ -201,6 +203,7 @@ class AuthController extends Controller
         if ($referrer instanceof Customer) {
             $this->notifyReferrerAboutRegistration($referrer, $customer);
         }
+        $this->notifyAdminsAboutNewRegistration($customer);
 
         Cache::forget($this->registrationOtpCacheKey($validated['verification_token']));
 
@@ -1123,6 +1126,72 @@ class AuthController extends Controller
         }
 
         return '0';
+    }
+
+    private function notifyAdminsAboutNewRegistration(Customer $customer): void
+    {
+        $displayName = $this->fullName($customer);
+        $joinedAt = $customer->c_date_started ?? now();
+
+        $notification = AdminNotification::query()->firstOrCreate(
+            [
+                'an_type' => 'member_joined',
+                'an_source_type' => 'customer',
+                'an_source_id' => (int) $customer->c_userid,
+            ],
+            [
+                'an_severity' => 'success',
+                'an_title' => 'New Member Joined',
+                'an_message' => sprintf(
+                    '%s joined as a new member.',
+                    $displayName !== '' ? $displayName : ('Member #' . (int) $customer->c_userid)
+                ),
+                'an_href' => '/admin/members',
+                'an_payload' => [
+                    'customer_id' => (int) $customer->c_userid,
+                    'customer_name' => $displayName,
+                    'customer_email' => (string) ($customer->c_email ?? ''),
+                    'username' => (string) ($customer->c_username ?? ''),
+                    'joined_at' => optional($joinedAt)->toDateTimeString(),
+                ],
+                'an_created_at' => $joinedAt,
+            ]
+        );
+
+        $appId = (string) config('services.pusher.app_id', '');
+        $key = (string) config('services.pusher.key', '');
+        $secret = (string) config('services.pusher.secret', '');
+
+        if ($appId === '' || $key === '' || $secret === '') {
+            return;
+        }
+
+        try {
+            $pusher = new Pusher(
+                $key,
+                $secret,
+                $appId,
+                [
+                    'cluster' => (string) config('services.pusher.cluster', 'ap1'),
+                    'useTLS' => (bool) config('services.pusher.use_tls', true),
+                ]
+            );
+
+            $pusher->trigger('private-admin-orders', 'notification.created', [
+                'id' => (int) $notification->an_id,
+                'type' => 'member_joined',
+                'title' => (string) $notification->an_title,
+                'description' => (string) $notification->an_message,
+                'href' => (string) ($notification->an_href ?? '/admin/members'),
+                'created_at' => optional($notification->an_created_at)->toDateTimeString(),
+                'payload' => is_array($notification->an_payload) ? $notification->an_payload : null,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('Failed to publish admin realtime member registration notification.', [
+                'customer_id' => (int) $customer->c_userid,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     private function mapRole(int $level): string
