@@ -29,11 +29,8 @@ use App\Http\Controllers\Api\InteriorRequestController;
 use App\Http\Controllers\Api\JntWebhookController;
 use App\Http\Controllers\Api\AdminInquiryController;
 use App\Http\Controllers\Api\PartnerUserController;
-<<<<<<< HEAD
 use App\Http\Controllers\Api\CartController;
-=======
 use App\Http\Controllers\Api\AdminSettingsController;
->>>>>>> 1d07d3d2590a402097cf233786ed2be0d07c49ff
 
 
 // Public auth routes
