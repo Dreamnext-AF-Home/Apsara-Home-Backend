@@ -25,13 +25,21 @@ class AdminEncashmentController extends Controller
         $validated = $request->validate([
             'filter' => 'nullable|string|max:40',
             'q' => 'nullable|string|max:120',
+            'released_from' => 'nullable|date_format:Y-m-d',
+            'released_to' => 'nullable|date_format:Y-m-d',
             'page' => 'nullable|integer|min:1',
             'per_page' => 'nullable|integer|min:1|max:100',
         ]);
 
         $filter = $this->normalizeFilter((string) ($validated['filter'] ?? 'all'));
         $search = trim((string) ($validated['q'] ?? ''));
+        $releasedFrom = $validated['released_from'] ?? null;
+        $releasedTo = $validated['released_to'] ?? null;
         $perPage = (int) ($validated['per_page'] ?? 20);
+
+        if ($releasedFrom && $releasedTo && $releasedFrom > $releasedTo) {
+            [$releasedFrom, $releasedTo] = [$releasedTo, $releasedFrom];
+        }
 
         $query = EncashmentRequest::query()
             ->with(['customer:c_userid,c_username,c_email,c_fname,c_mname,c_lname,c_totalincome'])
@@ -44,6 +52,7 @@ class AdminEncashmentController extends Controller
             });
 
         $this->applyFilter($query, $filter);
+        $this->applyReleasedDateFilter($query, $releasedFrom, $releasedTo);
 
         $rows = $query
             ->orderByRaw("CASE er_status WHEN 'pending' THEN 1 WHEN 'approved_by_admin' THEN 2 WHEN 'released' THEN 3 ELSE 4 END")
@@ -301,6 +310,17 @@ class AdminEncashmentController extends Controller
         }
 
         $query->where('er_status', $filter);
+    }
+
+    private function applyReleasedDateFilter($query, ?string $from, ?string $to): void
+    {
+        if ($from) {
+            $query->whereDate(DB::raw('COALESCE(er_released_at, created_at)'), '>=', $from);
+        }
+
+        if ($to) {
+            $query->whereDate(DB::raw('COALESCE(er_released_at, created_at)'), '<=', $to);
+        }
     }
 
     private function counts(): array

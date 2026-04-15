@@ -31,6 +31,8 @@ use App\Http\Controllers\Api\AdminInquiryController;
 use App\Http\Controllers\Api\PartnerUserController;
 use App\Http\Controllers\Api\CartController;
 use App\Http\Controllers\Api\AdminSettingsController;
+use App\Http\Controllers\Api\ExpenseCategoryController;
+use App\Http\Controllers\Api\ExpenseController;
 
 
 // Public auth routes
@@ -156,6 +158,10 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,merchant_admin,
 Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin'])->group(function () {
     Route::get('/admin/settings/general', [\App\Http\Controllers\Api\AdminSettingsController::class, 'showGeneral']);
     Route::post('/admin/settings/general', [\App\Http\Controllers\Api\AdminSettingsController::class, 'updateGeneral']);
+    Route::get('/admin/settings/security', [\App\Http\Controllers\Api\AdminSettingsController::class, 'showSecurity']);
+    Route::post('/admin/settings/security', [\App\Http\Controllers\Api\AdminSettingsController::class, 'updateSecurity']);
+    Route::get('/admin/settings/notifications', [\App\Http\Controllers\Api\AdminSettingsController::class, 'showNotifications']);
+    Route::post('/admin/settings/notifications', [\App\Http\Controllers\Api\AdminSettingsController::class, 'updateNotifications']);
     Route::post('/admin/members/{id}/temporary-password', [MemberController::class, 'generateTemporaryPassword']);
     Route::post('/admin/suppliers', [SupplierController::class, 'store']);
     Route::put('/admin/suppliers/{id}', [SupplierController::class, 'update']);
@@ -194,12 +200,21 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,csr,merchant_ad
     Route::get('/admin/shipping/jnt/track/{trackingNo}', [JntShippingController::class, 'trackByTrackingNo']);
 });
 
-Route::middleware(['auth:sanctum', 'admin.role:super_admin,accounting,finance_officer'])->group(function () {
+Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,accounting,finance_officer'])->group(function () {
     Route::get('/admin/encashment', [AdminEncashmentController::class, 'index']);
     Route::patch('/admin/encashment/{id}/approve', [AdminEncashmentController::class, 'approve']);
     Route::patch('/admin/encashment/{id}/reject', [AdminEncashmentController::class, 'reject']);
     Route::patch('/admin/encashment/{id}/release', [AdminEncashmentController::class, 'release']);
     Route::post('/admin/encashment/yearly-global-bonus/award', [AdminEncashmentController::class, 'awardYearlyGlobalBonus']);
+    Route::get('/admin/expenses/categories', [ExpenseCategoryController::class, 'index']);
+    Route::post('/admin/expenses/categories', [ExpenseCategoryController::class, 'store']);
+    Route::put('/admin/expenses/categories/{id}', [ExpenseCategoryController::class, 'update']);
+    Route::delete('/admin/expenses/categories/{id}', [ExpenseCategoryController::class, 'destroy']);
+    Route::get('/admin/expenses', [ExpenseController::class, 'index']);
+    Route::get('/admin/expenses/summary', [ExpenseController::class, 'summary']);
+    Route::post('/admin/expenses', [ExpenseController::class, 'store']);
+    Route::put('/admin/expenses/{id}', [ExpenseController::class, 'update']);
+    Route::delete('/admin/expenses/{id}', [ExpenseController::class, 'destroy']);
 });
 
 Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin'])->group(function () {
@@ -220,7 +235,7 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,web_content'])-
     Route::delete('/admin/web-pages/{type}/{id}', [WebPageController::class, 'adminDestroy']);
 });
 
-Route::middleware(['auth:sanctum', 'admin.role:web_content'])->group(function () {
+Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,web_content'])->group(function () {
     Route::get('/admin/partner-users', [PartnerUserController::class, 'index']);
     Route::post('/admin/partner-users', [PartnerUserController::class, 'store']);
     Route::put('/admin/partner-users/{id}', [PartnerUserController::class, 'update']);
@@ -229,10 +244,12 @@ Route::middleware(['auth:sanctum', 'admin.role:web_content'])->group(function ()
 
 Route::prefix('admin/auth')->group(function () {
     Route::post('/login', [AdminAuthController::class, 'login']);
+    Route::post('/login/2fa/resend', [AdminAuthController::class, 'resendLoginOtp']);
 });
 
 Route::prefix('supplier/auth')->group(function () {
     Route::post('/login', [SupplierAuthController::class, 'login']);
+    Route::post('/login/2fa/resend', [SupplierAuthController::class, 'resendLoginOtp']);
     Route::post('/forgot-password', [SupplierAuthController::class, 'forgotPassword']);
     Route::get('/reset-password/{token}', [SupplierAuthController::class, 'showResetToken']);
     Route::post('/reset-password', [SupplierAuthController::class, 'resetPassword']);

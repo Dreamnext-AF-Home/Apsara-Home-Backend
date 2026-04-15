@@ -90,6 +90,76 @@ class AdminSettingsController extends Controller
         ]);
     }
 
+    public function showSecurity(): JsonResponse
+    {
+        $settings = SystemSetting::query()->first();
+
+        return response()->json([
+            'settings' => $this->formatSecuritySettings($settings),
+        ]);
+    }
+
+    public function updateSecurity(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'session_timeout_minutes' => 'required|integer|min:5|max:1440',
+            'max_login_attempts' => 'required|integer|min:1|max:20',
+            'password_min_length' => 'required|integer|min:6|max:64',
+            'enable_2fa' => 'required|boolean',
+        ]);
+
+        $settings = SystemSetting::query()->first();
+
+        if (!$settings) {
+            $settings = new SystemSetting();
+        }
+
+        $settings->session_timeout_minutes = $validated['session_timeout_minutes'];
+        $settings->max_login_attempts = $validated['max_login_attempts'];
+        $settings->password_min_length = $validated['password_min_length'];
+        $settings->enable_2fa = $validated['enable_2fa'];
+        $settings->save();
+
+        return response()->json([
+            'message' => 'Security settings saved successfully.',
+            'settings' => $this->formatSecuritySettings($settings),
+        ]);
+    }
+
+    public function showNotifications(): JsonResponse
+    {
+        $settings = SystemSetting::query()->first();
+
+        return response()->json([
+            'settings' => $this->formatNotificationSettings($settings),
+        ]);
+    }
+
+    public function updateNotifications(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'email_notifications' => 'required|boolean',
+            'sms_notifications' => 'required|boolean',
+            'admin_alerts' => 'required|boolean',
+        ]);
+
+        $settings = SystemSetting::query()->first();
+
+        if (!$settings) {
+            $settings = new SystemSetting();
+        }
+
+        $settings->email_notifications = $validated['email_notifications'];
+        $settings->sms_notifications = $validated['sms_notifications'];
+        $settings->admin_alerts = $validated['admin_alerts'];
+        $settings->save();
+
+        return response()->json([
+            'message' => 'Notification settings saved successfully.',
+            'settings' => $this->formatNotificationSettings($settings),
+        ]);
+    }
+
     private function formatSettings(?SystemSetting $settings): array
     {
         return [
@@ -105,6 +175,27 @@ class AdminSettingsController extends Controller
             'currency' => $settings?->currency ?? 'PHP',
             'date_format' => $settings?->date_format ?? 'MM/DD/YYYY',
             'language' => $settings?->language ?? 'English',
+            'updated_at' => optional($settings?->updated_at)->toDateTimeString(),
+        ];
+    }
+
+    private function formatSecuritySettings(?SystemSetting $settings): array
+    {
+        return [
+            'session_timeout_minutes' => $settings?->session_timeout_minutes ?? 60,
+            'max_login_attempts' => $settings?->max_login_attempts ?? 5,
+            'password_min_length' => $settings?->password_min_length ?? 8,
+            'enable_2fa' => (bool)($settings?->enable_2fa ?? false),
+            'updated_at' => optional($settings?->updated_at)->toDateTimeString(),
+        ];
+    }
+
+    private function formatNotificationSettings(?SystemSetting $settings): array
+    {
+        return [
+            'email_notifications' => (bool)($settings?->email_notifications ?? true),
+            'sms_notifications' => (bool)($settings?->sms_notifications ?? false),
+            'admin_alerts' => (bool)($settings?->admin_alerts ?? true),
             'updated_at' => optional($settings?->updated_at)->toDateTimeString(),
         ];
     }

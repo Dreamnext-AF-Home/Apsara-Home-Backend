@@ -10,21 +10,52 @@ use Illuminate\Validation\Rule;
 
 class PartnerUserController extends Controller
 {
+    private function canManagePartnerUsers(mixed $actor): bool
+    {
+        if (! ($actor instanceof Admin)) {
+            return false;
+        }
+
+        $level = (int) ($actor->user_level_id ?? 0);
+        return in_array($level, [1, 2, 4], true);
+    }
+
+    private function isSuperAdmin(mixed $actor): bool
+    {
+        return $actor instanceof Admin && (int) ($actor->user_level_id ?? 0) === 1;
+    }
+
+    private function actorStorefrontScope(mixed $actor): ?array
+    {
+        if (! ($actor instanceof Admin)) {
+            return [];
+        }
+
+        // Super admins and admins can see/manage all storefront users.
+        if (in_array((int) ($actor->user_level_id ?? 0), [1, 2], true)) {
+            return null;
+        }
+
+        // Partner/web-content accounts are scoped to their storefront IDs.
+        return $this->normalizeStorefrontIds($actor->admin_permissions ?? []);
+    }
+
     public function index(Request $request)
     {
         $actor = $request->user();
-        if (! ($actor instanceof Admin) || (int) $actor->user_level_id !== 4) {
+        if (! $this->canManagePartnerUsers($actor)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        $allowedStorefrontIds = $this->normalizeStorefrontIds($actor->admin_permissions ?? []);
+        $allowedStorefrontIds = $this->actorStorefrontScope($actor);
         $validated = $request->validate([
             'q' => 'nullable|string|max:120',
+            'storefront_id' => 'nullable|integer|min:1',
             'page' => 'nullable|integer|min:1',
             'per_page' => 'nullable|integer|min:1|max:100',
         ]);
 
-        if (empty($allowedStorefrontIds)) {
+        if (is_array($allowedStorefrontIds) && empty($allowedStorefrontIds)) {
             return response()->json([
                 'users' => [],
                 'meta' => [
@@ -39,6 +70,7 @@ class PartnerUserController extends Controller
         }
 
         $search = trim((string) ($validated['q'] ?? ''));
+        $storefrontId = (int) ($validated['storefront_id'] ?? 0);
         $page = (int) ($validated['page'] ?? 1);
         $perPage = (int) ($validated['per_page'] ?? 20);
 
@@ -53,8 +85,17 @@ class PartnerUserController extends Controller
             })
             ->orderByDesc('id');
 
-        $filtered = $query->get()->filter(function (Admin $admin) use ($allowedStorefrontIds) {
+        $filtered = $query->get()->filter(function (Admin $admin) use ($allowedStorefrontIds, $storefrontId) {
             $storefrontIds = $this->normalizeStorefrontIds($admin->admin_permissions ?? []);
+
+            if ($storefrontId > 0 && ! in_array($storefrontId, $storefrontIds, true)) {
+                return false;
+            }
+
+            if ($allowedStorefrontIds === null) {
+                return ! empty($storefrontIds);
+            }
+
             return ! empty(array_intersect($allowedStorefrontIds, $storefrontIds));
         })->values();
 
@@ -80,14 +121,11 @@ class PartnerUserController extends Controller
     public function store(Request $request)
     {
         $actor = $request->user();
-        if (! ($actor instanceof Admin) || (int) $actor->user_level_id !== 4) {
+        if (! $this->canManagePartnerUsers($actor)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        $allowedStorefrontIds = $this->normalizeStorefrontIds($actor->admin_permissions ?? []);
-        if (empty($allowedStorefrontIds)) {
-            return response()->json(['message' => 'No storefront assigned to this account.'], 422);
-        }
+        $allowedStorefrontIds = $this->actorStorefrontScope($actor);
 
         $validated = $request->validate([
             'name' => 'required|string|max:255',
@@ -101,7 +139,22 @@ class PartnerUserController extends Controller
                 }),
             ],
             'password' => 'required|string|min:8',
+            'storefront_ids' => 'nullable|array',
+            'storefront_ids.*' => 'integer|min:1',
         ]);
+
+        $requestedStorefrontIds = $this->normalizeStorefrontIds($validated['storefront_ids'] ?? []);
+        if ($allowedStorefrontIds === null) {
+            $finalStorefrontIds = $requestedStorefrontIds;
+        } elseif (! empty($requestedStorefrontIds)) {
+            $finalStorefrontIds = array_values(array_intersect($allowedStorefrontIds, $requestedStorefrontIds));
+        } else {
+            $finalStorefrontIds = $allowedStorefrontIds;
+        }
+
+        if (empty($finalStorefrontIds)) {
+            return response()->json(['message' => 'Select at least one storefront for this user.'], 422);
+        }
 
         $admin = Admin::query()->create([
             'fname' => trim((string) $validated['name']),
@@ -109,7 +162,7 @@ class PartnerUserController extends Controller
             'user_email' => trim((string) ($validated['email'] ?? '')),
             'passworde' => Hash::make((string) $validated['password']),
             'user_level_id' => 4,
-            'admin_permissions' => $allowedStorefrontIds,
+            'admin_permissions' => $finalStorefrontIds,
         ]);
 
         return response()->json([
@@ -121,18 +174,18 @@ class PartnerUserController extends Controller
     public function update(Request $request, int $id)
     {
         $actor = $request->user();
-        if (! ($actor instanceof Admin) || (int) $actor->user_level_id !== 4) {
+        if (! $this->canManagePartnerUsers($actor)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        $allowedStorefrontIds = $this->normalizeStorefrontIds($actor->admin_permissions ?? []);
+        $allowedStorefrontIds = $this->actorStorefrontScope($actor);
         $target = Admin::query()->where('id', $id)->firstOrFail();
         if ((int) $target->user_level_id !== 4) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
         $targetStorefrontIds = $this->normalizeStorefrontIds($target->admin_permissions ?? []);
-        if (empty(array_intersect($allowedStorefrontIds, $targetStorefrontIds))) {
+        if (is_array($allowedStorefrontIds) && empty(array_intersect($allowedStorefrontIds, $targetStorefrontIds))) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -153,6 +206,8 @@ class PartnerUserController extends Controller
                 }),
             ],
             'password' => 'nullable|string|min:8',
+            'storefront_ids' => 'nullable|array',
+            'storefront_ids.*' => 'integer|min:1',
         ]);
 
         if (array_key_exists('name', $validated)) {
@@ -167,6 +222,20 @@ class PartnerUserController extends Controller
         if (! empty($validated['password'])) {
             $target->passworde = Hash::make((string) $validated['password']);
         }
+        if (array_key_exists('storefront_ids', $validated)) {
+            $requestedStorefrontIds = $this->normalizeStorefrontIds($validated['storefront_ids'] ?? []);
+            if ($allowedStorefrontIds === null) {
+                $finalStorefrontIds = $requestedStorefrontIds;
+            } elseif (! empty($requestedStorefrontIds)) {
+                $finalStorefrontIds = array_values(array_intersect($allowedStorefrontIds, $requestedStorefrontIds));
+            } else {
+                $finalStorefrontIds = $allowedStorefrontIds;
+            }
+            if (empty($finalStorefrontIds)) {
+                return response()->json(['message' => 'Select at least one storefront for this user.'], 422);
+            }
+            $target->admin_permissions = $finalStorefrontIds;
+        }
 
         $target->save();
 
@@ -179,7 +248,7 @@ class PartnerUserController extends Controller
     public function destroy(Request $request, int $id)
     {
         $actor = $request->user();
-        if (! ($actor instanceof Admin) || (int) $actor->user_level_id !== 4) {
+        if (! $this->canManagePartnerUsers($actor)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -187,14 +256,14 @@ class PartnerUserController extends Controller
             return response()->json(['message' => 'You cannot delete your own account.'], 422);
         }
 
-        $allowedStorefrontIds = $this->normalizeStorefrontIds($actor->admin_permissions ?? []);
+        $allowedStorefrontIds = $this->actorStorefrontScope($actor);
         $target = Admin::query()->where('id', $id)->firstOrFail();
         if ((int) $target->user_level_id !== 4) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
         $targetStorefrontIds = $this->normalizeStorefrontIds($target->admin_permissions ?? []);
-        if (empty(array_intersect($allowedStorefrontIds, $targetStorefrontIds))) {
+        if (is_array($allowedStorefrontIds) && empty(array_intersect($allowedStorefrontIds, $targetStorefrontIds))) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
