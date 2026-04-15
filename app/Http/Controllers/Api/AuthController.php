@@ -60,6 +60,10 @@ class AuthController extends Controller
             'city'                  => 'nullable|string|max:255',
             'province'              => 'nullable|string|max:255',
             'region'                => 'nullable|string|max:255',
+            'barangay_code'         => 'nullable|string|max:20',
+            'city_code'             => 'nullable|string|max:20',
+            'province_code'         => 'nullable|string|max:20',
+            'region_code'           => 'nullable|string|max:20',
             'zip_code'              => 'nullable|string|max:20',
         ], [
             'password.min' => 'Password must be at least 8 characters.',
@@ -153,7 +157,9 @@ class AuthController extends Controller
         }
 
         $customer = DB::transaction(function () use ($registration, $referrerUserId) {
-            DB::statement('LOCK TABLE tbl_customer IN EXCLUSIVE MODE');
+            if (DB::connection()->getDriverName() === 'pgsql') {
+                DB::statement('LOCK TABLE tbl_customer IN EXCLUSIVE MODE');
+            }
 
             $nextCustomerId = ((int) DB::table('tbl_customer')->whereNotNull('c_userid')->max('c_userid')) + 1;
 
@@ -182,6 +188,10 @@ class AuthController extends Controller
                 'c_city'         => $registration['city'] ?? null,
                 'c_province'     => $registration['province'] ?? null,
                 'c_region'       => $registration['region'] ?? null,
+                'c_region_code'  => $registration['region_code'] ?? null,
+                'c_province_code'=> $registration['province_code'] ?? null,
+                'c_city_code'    => $registration['city_code'] ?? null,
+                'c_barangay_code'=> $registration['barangay_code'] ?? null,
                 'c_zipcode'      => $registration['zip_code'] ?? null,
             ]);
         });
@@ -1083,7 +1093,7 @@ class AuthController extends Controller
             'a_mobile' => (string) ($customer->c_mobile ?? '0'),
             'a_mobile_code' => '0',
             'a_address' => $street,
-            'a_country' => (string) ($customer->c_country ?? '175'),
+            'a_country' => $this->normalizeAddressCountryValue($customer->c_country ?? null),
             'a_region' => $region,
             'a_province' => $province,
             'a_city' => $city,
@@ -1098,6 +1108,21 @@ class AuthController extends Controller
             'a_address_type' => 'Home',
             'a_notes' => '',
         ]);
+    }
+
+    private function normalizeAddressCountryValue(?string $country): string
+    {
+        $value = trim((string) $country);
+
+        if ($value === '' || strcasecmp($value, 'philippines') === 0 || strtoupper($value) === 'PH') {
+            return '175';
+        }
+
+        if (ctype_digit($value)) {
+            return $value;
+        }
+
+        return '0';
     }
 
     private function mapRole(int $level): string
