@@ -289,6 +289,7 @@ class MemberController extends Controller
                     $tier = $this->mapTier($rank);
                     $joinedAt = $this->formatDate($customer->c_date_started);
                     $lastActiveAt = $this->formatDate($customer->c_last_logindate) ?: $joinedAt;
+                    $registeredAt = $this->formatDateTime($customer->c_date_started);
                     $walletCredits = $walletCreditsByCustomer->get((int) $customer->c_userid, ['cash' => 0, 'pv' => 0]);
                     $sponsor = $sponsorsById->get((int) ($customer->c_sponsor ?? 0));
                     $sponsorName = $sponsor instanceof Customer ? $this->displayName($sponsor) : '';
@@ -322,6 +323,8 @@ class MemberController extends Controller
                         'walletPvCredits' => (float) ($walletCredits['pv'] ?? 0),
                         'referrals' => (int) ($referralCounts[(int) $customer->c_userid] ?? 0),
                         'joinedAt' => $joinedAt,
+                        'createdAt' => $registeredAt,
+                        'created_at' => $registeredAt,
                         'lastActiveAt' => $lastActiveAt,
                         'addressLine' => (string) ($customer->c_address ?? ''),
                         'barangay' => (string) ($customer->c_barangay ?? ''),
@@ -834,6 +837,19 @@ class MemberController extends Controller
             return Carbon::parse($value)->format('Y-m-d');
         } catch (\Throwable $exception) {
             return '';
+        }
+    }
+
+    private function formatDateTime(?string $value): ?string
+    {
+        if (! $value) {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($value)->toDateTimeString();
+        } catch (\Throwable $exception) {
+            return null;
         }
     }
 

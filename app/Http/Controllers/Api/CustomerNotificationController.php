@@ -8,6 +8,7 @@ use App\Models\Customer;
 use App\Models\CustomerNotification;
 use App\Models\CustomerVerificationRequest;
 use App\Models\EncashmentRequest;
+use App\Support\CustomerCashWallet;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -135,11 +136,11 @@ class CustomerNotificationController extends Controller
             ],
             [
                 'id' => 'kyc_status',
-                'title' => 'KYC Verification',
+                'title' => 'Encashment Verification',
                 'description' => $kycMeta['description'],
                 'count' => $kycActionCount,
                 'severity' => $kycMeta['severity'],
-                'href' => '/verification',
+                'href' => '/profile?tab=encashment&focus=verification',
                 'latest_at' => $kycMeta['latest_at'],
             ],
             [
@@ -191,6 +192,11 @@ class CustomerNotificationController extends Controller
 
     private function resolveKycMeta(Customer $customer): array
     {
+        $encashmentRules = $this->encashmentRules();
+        $availableAmount = CustomerCashWallet::availableForEncashment((int) $customer->c_userid);
+        $currentPoints = (float) ($customer->c_gpv ?? 0);
+        $hasReachedEncashmentThreshold = $availableAmount >= $encashmentRules['min_amount']
+            && $currentPoints >= $encashmentRules['min_points'];
         $status = (int) ($customer->c_accnt_status ?? 0);
         $lock = (int) ($customer->c_lockstatus ?? 0);
         $latestKyc = CustomerVerificationRequest::query()
@@ -247,16 +253,26 @@ class CustomerNotificationController extends Controller
             return [
                 'count' => 1,
                 'severity' => 'warning',
-                'description' => 'KYC is under review. Wait for admin update.',
+                'description' => 'Your verification request is under review. Please wait for the Admin/KYC update.',
                 'latest_at' => optional($latestKyc?->updated_at ?? $latestKyc?->created_at)?->toDateTimeString(),
             ];
         }
 
         return [
-            'count' => 1,
-            'severity' => 'warning',
-            'description' => 'KYC not submitted. Complete verification to unlock full features.',
-            'latest_at' => null,
+            'count' => $hasReachedEncashmentThreshold ? 1 : 0,
+            'severity' => $hasReachedEncashmentThreshold ? 'success' : 'info',
+            'description' => $hasReachedEncashmentThreshold
+                ? 'You are now qualified to submit your encashment verification. You have reached the minimum encashment requirements.'
+                : 'Reach the minimum encashment requirement to unlock verification submission.',
+            'latest_at' => $hasReachedEncashmentThreshold ? now()->toDateTimeString() : null,
+        ];
+    }
+
+    private function encashmentRules(): array
+    {
+        return [
+            'min_amount' => max(1, (float) env('ENCASHMENT_MIN_AMOUNT', 500)),
+            'min_points' => max(0, (float) env('ENCASHMENT_MIN_POINTS', 0)),
         ];
     }
 
