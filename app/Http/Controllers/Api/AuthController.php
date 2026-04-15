@@ -81,6 +81,12 @@ class AuthController extends Controller
             'username' => $validated['username'] ?? null,
         ]);
 
+        if ($this->looksLikeEmailUsername((string) ($validated['username'] ?? ''))) {
+            throw ValidationException::withMessages([
+                'username' => ['Username must not be an email address. Please choose a username without @gmail.com, @yahoo.com, and similar email formats.'],
+            ]);
+        }
+
         $referrer = Customer::query()
             ->select(['c_userid', 'c_username', 'c_accnt_status', 'c_lockstatus'])
             ->whereRaw('LOWER(c_username) = ?', [strtolower((string) $validated['referred_by'])])
@@ -239,6 +245,38 @@ class AuthController extends Controller
 
         return response()->json([
             'message' => 'A new verification code has been sent.',
+        ]);
+    }
+
+    public function checkUsernameAvailability(Request $request)
+    {
+        $validated = $request->validate([
+            'username' => ['required', 'string', 'max:255'],
+        ]);
+
+        $username = trim((string) $validated['username']);
+
+        if ($username === '') {
+            return response()->json([
+                'available' => false,
+                'message' => 'Username is required.',
+            ], 422);
+        }
+
+        if ($this->looksLikeEmailUsername($username)) {
+            return response()->json([
+                'available' => false,
+                'message' => 'Username must not be an email address.',
+            ]);
+        }
+
+        $exists = Customer::query()
+            ->whereRaw('LOWER(c_username) = ?', [mb_strtolower($username, 'UTF-8')])
+            ->exists();
+
+        return response()->json([
+            'available' => ! $exists,
+            'message' => $exists ? 'This username is already taken.' : 'Username is available.',
         ]);
     }
 
@@ -583,6 +621,12 @@ class AuthController extends Controller
         ]);
 
         [$firstName, $middleName, $lastName] = $this->splitName((string) $validated['name']);
+
+        if (array_key_exists('username', $validated) && $validated['username'] !== null && $this->looksLikeEmailUsername((string) $validated['username'])) {
+            throw ValidationException::withMessages([
+                'username' => ['Username must not be an email address. Please choose a username without @gmail.com, @yahoo.com, and similar email formats.'],
+            ]);
+        }
 
         $customer->c_fname = $firstName;
         $customer->c_mname = $middleName;
@@ -1318,6 +1362,13 @@ class AuthController extends Controller
     private function usernameChangeOtpCacheKey(string $verificationToken): string
     {
         return "username_change_otp:{$verificationToken}";
+    }
+
+    private function looksLikeEmailUsername(string $value): bool
+    {
+        $trimmed = trim($value);
+
+        return $trimmed !== '' && str_contains($trimmed, '@');
     }
 
     private function passwordResetCacheKey(string $token): string
