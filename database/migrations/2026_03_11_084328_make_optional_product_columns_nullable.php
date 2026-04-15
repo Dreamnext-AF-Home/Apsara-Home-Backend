@@ -17,8 +17,12 @@ return new class extends Migration
 
     public function up(): void
     {
+        if (DB::getDriverName() === 'sqlite') {
+            return;
+        }
+
         foreach ($this->columns as $column) {
-            if (Schema::hasColumn('tbl_product', $column)) {
+            if (Schema::hasTable('tbl_product') && Schema::hasColumn('tbl_product', $column)) {
                 DB::statement("ALTER TABLE tbl_product ALTER COLUMN {$column} DROP NOT NULL");
             }
         }
@@ -26,7 +30,7 @@ return new class extends Migration
         // Fix tbl_product_photo nullable columns
         $photoColumns = ['pp_varone', 'pp_date'];
         foreach ($photoColumns as $column) {
-            if (Schema::hasColumn('tbl_product_photo', $column)) {
+            if (Schema::hasTable('tbl_product_photo') && Schema::hasColumn('tbl_product_photo', $column)) {
                 DB::statement("ALTER TABLE tbl_product_photo ALTER COLUMN {$column} DROP NOT NULL");
             }
         }

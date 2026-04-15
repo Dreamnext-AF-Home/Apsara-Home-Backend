@@ -380,8 +380,9 @@ class AdminOrderController extends Controller
                 $shipmentPayload = [];
             }
 
-            $trackingNo = $order->ch_tracking_no ?: $this->extractTrackingNoFromShipment($shipmentPayload);
+            $trackingNo = $this->resolveOrderTrackingNumber($order, $shipmentPayload);
             $shipmentStatus = $order->ch_shipment_status ?: $this->extractShipmentStatus($shipmentPayload);
+            $fulfillmentMode = $this->resolveStoredFulfillmentMode($order);
 
             return [
                 'id' => (int) $order->ch_id,
@@ -393,6 +394,7 @@ class AdminOrderController extends Controller
                 'approved_by' => $order->ch_approved_by ? (int) $order->ch_approved_by : null,
                 'approved_at' => optional($order->ch_approved_at)->toDateTimeString(),
                 'fulfillment_status' => $order->ch_fulfillment_status ?? 'pending',
+                'fulfillment_mode' => $fulfillmentMode,
                 'courier' => $order->ch_courier,
                 'tracking_no' => $trackingNo,
                 'shipment_status' => $shipmentStatus,
@@ -439,6 +441,37 @@ class AdminOrderController extends Controller
         ]);
     }
 
+    public function updateFulfillmentMode(Request $request, int $id)
+    {
+        $admin = $this->resolveAdmin($request);
+        if (!$admin) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+        if (!$this->canUpdateFulfillment($admin)) {
+            return response()->json(['message' => 'Forbidden: tracking access is limited.'], 403);
+        }
+
+        $validated = $request->validate([
+            'mode' => 'required|in:manual,local_courier,zq',
+        ]);
+
+        $order = CheckoutHistory::query()->where('ch_id', $id)->firstOrFail();
+        if (($order->ch_approval_status ?? 'pending_approval') !== 'approved') {
+            return response()->json(['message' => 'Order must be approved before assigning fulfillment mode.'], 422);
+        }
+
+        $zqResponse = is_array($order->ch_zq_response) ? $order->ch_zq_response : [];
+        $zqResponse['admin_fulfillment_mode'] = (string) $validated['mode'];
+        $order->ch_zq_response = $zqResponse;
+        $order->save();
+
+        return response()->json([
+            'message' => 'Fulfillment mode updated.',
+            'order_id' => (int) $order->ch_id,
+            'fulfillment_mode' => $zqResponse['admin_fulfillment_mode'],
+        ]);
+    }
+
     private function syncRecentPendingPayments(): void
     {
         try {
@@ -465,6 +498,9 @@ class AdminOrderController extends Controller
         ]);
 
         $order = CheckoutHistory::query()->where('ch_id', $id)->firstOrFail();
+        if (($order->ch_approval_status ?? 'pending_approval') === 'approved') {
+            return response()->json(['message' => 'Order is already approved.'], 422);
+        }
 
         DB::transaction(function () use ($order, $admin, $validated) {
             $order->fill([
@@ -663,6 +699,7 @@ class AdminOrderController extends Controller
         $validated = $request->validate([
             'shipment_status' => 'required|in:for_pickup,picked_up,in_transit,out_for_delivery,delivered,failed_delivery,returned_to_sender,cancelled',
             'courier' => 'nullable|in:jnt,xde',
+            'clear_courier' => 'nullable|boolean',
         ]);
 
         $order = CheckoutHistory::query()->where('ch_id', $id)->firstOrFail();
@@ -673,10 +710,14 @@ class AdminOrderController extends Controller
         $shipmentStatus = (string) $validated['shipment_status'];
         $previousShipmentStatus = (string) ($order->ch_shipment_status ?? '');
         $selectedCourier = $this->normalizeCourier($validated['courier'] ?? null);
-        if ($selectedCourier !== null) {
+        $shouldClearCourier = (bool) ($validated['clear_courier'] ?? false);
+        if ($shouldClearCourier) {
+            $order->ch_courier = 'afhome';
+            if (trim((string) ($order->ch_tracking_no ?? '')) === '') {
+                $order->ch_tracking_no = $this->generateAfHomeTrackingNumber($order);
+            }
+        } elseif ($selectedCourier !== null) {
             $order->ch_courier = $selectedCourier;
-        } elseif (!$this->normalizeCourier($order->ch_courier)) {
-            $order->ch_courier = $this->defaultCourier();
         }
         $order->ch_shipment_status = $shipmentStatus;
 
@@ -803,7 +844,59 @@ class AdminOrderController extends Controller
     private function normalizeCourier(mixed $courier): ?string
     {
         $normalized = strtolower(trim((string) $courier));
-        return in_array($normalized, ['jnt', 'xde'], true) ? $normalized : null;
+        return in_array($normalized, ['jnt', 'xde', 'afhome'], true) ? $normalized : null;
+    }
+
+    private function generateAfHomeTrackingNumber(CheckoutHistory $order): string
+    {
+        $datePart = now()->format('Ymd');
+        $orderPart = str_pad((string) ((int) $order->ch_id), 4, '0', STR_PAD_LEFT);
+
+        return "AFH-{$datePart}-{$orderPart}";
+    }
+
+    private function resolveOrderTrackingNumber(CheckoutHistory $order, ?array $shipmentPayload = null): ?string
+    {
+        $trackingNo = trim((string) ($order->ch_tracking_no ?? ''));
+        if ($trackingNo !== '') {
+            return $trackingNo;
+        }
+
+        $payload = $shipmentPayload ?? (is_array($order->ch_shipment_payload) ? $order->ch_shipment_payload : []);
+        $payloadTrackingNo = trim((string) ($this->extractTrackingNoFromShipment($payload) ?? ''));
+        if ($payloadTrackingNo !== '') {
+            return $payloadTrackingNo;
+        }
+
+        if (strtolower(trim((string) ($order->ch_courier ?? ''))) !== 'afhome') {
+            return null;
+        }
+
+        $generated = $this->generateAfHomeTrackingNumber($order);
+        $order->ch_tracking_no = $generated;
+        $order->save();
+
+        return $generated;
+    }
+
+    private function resolveStoredFulfillmentMode(CheckoutHistory $order): string
+    {
+        $storedContainer = is_array($order->ch_zq_response) ? $order->ch_zq_response : [];
+        $storedMode = strtolower(trim((string) ($storedContainer['admin_fulfillment_mode'] ?? '')));
+        if (in_array($storedMode, ['manual', 'local_courier', 'zq'], true)) {
+            return $storedMode;
+        }
+
+        $courier = strtolower(trim((string) ($order->ch_courier ?? '')));
+        if ($courier === 'zq' || !empty($order->ch_zq_platform_order_id) || !empty($order->ch_zq_order_id) || !empty($order->ch_zq_status)) {
+            return 'zq';
+        }
+
+        if (in_array($courier, ['jnt', 'xde'], true)) {
+            return 'local_courier';
+        }
+
+        return 'manual';
     }
 
     private function pushOrderToZqIfEligible(CheckoutHistory $order): ?array
@@ -1377,7 +1470,7 @@ class AdminOrderController extends Controller
         $customerName = trim((string) ($order->ch_customer_name ?? 'Customer')) ?: 'Customer';
         $fulfillmentStatus = strtolower((string) ($order->ch_fulfillment_status ?? 'pending'));
         $shipmentStatus = strtolower((string) ($order->ch_shipment_status ?? ''));
-        $trackingNo = trim((string) ($order->ch_tracking_no ?? ''));
+        $trackingNo = $this->resolveOrderTrackingNumber($order) ?? '';
         $courier = trim((string) ($order->ch_courier ?? ''));
 
         $title = 'Order Update';

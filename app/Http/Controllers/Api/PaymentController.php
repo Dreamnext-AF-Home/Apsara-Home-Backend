@@ -574,18 +574,19 @@ class PaymentController extends Controller
                 ];
             }
 
-            Mail::mailer('resend')->to($recipient)->send(new CheckoutCompletedMail([
-                'checkout_id' => $checkoutId,
-                'customer_name' => $customer['name'] ?? ($order?->ch_customer_name ?? 'Customer'),
-                'description' => $customer['description'] ?? ($order?->ch_description ?? 'Order'),
-                'amount' => $customer['amount'] ?? ($order?->ch_amount ?? 0),
-                'payment_method' => $customer['payment_method'] ?? ($order?->ch_payment_method ?? null),
-                'status' => $attrs['status'] ?? 'paid',
-                'payment_intent_id' => $attrs['payment_intent']['id'] ?? null,
-                'shipping_address' => $customer['address'] ?? ($order?->ch_customer_address ?? null),
-                'order' => [
-                    'product_name' => $orderDetails['product_name'] ?? null,
-                    'product_sku' => $orderDetails['product_sku'] ?? null,
+              Mail::mailer('resend')->to($recipient)->send(new CheckoutCompletedMail([
+                  'checkout_id' => $checkoutId,
+                  'customer_name' => $customer['name'] ?? ($order?->ch_customer_name ?? 'Customer'),
+                  'description' => $customer['description'] ?? ($order?->ch_description ?? 'Order'),
+                  'amount' => $customer['amount'] ?? ($order?->ch_amount ?? 0),
+                  'payment_method' => $customer['payment_method'] ?? ($order?->ch_payment_method ?? null),
+                  'status' => $attrs['status'] ?? 'paid',
+                  'order_status_label' => 'pending approval',
+                  'payment_intent_id' => $attrs['payment_intent']['id'] ?? null,
+                  'shipping_address' => $customer['address'] ?? ($order?->ch_customer_address ?? null),
+                  'order' => [
+                      'product_name' => $orderDetails['product_name'] ?? null,
+                      'product_sku' => $orderDetails['product_sku'] ?? null,
                     'quantity' => $orderDetails['quantity'] ?? 1,
                     'selected_color' => $orderDetails['selected_color'] ?? null,
                     'selected_size' => $orderDetails['selected_size'] ?? null,
@@ -622,6 +623,7 @@ class PaymentController extends Controller
             ->orderByDesc('ch_id')
             ->get()
             ->map(function (CheckoutHistory $order) {
+                $trackingNo = $this->resolveOrderTrackingNumber($order);
                 $quantity = max(1, (int) $order->ch_quantity);
                 $itemName = $order->ch_product_name ?: ($order->ch_description ?: 'Order Item');
                 $status = $order->ch_fulfillment_status
@@ -648,7 +650,7 @@ class PaymentController extends Controller
                     'payment_method' => $this->formatPaymentMethod((string) $order->ch_payment_method),
                     'shipping_address' => $order->ch_customer_address ?: 'No address provided',
                     'courier' => $order->ch_courier ?: null,
-                    'tracking_no' => $order->ch_tracking_no ?: null,
+                    'tracking_no' => $trackingNo,
                     'shipment_status' => $order->ch_shipment_status ?: null,
                     'shipped_at' => optional($order->ch_shipped_at)->toDateTimeString(),
                     'created_at' => optional($order->ch_paid_at ?? $order->created_at)->toDateTimeString(),
@@ -1381,9 +1383,10 @@ class PaymentController extends Controller
         ];
 
         if ($includeGuestFields) {
+            $trackingNo = $this->resolveOrderTrackingNumber($order);
             $payload['customer_name'] = (string) ($order->ch_customer_name ?? 'Customer');
             $payload['courier'] = $order->ch_courier ?: null;
-            $payload['tracking_no'] = $order->ch_tracking_no ?: null;
+            $payload['tracking_no'] = $trackingNo;
             $payload['shipment_status'] = $order->ch_shipment_status ?: null;
             $payload['shipped_at'] = optional($order->ch_shipped_at)->toDateTimeString();
         }
@@ -1403,6 +1406,32 @@ class PaymentController extends Controller
         }
 
         return preg_replace('/\D+/', '', $trimmed) ?? '';
+    }
+
+    private function resolveOrderTrackingNumber(CheckoutHistory $order): ?string
+    {
+        $trackingNo = trim((string) ($order->ch_tracking_no ?? ''));
+        if ($trackingNo !== '') {
+            return $trackingNo;
+        }
+
+        if (strtolower(trim((string) ($order->ch_courier ?? ''))) !== 'afhome') {
+            return null;
+        }
+
+        $generated = $this->generateAfHomeTrackingNumber($order);
+        $order->ch_tracking_no = $generated;
+        $order->save();
+
+        return $generated;
+    }
+
+    private function generateAfHomeTrackingNumber(CheckoutHistory $order): string
+    {
+        $datePart = now()->format('Ymd');
+        $orderPart = str_pad((string) ((int) $order->ch_id), 4, '0', STR_PAD_LEFT);
+
+        return "AFH-{$datePart}-{$orderPart}";
     }
 
     private function normalizeReferralValue(string $value): string

@@ -359,6 +359,99 @@ class ProductController extends Controller
         return $this->inferRoomTypeFromCategory($category);
     }
 
+    private function resolveRoomTypeByName(?string $value): int
+    {
+        $name = strtolower(trim((string) ($value ?? '')));
+        if ($name === '') {
+            return 0;
+        }
+
+        $map = [
+            1 => ['bedroom', 'bed', 'mattress', 'pillow', 'dresser', 'night-table', 'wardrobe', 'cabinet'],
+            2 => ['kitchen', 'rice-cooker', 'coffee-maker', 'oven', 'toaster', 'pressure-cooker', 'grill', 'kettle', 'pots', 'pans', 'utensil'],
+            3 => ['living', 'sofa', 'leisure-chair', 'lounge-chair', 'ottoman', 'coffee-table', 'center-table', 'tv-rack', 'shelf'],
+            4 => ['outdoor', 'garden', 'patio'],
+            5 => ['study', 'office', 'desk', 'workstation', 'computer-table', 'office-chair'],
+            6 => ['dining', 'dining-room', 'dining-table', 'dining-chair', 'buffet'],
+            7 => ['laundry', 'laundry-room', 'washer', 'dryer', 'hamper'],
+            8 => ['bathroom', 'bath', 'toilet', 'shower', 'sink', 'vanity'],
+        ];
+
+        foreach ($map as $roomType => $keywords) {
+            foreach ($keywords as $keyword) {
+                if (str_contains($name, $keyword)) {
+                    return $roomType;
+                }
+            }
+        }
+
+        return 0;
+    }
+
+    private function resolveCategoryIdByName(?string $value): int
+    {
+        $name = trim((string) ($value ?? ''));
+        if ($name === '') {
+            return 0;
+        }
+
+        $category = Category::query()
+            ->where('cat_name', 'like', $name)
+            ->first();
+
+        if (!$category) {
+            $category = Category::query()
+                ->where('cat_name', 'like', '%' . $name . '%')
+                ->first();
+        }
+
+        return $category ? (int) $category->cat_id : 0;
+    }
+
+    private function resolveBrandIdByName(?string $value): int
+    {
+        $name = trim((string) ($value ?? ''));
+        if ($name === '') {
+            return 0;
+        }
+
+        $brand = ProductBrand::query()
+            ->where('pb_name', 'like', $name)
+            ->first();
+
+        if (!$brand) {
+            $brand = ProductBrand::query()
+                ->where('pb_name', 'like', '%' . $name . '%')
+                ->first();
+        }
+
+        return $brand ? (int) $brand->pb_id : 0;
+    }
+
+    private function roomTypeLabel(int $value): string
+    {
+        return match ($value) {
+            1 => 'Bedroom',
+            2 => 'Kitchen',
+            3 => 'Living Room',
+            4 => 'Outdoor',
+            5 => 'Study / Office',
+            6 => 'Dining',
+            7 => 'Laundry',
+            8 => 'Bathroom',
+            default => (string) $value,
+        };
+    }
+
+    private function categoryNameById(int $value): string
+    {
+        if ($value <= 0) {
+            return '';
+        }
+        $category = Category::query()->select(['cat_id', 'cat_name'])->find($value);
+        return $category ? (string) $category->cat_name : (string) $value;
+    }
+
     private function actorSupplierId(?Admin $admin, ?SupplierUser $supplierUser): int
     {
         if ($supplierUser) {
@@ -1501,6 +1594,476 @@ class ProductController extends Controller
             'message' => $failed > 0
                 ? 'Bulk price update finished with some row errors.'
                 : 'Bulk price update completed successfully.',
+            'summary' => [
+                'total' => count($rows),
+                'updated' => $updated,
+                'failed' => $failed,
+            ],
+            'results' => $results,
+        ]);
+    }
+
+    public function bulkUpdatePreview(Request $request): JsonResponse
+    {
+        $admin = $this->resolveAdmin($request);
+        $supplierUser = $this->resolveSupplierUser($request);
+
+        if ($admin && $this->roleFromLevel((int) $admin->user_level_id) === 'supplier_admin' && !$admin->supplier_id) {
+            return response()->json([
+                'message' => 'Supplier Admin account is not linked to a supplier company.',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'rows' => 'required|array|min:1|max:500',
+            'rows.*' => 'required|array',
+        ]);
+
+        $rows = $validated['rows'];
+        $results = [];
+        $failed = 0;
+
+        foreach ($rows as $index => $row) {
+            $rowNumber = $index + 1;
+            $sku = trim((string) ($row['sku'] ?? $row['pd_parent_sku'] ?? ''));
+            $id = (int) ($row['id'] ?? $row['pd_id'] ?? 0);
+
+            if ($sku === '' && $id <= 0) {
+                $failed++;
+                $results[] = [
+                    'row' => $rowNumber,
+                    'status' => 'failed',
+                    'product_id' => null,
+                    'sku' => $sku !== '' ? $sku : null,
+                    'name' => null,
+                    'message' => 'SKU or Product ID is required.',
+                ];
+                continue;
+            }
+
+            $updates = [];
+            if (array_key_exists('pd_name', $row)) {
+                $updates['pd_name'] = trim((string) $row['pd_name']);
+            }
+            if (array_key_exists('pd_catid', $row)) {
+                $updates['pd_catid'] = is_numeric($row['pd_catid'] ?? null)
+                    ? (int) ($row['pd_catid'] ?? 0)
+                    : $this->resolveCategoryIdByName((string) ($row['pd_catid'] ?? ''));
+            }
+            if (array_key_exists('pd_room_type', $row)) {
+                $updates['pd_room_type'] = is_numeric($row['pd_room_type'] ?? null)
+                    ? (int) ($row['pd_room_type'] ?? 0)
+                    : $this->resolveRoomTypeByName((string) ($row['pd_room_type'] ?? ''));
+            }
+            $rawCategoryInput = array_key_exists('pd_catid', $row) ? $row['pd_catid'] : null;
+            $rawRoomInput = array_key_exists('pd_room_type', $row) ? $row['pd_room_type'] : null;
+            if (array_key_exists('pd_material', $row)) {
+                $updates['pd_material'] = trim((string) $row['pd_material']);
+            }
+            if (array_key_exists('pd_price_srp', $row)) {
+                $updates['pd_price_srp'] = $this->toOptionalNumber($row['pd_price_srp']);
+            }
+            if (array_key_exists('pd_price_member', $row)) {
+                $updates['pd_price_member'] = $this->toOptionalNumber($row['pd_price_member']);
+            }
+            if (array_key_exists('pd_price_dp', $row)) {
+                $updates['pd_price_dp'] = $this->toOptionalNumber($row['pd_price_dp']);
+            }
+            if (array_key_exists('pd_qty', $row)) {
+                $updates['pd_qty'] = $this->toOptionalNumber($row['pd_qty']);
+            }
+            if (array_key_exists('pd_weight', $row)) {
+                $updates['pd_weight'] = $this->toOptionalNumber($row['pd_weight']);
+            }
+            if (array_key_exists('pd_pswidth', $row)) {
+                $updates['pd_pswidth'] = $this->toOptionalNumber($row['pd_pswidth']);
+            }
+            if (array_key_exists('pd_pslenght', $row)) {
+                $updates['pd_pslenght'] = $this->toOptionalNumber($row['pd_pslenght']);
+            }
+            if (array_key_exists('pd_psheight', $row)) {
+                $updates['pd_psheight'] = $this->toOptionalNumber($row['pd_psheight']);
+            }
+            if (array_key_exists('pd_psweight', $row)) {
+                $updates['pd_psweight'] = $this->toOptionalNumber($row['pd_psweight']);
+            }
+
+            if (count($updates) === 0) {
+                $failed++;
+                $results[] = [
+                    'row' => $rowNumber,
+                    'status' => 'failed',
+                    'product_id' => null,
+                    'sku' => $sku !== '' ? $sku : null,
+                    'name' => null,
+                    'message' => 'No editable fields provided.',
+                ];
+                continue;
+            }
+
+            $productQuery = Product::query();
+            if ($id > 0) {
+                $productQuery->where('pd_id', $id);
+            } else {
+                $productQuery->where('pd_parent_sku', $sku);
+            }
+            $this->scopeQueryToActor($productQuery, $admin, $supplierUser);
+            $product = $productQuery->first();
+
+            if (!$product) {
+                $failed++;
+                $results[] = [
+                    'row' => $rowNumber,
+                    'status' => 'failed',
+                    'product_id' => null,
+                    'sku' => $sku !== '' ? $sku : null,
+                    'name' => null,
+                    'message' => 'Product not found or not accessible.',
+                ];
+                continue;
+            }
+
+            if (array_key_exists('pd_catid', $updates)) {
+                $categoryId = (int) ($updates['pd_catid'] ?? 0);
+                if ($categoryId <= 0 || !Category::query()->where('cat_id', $categoryId)->exists()) {
+                    $failed++;
+                    $results[] = [
+                        'row' => $rowNumber,
+                        'status' => 'failed',
+                        'product_id' => (int) $product->pd_id,
+                        'sku' => $product->pd_parent_sku ?: null,
+                        'name' => $product->pd_name,
+                        'message' => 'Category not found.',
+                    ];
+                    continue;
+                }
+
+                $actorSupplierId = $this->actorSupplierId($admin, $supplierUser);
+                if ($actorSupplierId > 0 && !$this->supplierCanUseCategory($actorSupplierId, $categoryId)) {
+                    $failed++;
+                    $results[] = [
+                        'row' => $rowNumber,
+                        'status' => 'failed',
+                        'product_id' => (int) $product->pd_id,
+                        'sku' => $product->pd_parent_sku ?: null,
+                        'name' => $product->pd_name,
+                        'message' => 'This supplier is not allowed to use the selected category.',
+                    ];
+                    continue;
+                }
+            }
+
+            $numericKeys = [
+                'pd_price_srp',
+                'pd_price_member',
+                'pd_price_dp',
+                'pd_qty',
+                'pd_weight',
+                'pd_pswidth',
+                'pd_pslenght',
+                'pd_psheight',
+                'pd_psweight',
+            ];
+            foreach ($numericKeys as $key) {
+                if (array_key_exists($key, $updates) && $updates[$key] !== null && $updates[$key] < 0) {
+                    $failed++;
+                    $results[] = [
+                        'row' => $rowNumber,
+                        'status' => 'failed',
+                        'product_id' => (int) $product->pd_id,
+                        'sku' => $product->pd_parent_sku ?: null,
+                        'name' => $product->pd_name,
+                        'message' => 'Numeric values must be zero or greater.',
+                    ];
+                    continue 2;
+                }
+            }
+
+            $current = [
+                'pd_name' => $product->pd_name,
+                'pd_catid' => $this->categoryNameById((int) $product->pd_catid),
+                'pd_room_type' => $this->roomTypeLabel((int) ($product->pd_room_type ?? 0)),
+                'pd_material' => $product->pd_material,
+                'pd_price_srp' => (float) $product->pd_price_srp,
+                'pd_price_member' => $product->pd_price_member !== null ? (float) $product->pd_price_member : null,
+                'pd_price_dp' => (float) $product->pd_price_dp,
+                'pd_qty' => (float) $product->pd_qty,
+                'pd_weight' => (float) $product->pd_weight,
+                'pd_pswidth' => $product->pd_pswidth !== null ? (float) $product->pd_pswidth : null,
+                'pd_pslenght' => $product->pd_pslenght !== null ? (float) $product->pd_pslenght : null,
+                'pd_psheight' => $product->pd_psheight !== null ? (float) $product->pd_psheight : null,
+                'pd_psweight' => $product->pd_psweight !== null ? (float) $product->pd_psweight : null,
+            ];
+
+            $next = $updates;
+            if (array_key_exists('pd_catid', $next)) {
+                $next['pd_catid'] = is_numeric($rawCategoryInput ?? null)
+                    ? $this->categoryNameById((int) ($next['pd_catid'] ?? 0))
+                    : (string) ($rawCategoryInput ?? '');
+            }
+            if (array_key_exists('pd_room_type', $next)) {
+                $next['pd_room_type'] = is_numeric($rawRoomInput ?? null)
+                    ? $this->roomTypeLabel((int) ($next['pd_room_type'] ?? 0))
+                    : (string) ($rawRoomInput ?? '');
+            }
+
+            $results[] = [
+                'row' => $rowNumber,
+                'status' => 'ready',
+                'product_id' => (int) $product->pd_id,
+                'sku' => $product->pd_parent_sku ?: null,
+                'name' => $product->pd_name,
+                'current' => $current,
+                'next' => $next,
+                'message' => 'Ready for update.',
+            ];
+        }
+
+        return response()->json([
+            'message' => $failed > 0
+                ? 'Preview generated with some row errors.'
+                : 'Preview generated successfully.',
+            'summary' => [
+                'total' => count($rows),
+                'ready' => count($rows) - $failed,
+                'failed' => $failed,
+            ],
+            'results' => $results,
+        ]);
+    }
+
+    public function bulkUpdateApply(Request $request): JsonResponse
+    {
+        $admin = $this->resolveAdmin($request);
+        $supplierUser = $this->resolveSupplierUser($request);
+
+        if ($admin && $this->roleFromLevel((int) $admin->user_level_id) === 'supplier_admin' && !$admin->supplier_id) {
+            return response()->json([
+                'message' => 'Supplier Admin account is not linked to a supplier company.',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'rows' => 'required|array|min:1|max:500',
+            'rows.*' => 'required|array',
+        ]);
+
+        $rows = $validated['rows'];
+        $results = [];
+        $updated = 0;
+        $failed = 0;
+        $now = now();
+
+        foreach ($rows as $index => $row) {
+            $rowNumber = $index + 1;
+            $sku = trim((string) ($row['sku'] ?? $row['pd_parent_sku'] ?? ''));
+            $id = (int) ($row['id'] ?? $row['pd_id'] ?? 0);
+
+            if ($sku === '' && $id <= 0) {
+                $failed++;
+                $results[] = [
+                    'row' => $rowNumber,
+                    'status' => 'failed',
+                    'product_id' => null,
+                    'sku' => $sku !== '' ? $sku : null,
+                    'name' => null,
+                    'message' => 'SKU or Product ID is required.',
+                ];
+                continue;
+            }
+
+            $updates = [];
+            if (array_key_exists('pd_name', $row)) {
+                $updates['pd_name'] = trim((string) $row['pd_name']);
+            }
+            if (array_key_exists('pd_catid', $row)) {
+                $updates['pd_catid'] = is_numeric($row['pd_catid'] ?? null)
+                    ? (int) ($row['pd_catid'] ?? 0)
+                    : $this->resolveCategoryIdByName((string) ($row['pd_catid'] ?? ''));
+            }
+            if (array_key_exists('pd_room_type', $row)) {
+                $updates['pd_room_type'] = is_numeric($row['pd_room_type'] ?? null)
+                    ? (int) ($row['pd_room_type'] ?? 0)
+                    : $this->resolveRoomTypeByName((string) ($row['pd_room_type'] ?? ''));
+            }
+            if (array_key_exists('pd_material', $row)) {
+                $updates['pd_material'] = trim((string) $row['pd_material']);
+            }
+            if (array_key_exists('pd_price_srp', $row)) {
+                $updates['pd_price_srp'] = $this->toOptionalNumber($row['pd_price_srp']);
+            }
+            if (array_key_exists('pd_price_member', $row)) {
+                $updates['pd_price_member'] = $this->toOptionalNumber($row['pd_price_member']);
+            }
+            if (array_key_exists('pd_price_dp', $row)) {
+                $updates['pd_price_dp'] = $this->toOptionalNumber($row['pd_price_dp']);
+            }
+            if (array_key_exists('pd_qty', $row)) {
+                $updates['pd_qty'] = $this->toOptionalNumber($row['pd_qty']);
+            }
+            if (array_key_exists('pd_weight', $row)) {
+                $updates['pd_weight'] = $this->toOptionalNumber($row['pd_weight']);
+            }
+            if (array_key_exists('pd_pswidth', $row)) {
+                $updates['pd_pswidth'] = $this->toOptionalNumber($row['pd_pswidth']);
+            }
+            if (array_key_exists('pd_pslenght', $row)) {
+                $updates['pd_pslenght'] = $this->toOptionalNumber($row['pd_pslenght']);
+            }
+            if (array_key_exists('pd_psheight', $row)) {
+                $updates['pd_psheight'] = $this->toOptionalNumber($row['pd_psheight']);
+            }
+            if (array_key_exists('pd_psweight', $row)) {
+                $updates['pd_psweight'] = $this->toOptionalNumber($row['pd_psweight']);
+            }
+
+            if (count($updates) === 0) {
+                $failed++;
+                $results[] = [
+                    'row' => $rowNumber,
+                    'status' => 'failed',
+                    'product_id' => null,
+                    'sku' => $sku !== '' ? $sku : null,
+                    'name' => null,
+                    'message' => 'No editable fields provided.',
+                ];
+                continue;
+            }
+
+            $productQuery = Product::query();
+            if ($id > 0) {
+                $productQuery->where('pd_id', $id);
+            } else {
+                $productQuery->where('pd_parent_sku', $sku);
+            }
+            $this->scopeQueryToActor($productQuery, $admin, $supplierUser);
+            $product = $productQuery->first();
+
+            if (!$product) {
+                $failed++;
+                $results[] = [
+                    'row' => $rowNumber,
+                    'status' => 'failed',
+                    'product_id' => null,
+                    'sku' => $sku !== '' ? $sku : null,
+                    'name' => null,
+                    'message' => 'Product not found or not accessible.',
+                ];
+                continue;
+            }
+
+            if (array_key_exists('pd_catid', $updates)) {
+                $categoryId = (int) ($updates['pd_catid'] ?? 0);
+                if ($categoryId <= 0 || !Category::query()->where('cat_id', $categoryId)->exists()) {
+                    $failed++;
+                    $results[] = [
+                        'row' => $rowNumber,
+                        'status' => 'failed',
+                        'product_id' => (int) $product->pd_id,
+                        'sku' => $product->pd_parent_sku ?: null,
+                        'name' => $product->pd_name,
+                        'message' => 'Category not found.',
+                    ];
+                    continue;
+                }
+
+                $actorSupplierId = $this->actorSupplierId($admin, $supplierUser);
+                if ($actorSupplierId > 0 && !$this->supplierCanUseCategory($actorSupplierId, $categoryId)) {
+                    $failed++;
+                    $results[] = [
+                        'row' => $rowNumber,
+                        'status' => 'failed',
+                        'product_id' => (int) $product->pd_id,
+                        'sku' => $product->pd_parent_sku ?: null,
+                        'name' => $product->pd_name,
+                        'message' => 'This supplier is not allowed to use the selected category.',
+                    ];
+                    continue;
+                }
+            }
+
+            if (array_key_exists('pd_brand_type', $updates)) {
+                $brandType = (int) ($updates['pd_brand_type'] ?? 0);
+                if ($brandType > 0 && !ProductBrand::query()->where('pb_id', $brandType)->exists()) {
+                    $failed++;
+                    $results[] = [
+                        'row' => $rowNumber,
+                        'status' => 'failed',
+                        'product_id' => (int) $product->pd_id,
+                        'sku' => $product->pd_parent_sku ?: null,
+                        'name' => $product->pd_name,
+                        'message' => 'The selected brand does not exist.',
+                    ];
+                    continue;
+                }
+            }
+
+            $numericKeys = [
+                'pd_price_srp',
+                'pd_price_member',
+                'pd_price_dp',
+                'pd_qty',
+                'pd_weight',
+                'pd_pswidth',
+                'pd_pslenght',
+                'pd_psheight',
+                'pd_psweight',
+            ];
+            foreach ($numericKeys as $key) {
+                if (array_key_exists($key, $updates) && $updates[$key] !== null && $updates[$key] < 0) {
+                    $failed++;
+                    $results[] = [
+                        'row' => $rowNumber,
+                        'status' => 'failed',
+                        'product_id' => (int) $product->pd_id,
+                        'sku' => $product->pd_parent_sku ?: null,
+                        'name' => $product->pd_name,
+                        'message' => 'Numeric values must be zero or greater.',
+                    ];
+                    continue 2;
+                }
+            }
+
+            try {
+                $beforeProduct = clone $product;
+
+                foreach ($updates as $key => $value) {
+                    $product->{$key} = $value;
+                }
+                $product->pd_last_update = $now;
+                $product->save();
+
+                $changes = $this->buildProductChangeLog($beforeProduct, $product);
+                $this->recordProductActivity('updated', $product, $admin, $supplierUser, $product->pd_name, $product->pd_parent_sku, $changes);
+
+                $updated++;
+                $results[] = [
+                    'row' => $rowNumber,
+                    'status' => 'updated',
+                    'product_id' => (int) $product->pd_id,
+                    'sku' => $product->pd_parent_sku ?: null,
+                    'name' => $product->pd_name,
+                    'message' => 'Product updated.',
+                ];
+            } catch (\Throwable $e) {
+                $failed++;
+                $this->recordFailedProductActivity('updated', $admin, $supplierUser, $product, $product->pd_name, $product->pd_parent_sku);
+
+                $results[] = [
+                    'row' => $rowNumber,
+                    'status' => 'failed',
+                    'product_id' => (int) $product->pd_id,
+                    'sku' => $product->pd_parent_sku ?: null,
+                    'name' => $product->pd_name,
+                    'message' => $e->getMessage(),
+                ];
+            }
+        }
+
+        return response()->json([
+            'message' => $failed > 0
+                ? 'Bulk update finished with some row errors.'
+                : 'Bulk update completed successfully.',
             'summary' => [
                 'total' => count($rows),
                 'updated' => $updated,

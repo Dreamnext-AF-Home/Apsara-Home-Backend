@@ -44,7 +44,7 @@
                 Purchase Order Confirmed
               </h1>
               <p style="margin:0;font-size:14px;color:#ffedd5;font-weight:400;">
-                Your payment has been received. Thank you for shopping with AF Home.
+                Your payment has been received and your order is waiting for admin approval.
               </p>
             </td>
           </tr>
@@ -55,7 +55,7 @@
                 Hi <strong>{{ $payload['customer_name'] ?? 'Valued Customer' }}</strong>,
               </p>
               <p style="margin:0 0 24px;font-size:14px;color:#64748b;line-height:1.6;">
-                Your purchase order is now in our processing queue. Here are the order details:
+                Your payment is confirmed, and your order is currently pending approval. Here are the order details:
               </p>
             </td>
           </tr>
@@ -128,8 +128,8 @@
                 <tr>
                   <td style="padding:12px 16px;font-size:12px;color:#94a3b8;">Status</td>
                   <td style="padding:12px 16px;font-size:13px;">
-                    <span style="display:inline-block;background:#dcfce7;color:#16a34a;font-size:11px;font-weight:700;padding:3px 10px;border-radius:999px;text-transform:uppercase;letter-spacing:0.5px;">
-                      &#10003;&nbsp;{{ strtoupper($payload['status'] ?? 'PAID') }}
+                    <span style="display:inline-block;background:#fef3c7;color:#92400e;font-size:11px;font-weight:700;padding:3px 10px;border-radius:999px;text-transform:uppercase;letter-spacing:0.5px;">
+                      &#9719;&nbsp;{{ strtoupper($payload['order_status_label'] ?? 'PENDING APPROVAL') }}
                     </span>
                   </td>
                 </tr>
@@ -161,7 +161,7 @@
                   <td>
                     <p style="margin:0 0 6px;font-size:12px;font-weight:700;color:#ea580c;text-transform:uppercase;letter-spacing:0.5px;">What happens next?</p>
                     <p style="margin:0;font-size:13px;color:#475569;line-height:1.6;">
-                      Our team will review and process your order. You will receive another email once your item is ready for delivery.
+                      Our team will review your order first. Once it is approved, you will receive a separate status update email.
                     </p>
                   </td>
                 </tr>

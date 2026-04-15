@@ -29,7 +29,11 @@ use App\Http\Controllers\Api\InteriorRequestController;
 use App\Http\Controllers\Api\JntWebhookController;
 use App\Http\Controllers\Api\AdminInquiryController;
 use App\Http\Controllers\Api\PartnerUserController;
+<<<<<<< HEAD
 use App\Http\Controllers\Api\CartController;
+=======
+use App\Http\Controllers\Api\AdminSettingsController;
+>>>>>>> 1d07d3d2590a402097cf233786ed2be0d07c49ff
 
 
 // Public auth routes
@@ -57,7 +61,9 @@ Route::get('/products/{id}', [ProductController::class, 'show']);
 Route::get('/products', [ProductController::class, 'index']);
 Route::get('/product-brands', [ProductBrandController::class, 'publicIndex']);
 Route::get('/web-pages/home', [WebPageController::class, 'home']);
+Route::get('/web-pages/adds-content', [AddsContentController::class, 'publicIndex']);
 Route::get('/web-pages/{type}', [WebPageController::class, 'publicIndex']);
+Route::get('/settings/general', [AdminSettingsController::class, 'publicGeneral']);
 Route::get('/address/regions', [AddressController::class, 'regions']);
 Route::get('/address/provinces', [AddressController::class, 'provinces']);
 Route::get('/address/cities', [AddressController::class, 'cities']);
@@ -125,10 +131,13 @@ Route::middleware(['auth:sanctum', 'admin.or_supplier'])->group(function () {
     Route::post('/admin/products/import', [ProductController::class, 'import']);
     Route::post('/admin/products/bulk-price/preview', [ProductController::class, 'bulkPricePreview']);
     Route::post('/admin/products/bulk-price/apply', [ProductController::class, 'bulkPriceApply']);
+    Route::post('/admin/products/bulk-update/preview', [ProductController::class, 'bulkUpdatePreview']);
+    Route::post('/admin/products/bulk-update/apply', [ProductController::class, 'bulkUpdateApply']);
     Route::get('/admin/webpages/adds-content', [AddsContentController::class, 'index']);
     Route::post('/admin/webpages/adds-content', [AddsContentController::class, 'store']);
     Route::patch('/admin/webpages/adds-content/{id}', [AddsContentController::class, 'update']);
     Route::patch('/admin/webpages/adds-content/{id}/status', [AddsContentController::class, 'updateStatus']);
+    Route::delete('/admin/webpages/adds-content/{id}', [AddsContentController::class, 'destroy']);
     Route::put('/admin/products/{id}', [ProductController::class, 'update']);
     Route::delete('/admin/products/{id}', [ProductController::class, 'destroy']);
     Route::get('/admin/product-brands', [ProductBrandController::class, 'index']);
@@ -147,6 +156,8 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,merchant_admin,
 });
 
 Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin'])->group(function () {
+    Route::get('/admin/settings/general', [\App\Http\Controllers\Api\AdminSettingsController::class, 'showGeneral']);
+    Route::post('/admin/settings/general', [\App\Http\Controllers\Api\AdminSettingsController::class, 'updateGeneral']);
     Route::post('/admin/members/{id}/temporary-password', [MemberController::class, 'generateTemporaryPassword']);
     Route::post('/admin/suppliers', [SupplierController::class, 'store']);
     Route::put('/admin/suppliers/{id}', [SupplierController::class, 'update']);
@@ -169,6 +180,7 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,csr,merchant_ad
     Route::patch('/admin/orders/{id}/approve', [AdminOrderController::class, 'approve']);
     Route::patch('/admin/orders/{id}/reject', [AdminOrderController::class, 'reject']);
     Route::patch('/admin/orders/{id}/status', [AdminOrderController::class, 'updateStatus']);
+    Route::patch('/admin/orders/{id}/fulfillment-mode', [AdminOrderController::class, 'updateFulfillmentMode']);
     Route::patch('/admin/orders/{id}/shipment-status', [AdminOrderController::class, 'updateShipmentStatus']);
     Route::post('/admin/orders/{id}/zq/push', [AdminOrderController::class, 'pushToZq']);
     Route::get('/admin/orders/{id}/zq/detail', [AdminOrderController::class, 'fetchZqDetail']);
