@@ -90,6 +90,25 @@ class WebPageController extends Controller
             $query->whereIn('wpc_id', $allowedStorefrontIds);
         }
 
+        if ($resolvedType === 'shop-builder') {
+            $items = $this->dedupeItemsByKey(
+                $query->get()->map(fn (WebPageContent $item) => $this->transform($item)),
+                $resolvedType,
+            )->values();
+
+            return response()->json([
+                'items' => $items,
+                'meta' => [
+                    'current_page' => 1,
+                    'last_page' => 1,
+                    'per_page' => $items->count(),
+                    'total' => $items->count(),
+                    'from' => $items->isEmpty() ? null : 1,
+                    'to' => $items->count(),
+                ],
+            ]);
+        }
+
         $rows = $query->paginate($perPage);
 
         return response()->json([
@@ -118,6 +137,36 @@ class WebPageController extends Controller
         }
 
         $validated = $this->validatePayload($request);
+
+        if ($resolvedType === 'shop-builder' && ! empty($validated['key'])) {
+            $existing = WebPageContent::query()
+                ->where('wpc_type', $resolvedType)
+                ->where('wpc_key', $validated['key'])
+                ->orderByDesc('wpc_id')
+                ->first();
+
+            if ($existing) {
+                $existing->fill([
+                    'wpc_title' => $validated['title'] ?? null,
+                    'wpc_subtitle' => $validated['subtitle'] ?? null,
+                    'wpc_body' => $validated['body'] ?? null,
+                    'wpc_image_url' => $validated['image_url'] ?? null,
+                    'wpc_link_url' => $validated['link_url'] ?? null,
+                    'wpc_button_text' => $validated['button_text'] ?? null,
+                    'wpc_payload' => $validated['payload'] ?? null,
+                    'wpc_sort' => (int) ($validated['sort_order'] ?? 0),
+                    'wpc_status' => (bool) ($validated['is_active'] ?? true),
+                    'wpc_start_at' => $validated['start_at'] ?? null,
+                    'wpc_end_at' => $validated['end_at'] ?? null,
+                ]);
+                $existing->save();
+
+                return response()->json([
+                    'message' => 'Web content item updated successfully.',
+                    'item' => $this->transform($existing),
+                ]);
+            }
+        }
 
         $item = WebPageContent::query()->create([
             'wpc_type' => $resolvedType,
@@ -258,7 +307,8 @@ class WebPageController extends Controller
     {
         $now = now();
 
-        return WebPageContent::query()
+        return $this->dedupeItemsByKey(
+            WebPageContent::query()
             ->where('wpc_type', $type)
             ->where('wpc_status', true)
             ->where(function ($query) use ($now) {
@@ -272,8 +322,9 @@ class WebPageController extends Controller
             ->orderBy('wpc_sort')
             ->orderByDesc('wpc_id')
             ->get()
-            ->map(fn (WebPageContent $item) => $this->transform($item))
-            ->values();
+            ->map(fn (WebPageContent $item) => $this->transform($item)),
+            $type,
+        )->values();
     }
 
     private function validatePayload(Request $request, bool $partial = false): array
@@ -315,5 +366,17 @@ class WebPageController extends Controller
             'created_at' => optional($item->created_at)->toDateTimeString(),
             'updated_at' => optional($item->updated_at)->toDateTimeString(),
         ];
+    }
+
+    private function dedupeItemsByKey($items, string $type)
+    {
+        if ($type !== 'shop-builder') {
+            return $items;
+        }
+
+        return $items->unique(function (array $item) {
+            $key = trim((string) ($item['key'] ?? ''));
+            return $key !== '' ? $key : 'id:' . (string) ($item['id'] ?? '');
+        });
     }
 }
