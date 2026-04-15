@@ -8,6 +8,7 @@ use App\Http\Middleware\EnsureAdminOrSupplierActor;
 use App\Http\Middleware\EnsureAdminRole;
 use App\Http\Middleware\EnsureCustomerActor;
 use App\Http\Middleware\EnsureSupplierActor;
+use App\Http\Middleware\JsonAuthentication;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -23,8 +24,13 @@ return Application::configure(basePath: dirname(__DIR__))
             'admin.role' => EnsureAdminRole::class,
             'customer.actor' => EnsureCustomerActor::class,
             'supplier.actor' => EnsureSupplierActor::class,
+            'auth.json' => JsonAuthentication::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        //
+        $exceptions->render(function (\Illuminate\Auth\AuthenticationException $e, \Illuminate\Http\Request $request) {
+            if ($request->expectsJson()) {
+                return response()->json(['message' => 'Unauthenticated.'], 401);
+            }
+        });
     })->create();
