@@ -31,11 +31,8 @@ use App\Http\Controllers\Api\AdminInquiryController;
 use App\Http\Controllers\Api\PartnerUserController;
 use App\Http\Controllers\Api\CartController;
 use App\Http\Controllers\Api\AdminSettingsController;
-<<<<<<< HEAD
-=======
 use App\Http\Controllers\Api\ExpenseCategoryController;
 use App\Http\Controllers\Api\ExpenseController;
->>>>>>> 5578160f5b60b6d629da3bc3621a2c238558e6de
 
 
 // Public auth routes
