@@ -31,6 +31,7 @@ use App\Http\Controllers\Api\AdminInquiryController;
 use App\Http\Controllers\Api\PartnerUserController;
 use App\Http\Controllers\Api\CartController;
 use App\Http\Controllers\Api\AdminSettingsController;
+use App\Http\Controllers\Api\AdminPaymentController;
 use App\Http\Controllers\Api\ExpenseCategoryController;
 use App\Http\Controllers\Api\ExpenseController;
 
@@ -201,6 +202,7 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,csr,merchant_ad
 });
 
 Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,accounting,finance_officer'])->group(function () {
+    Route::get('/admin/payments/overview', [AdminPaymentController::class, 'overview']);
     Route::get('/admin/encashment', [AdminEncashmentController::class, 'index']);
     Route::patch('/admin/encashment/{id}/approve', [AdminEncashmentController::class, 'approve']);
     Route::patch('/admin/encashment/{id}/reject', [AdminEncashmentController::class, 'reject']);

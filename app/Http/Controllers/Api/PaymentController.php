@@ -8,6 +8,7 @@ use App\Mail\Checkout\CheckoutCompletedMail;
 use App\Models\CheckoutHistory;
 use App\Models\ProductReview;
 use App\Models\Product;
+use App\Models\SystemSetting;
 use App\Support\DirectReferralCommission;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -36,6 +37,10 @@ class PaymentController extends Controller
 
     private function requestCanUseTestPaymongoMode(?Request $request = null): bool
     {
+        if ($this->systemAllowsTestPayments()) {
+            return true;
+        }
+
         if ($request === null) {
             return $this->isLocalPaymentEnvironment();
         }
@@ -55,6 +60,15 @@ class PaymentController extends Controller
         return false;
     }
 
+    private function systemAllowsTestPayments(): bool
+    {
+        if (!Schema::hasTable('tbl_system_settings') || !Schema::hasColumn('tbl_system_settings', 'enable_test_payments')) {
+            return false;
+        }
+
+        return (bool) (SystemSetting::query()->value('enable_test_payments') ?? false);
+    }
+
     private function paymongoDefaultMode(): string
     {
         $mode = strtolower((string) config('services.paymongo.default_mode', 'live'));
@@ -63,7 +77,7 @@ class PaymentController extends Controller
 
     private function canSwitchPaymongoMode(): bool
     {
-        return (bool) config('services.paymongo.allow_mode_switch', false);
+        return (bool) config('services.paymongo.allow_mode_switch', false) || $this->systemAllowsTestPayments();
     }
 
     private function resolveRequestedPaymongoMode(?string $requestedMode = null, ?Request $request = null): string

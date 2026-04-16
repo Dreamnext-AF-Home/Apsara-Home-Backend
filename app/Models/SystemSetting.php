@@ -28,6 +28,7 @@ class SystemSetting extends Model
         'email_notifications',
         'sms_notifications',
         'admin_alerts',
+        'enable_test_payments',
     ];
 
     protected $casts = [
@@ -35,5 +36,6 @@ class SystemSetting extends Model
         'email_notifications' => 'boolean',
         'sms_notifications' => 'boolean',
         'admin_alerts' => 'boolean',
+        'enable_test_payments' => 'boolean',
     ];
 }
