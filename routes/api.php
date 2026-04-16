@@ -113,6 +113,7 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::post('/search/history', [ProductController::class, 'saveSearchHistory']);
     Route::get('/search/history', [ProductController::class, 'getSearchHistory']);
     Route::delete('/search/history', [ProductController::class, 'clearSearchHistory']);
+    Route::delete('/search/history/{id}', [ProductController::class, 'deleteSearchHistory']);
 });
 
 Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,csr'])->group(function () {
