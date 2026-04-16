@@ -741,6 +741,7 @@ class ProductController extends Controller
             'pd_material' => 'Material',
             'pd_warranty' => 'Warranty',
             'pd_image' => 'Primary Image',
+            'pd_manual_checkout_enabled' => 'Manual Checkout',
         ];
 
         $changes = [];
@@ -955,6 +956,7 @@ class ProductController extends Controller
             'musthave'    => (bool)  $p->pd_musthave,
             'bestseller'  => (bool)  $p->pd_bestseller,
             'salespromo'  => (bool)  $p->pd_salespromo,
+            'manualCheckoutEnabled' => (bool) ($p->pd_manual_checkout_enabled ?? false),
             'status'      => (int)   $p->pd_status,
             'sku'         => (string) ($p->pd_parent_sku ?? ''),
             'uploaderName' => $p->creationActivity?->pal_actor_name ? (string) $p->creationActivity->pal_actor_name : null,
@@ -985,7 +987,7 @@ class ProductController extends Controller
                 'pd_prodpv',
                 'pd_weight', 'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
                 'pd_assembly_required', 'pd_type', 'pd_musthave',
-                'pd_bestseller', 'pd_salespromo', 'pd_status', 'pd_date',
+                'pd_bestseller', 'pd_salespromo', 'pd_manual_checkout_enabled', 'pd_status', 'pd_date',
                 'pd_last_update', 'pd_parent_sku', 'pd_image',
             ])
             ->with([
@@ -1013,16 +1015,17 @@ class ProductController extends Controller
         $product = Product::query()
             ->select([
                 'pd_id', 'pd_name', 'pd_description', 'pd_specifications', 'pd_material', 'pd_warranty',
-                'pd_catid', 'pd_catsubid', 'pd_room_type', 'pd_supplier',
+                'pd_catid', 'pd_catsubid', 'pd_room_type', 'pd_brand_type', 'pd_supplier',
                 'pd_price_srp', 'pd_price_dp', 'pd_price_member', 'pd_qty',
                 'pd_prodpv',
                 'pd_weight', 'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
                 'pd_assembly_required', 'pd_type', 'pd_musthave',
-                'pd_bestseller', 'pd_salespromo', 'pd_status', 'pd_date',
+                'pd_bestseller', 'pd_salespromo', 'pd_manual_checkout_enabled', 'pd_status', 'pd_date',
                 'pd_last_update', 'pd_parent_sku', 'pd_image',
             ])
             ->with([
                 'photos:pp_id,pp_pdid,pp_filename,pp_varone,pp_date',
+                'brand:pb_id,pb_name,pb_status',
                 'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_style,pv_width,pv_dimension,pv_height,pv_price_srp,pv_price_dp,pv_price_member,pv_prodpv,pv_qty,pv_status,pv_date',
                 'variants.photos:pvp_id,pvp_pvid,pvp_filename,pvp_sort,pvp_date',
             ])
@@ -1060,7 +1063,7 @@ class ProductController extends Controller
                     'pd_prodpv',
                     'pd_weight', 'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
                     'pd_assembly_required', 'pd_type', 'pd_musthave',
-                    'pd_bestseller', 'pd_salespromo', 'pd_status', 'pd_date',
+                    'pd_bestseller', 'pd_salespromo', 'pd_manual_checkout_enabled', 'pd_status', 'pd_date',
                     'pd_last_update', 'pd_parent_sku', 'pd_image',
                 ])
                 ->with([
@@ -2073,6 +2076,118 @@ class ProductController extends Controller
         ]);
     }
 
+    public function manualCheckoutApply(Request $request): JsonResponse
+    {
+        $admin = $this->resolveAdmin($request);
+        $supplierUser = $this->resolveSupplierUser($request);
+
+        if ($admin && $this->roleFromLevel((int) $admin->user_level_id) === 'supplier_admin' && !$admin->supplier_id) {
+            return response()->json([
+                'message' => 'Supplier Admin account is not linked to a supplier company.',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'product_ids' => 'required|array|min:1|max:5000',
+            'product_ids.*' => 'required|integer|min:1',
+            'enabled' => 'nullable|boolean',
+        ]);
+
+        $productIds = collect($validated['product_ids'])
+            ->map(fn ($id) => (int) $id)
+            ->filter(fn ($id) => $id > 0)
+            ->unique()
+            ->values();
+
+        if ($productIds->isEmpty()) {
+            return response()->json([
+                'message' => 'No valid products were selected.',
+            ], 422);
+        }
+
+        $enabled = (bool) ($validated['enabled'] ?? true);
+        $results = [];
+        $updated = 0;
+        $failed = 0;
+        $now = now();
+
+        $query = Product::query()
+            ->whereIn('pd_id', $productIds->all())
+            ->with('brand:pb_id,pb_name,pb_status');
+        $this->scopeQueryToActor($query, $admin, $supplierUser);
+
+        $products = $query->get()->keyBy('pd_id');
+
+        foreach ($productIds as $productId) {
+            /** @var Product|null $product */
+            $product = $products->get($productId);
+
+            if (! $product) {
+                $failed++;
+                $results[] = [
+                    'product_id' => $productId,
+                    'status' => 'failed',
+                    'name' => null,
+                    'message' => 'Product not found or not accessible.',
+                ];
+                continue;
+            }
+
+            $brandName = strtolower(trim((string) ($product->brand?->pb_name ?? '')));
+            if ($brandName !== 'affordahome') {
+                $failed++;
+                $results[] = [
+                    'product_id' => (int) $product->pd_id,
+                    'status' => 'failed',
+                    'name' => $product->pd_name,
+                    'message' => 'Only Affordahome products can be assigned to manual checkout.',
+                ];
+                continue;
+            }
+
+            try {
+                $beforeProduct = clone $product;
+                $product->pd_manual_checkout_enabled = $enabled ? 1 : 0;
+                $product->pd_last_update = $now;
+                $product->save();
+
+                $changes = $this->buildProductChangeLog($beforeProduct, $product);
+                $this->recordProductActivity('updated', $product, $admin, $supplierUser, $product->pd_name, $product->pd_parent_sku, $changes);
+
+                $updated++;
+                $results[] = [
+                    'product_id' => (int) $product->pd_id,
+                    'status' => 'updated',
+                    'name' => $product->pd_name,
+                    'message' => $enabled
+                        ? 'Added to manual checkout.'
+                        : 'Removed from manual checkout.',
+                ];
+            } catch (\Throwable $e) {
+                $failed++;
+                $this->recordFailedProductActivity('updated', $admin, $supplierUser, $product, $product->pd_name, $product->pd_parent_sku);
+                $results[] = [
+                    'product_id' => (int) $product->pd_id,
+                    'status' => 'failed',
+                    'name' => $product->pd_name,
+                    'message' => $e->getMessage(),
+                ];
+            }
+        }
+
+        return response()->json([
+            'message' => $failed > 0
+                ? 'Manual checkout assignment finished with some row errors.'
+                : 'Selected products were added to manual checkout.',
+            'summary' => [
+                'total' => $productIds->count(),
+                'updated' => $updated,
+                'failed' => $failed,
+            ],
+            'results' => $results,
+        ]);
+    }
+
     public function store(Request $request): JsonResponse
     {
         $admin = $this->resolveAdmin($request);
@@ -2110,6 +2225,7 @@ class ProductController extends Controller
             'pd_musthave'    => 'nullable|boolean',
             'pd_bestseller'  => 'nullable|boolean',
             'pd_salespromo'  => 'nullable|boolean',
+            'pd_manual_checkout_enabled' => 'nullable|boolean',
             'pd_status'      => 'nullable|integer|in:0,1,2',
             'pd_image'       => 'nullable|string|max:500',
             'pd_images'      => 'nullable|array',
@@ -2208,6 +2324,7 @@ class ProductController extends Controller
                     'pd_musthave'    => $request->boolean('pd_musthave') ? 1 : 0,
                     'pd_bestseller'  => $request->boolean('pd_bestseller') ? 1 : 0,
                     'pd_salespromo'  => $request->boolean('pd_salespromo') ? 1 : 0,
+                    'pd_manual_checkout_enabled' => $request->boolean('pd_manual_checkout_enabled') ? 1 : 0,
                     'pd_user'        => 0,
                     'pd_usertype'    => 0,
                     'pd_date'        => $now,
@@ -2342,6 +2459,7 @@ class ProductController extends Controller
             'pd_musthave'    => 'nullable|boolean',
             'pd_bestseller'  => 'nullable|boolean',
             'pd_salespromo'  => 'nullable|boolean',
+            'pd_manual_checkout_enabled' => 'nullable|boolean',
             'pd_status'      => 'nullable|integer|in:0,1,2',
             'pd_image'       => 'nullable|string|max:500',
             'pd_images'      => 'nullable|array',
@@ -2403,6 +2521,7 @@ class ProductController extends Controller
             'pd_price_srp', 'pd_price_dp', 'pd_price_member', 'pd_prodpv', 'pd_qty', 'pd_weight',
             'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
             'pd_parent_sku', 'pd_type', 'pd_status',
+            'pd_manual_checkout_enabled',
         ];
         $product->loadMissing('photos:pp_id,pp_pdid,pp_filename,pp_varone,pp_date');
         $beforeProduct = clone $product;
@@ -2444,6 +2563,9 @@ class ProductController extends Controller
                 }
                 if ($request->has('pd_assembly_required')) {
                     $product->pd_assembly_required = $request->boolean('pd_assembly_required') ? 1 : 0;
+                }
+                if ($request->has('pd_manual_checkout_enabled')) {
+                    $product->pd_manual_checkout_enabled = $request->boolean('pd_manual_checkout_enabled') ? 1 : 0;
                 }
 
                 try {

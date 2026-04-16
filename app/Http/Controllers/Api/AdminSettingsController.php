@@ -42,6 +42,7 @@ class AdminSettingsController extends Controller
             'date_format' => 'nullable|string|max:40',
             'language' => 'nullable|string|max:40',
             'enable_test_payments' => 'nullable|boolean',
+            'enable_manual_checkout_mode' => 'nullable|boolean',
             'logo' => 'nullable|image|max:5120',
             'favicon' => 'nullable|image|max:2048',
         ]);
@@ -78,6 +79,7 @@ class AdminSettingsController extends Controller
             'date_format',
             'language',
             'enable_test_payments',
+            'enable_manual_checkout_mode',
         ] as $field) {
             if (array_key_exists($field, $validated)) {
                 $settings->{$field} = $validated[$field];
@@ -178,6 +180,7 @@ class AdminSettingsController extends Controller
             'date_format' => $settings?->date_format ?? 'MM/DD/YYYY',
             'language' => $settings?->language ?? 'English',
             'enable_test_payments' => (bool)($settings?->enable_test_payments ?? false),
+            'enable_manual_checkout_mode' => (bool)($settings?->enable_manual_checkout_mode ?? false),
             'updated_at' => optional($settings?->updated_at)->toDateTimeString(),
         ];
     }
