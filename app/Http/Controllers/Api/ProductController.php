@@ -14,6 +14,7 @@ use App\Models\ProductBrand;
 use App\Models\Supplier;
 use App\Models\SupplierCategoryAccess;
 use App\Models\SupplierUser;
+use App\Models\SearchHistory;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -33,6 +34,50 @@ class ProductController extends Controller
     private function applyPublicVisibility($query)
     {
         return $query->whereIn('pd_status', [1, 2]);
+    }
+
+    public function saveSearchHistory(Request $request): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'query' => 'required|string|max:255',
+        ]);
+
+        if ($validator->fails()) {
+            return $this->validationErrorResponse($validator);
+        }
+
+        try {
+            $customerId = auth('sanctum')->id();
+
+            SearchHistory::create([
+                'sh_customer_id' => $customerId,
+                'sh_query' => $request->input('query'),
+            ]);
+
+            return response()->json(['message' => 'Search history saved successfully.']);
+        } catch (\Exception $e) {
+            return response()->json(['message' => 'Failed to save search history.'], 500);
+        }
+    }
+
+    public function getSearchHistory(Request $request): JsonResponse
+    {
+        $customerId = auth('sanctum')->id();
+        $limit = $request->input('limit', 10);
+        $limit = min((int) $limit, 50);
+
+        $searchHistory = SearchHistory::where('sh_customer_id', $customerId)
+            ->orderBy('sh_date_created', 'desc')
+            ->limit($limit)
+            ->get();
+
+        return response()->json([
+            'data' => $searchHistory->map(fn ($history) => [
+                'id' => (int) $history->sh_id,
+                'query' => (string) $history->sh_query,
+                'date_created' => $history->sh_date_created->format('Y-m-d H:i:s'),
+            ]),
+        ]);
     }
 
     public function reviews(int $id): JsonResponse
@@ -1036,6 +1081,67 @@ class ProductController extends Controller
 
         return response()->json([
             'product' => $this->mapProduct($product),
+        ]);
+    }
+
+    public function brand(int $id): JsonResponse
+    {
+        $product = Product::query()
+            ->select(['pd_id', 'pd_brand_type', 'pd_supplier'])
+            ->with('brand')
+            ->tap(fn ($query) => $this->applyPublicVisibility($query))
+            ->where('pd_id', $id)
+            ->first();
+
+        if (! $product) {
+            return response()->json(['message' => 'Product not found.'], 404);
+        }
+
+        if (! $product->brand) {
+            return response()->json(['message' => 'Brand not found for this product.'], 404);
+        }
+
+        $joinedDate = null;
+        if ($product->pd_supplier) {
+            $supplierUser = DB::table('tbl_supplier_user')
+                ->where('su_supplier', $product->pd_supplier)
+                ->select('su_date_created')
+                ->first();
+
+            if ($supplierUser && $supplierUser->su_date_created) {
+                $joinedDate = (string) $supplierUser->su_date_created;
+            }
+        }
+
+        $ratingRow = DB::table('tbl_product_reviews')
+            ->where('pr_product_id', $id)
+            ->selectRaw('AVG(pr_rating) as avg_rating, COUNT(*) as review_count')
+            ->first();
+
+        $overallRating = $ratingRow && $ratingRow->avg_rating !== null
+            ? round((float) $ratingRow->avg_rating, 1)
+            : null;
+
+        $totalReviews = $ratingRow ? (int) $ratingRow->review_count : 0;
+
+        $totalProducts = DB::table('tbl_product')
+            ->where('pd_brand_type', $product->pd_brand_type)
+            ->whereIn('pd_status', [1, 2])
+            ->count();
+
+        return response()->json([
+            'brand' => [
+                'id' => (int) $product->brand->pb_id,
+                'name' => (string) ($product->brand->pb_name ?? ''),
+                'image' => $product->brand->pb_image ?? null,
+                'status' => (int) ($product->brand->pb_status ?? 0),
+            ],
+            'supplier_user' => [
+                'joined_date' => $joinedDate,
+            ],
+            'overall_rating' => $overallRating,
+            'total_reviews' => $totalReviews,
+            'total_products' => $totalProducts,
         ]);
     }
 
