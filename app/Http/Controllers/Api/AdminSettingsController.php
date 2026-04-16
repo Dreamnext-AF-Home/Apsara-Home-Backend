@@ -41,6 +41,7 @@ class AdminSettingsController extends Controller
             'currency' => 'nullable|string|max:20',
             'date_format' => 'nullable|string|max:40',
             'language' => 'nullable|string|max:40',
+            'enable_test_payments' => 'nullable|boolean',
             'logo' => 'nullable|image|max:5120',
             'favicon' => 'nullable|image|max:2048',
         ]);
@@ -76,6 +77,7 @@ class AdminSettingsController extends Controller
             'currency',
             'date_format',
             'language',
+            'enable_test_payments',
         ] as $field) {
             if (array_key_exists($field, $validated)) {
                 $settings->{$field} = $validated[$field];
@@ -175,6 +177,7 @@ class AdminSettingsController extends Controller
             'currency' => $settings?->currency ?? 'PHP',
             'date_format' => $settings?->date_format ?? 'MM/DD/YYYY',
             'language' => $settings?->language ?? 'English',
+            'enable_test_payments' => (bool)($settings?->enable_test_payments ?? false),
             'updated_at' => optional($settings?->updated_at)->toDateTimeString(),
         ];
     }
