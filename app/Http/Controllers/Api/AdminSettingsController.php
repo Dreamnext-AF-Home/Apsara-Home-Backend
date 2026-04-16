@@ -36,7 +36,7 @@ class AdminSettingsController extends Controller
             'support_email' => 'nullable|email|max:150',
             'contact_number' => 'nullable|string|max:50',
             'address' => 'nullable|string|max:255',
-            'branches' => 'nullable|string|max:2000',
+            'branches' => 'nullable|string|max:8000',
             'timezone' => 'nullable|string|max:80',
             'currency' => 'nullable|string|max:20',
             'date_format' => 'nullable|string|max:40',
