@@ -71,20 +71,7 @@ class MemberController extends Controller
                     'tbl_customer.c_date_started',
                     'tbl_customer.c_last_logindate',
                 ])
-                ->when($search !== '', function ($query) use ($search) {
-                    $like = '%' . $search . '%';
-                    $query->where(function ($inner) use ($like) {
-                        $inner->where('tbl_customer.c_username', 'ilike', $like)
-                            ->orWhere('tbl_customer.c_email', 'ilike', $like)
-                            ->orWhere('tbl_customer.c_fname', 'ilike', $like)
-                            ->orWhere('tbl_customer.c_mname', 'ilike', $like)
-                            ->orWhere('tbl_customer.c_lname', 'ilike', $like)
-                            ->orWhereRaw(
-                                "TRIM(COALESCE(tbl_customer.c_fname, '') || ' ' || COALESCE(tbl_customer.c_mname, '') || ' ' || COALESCE(tbl_customer.c_lname, '')) ILIKE ?",
-                                [$like]
-                            );
-                    });
-                })
+                ->when($search !== '', fn ($query) => $this->applyMemberSearch($query, $search))
                 ->when($status !== '', function ($query) use ($status) {
                     if ($status === 'blocked') {
                         $query->where('tbl_customer.c_lockstatus', 1);
@@ -421,6 +408,7 @@ class MemberController extends Controller
     {
         $perPage = (int) $request->integer('per_page', 25);
         $perPage = max(1, min($perPage, 100));
+        $search = trim((string) $request->query('q', ''));
 
         $allowedStats = [
             'total_members',
@@ -445,9 +433,10 @@ class MemberController extends Controller
             'stat' => $stat,
             'page' => (int) $request->integer('page', 1),
             'per_page' => $perPage,
+            'q' => $search,
         ]));
 
-        $payloadBuilder = function () use ($perPage, $stat) {
+        $payloadBuilder = function () use ($perPage, $stat, $search) {
             $query = Customer::query()
                 ->select([
                     'tbl_customer.c_userid',
@@ -473,7 +462,8 @@ class MemberController extends Controller
                     'tbl_customer.c_sponsor',
                     'tbl_customer.c_date_started',
                     'tbl_customer.c_last_logindate',
-                ]);
+                ])
+                ->when($search !== '', fn ($query) => $this->applyMemberSearch($query, $search));
 
             $metricLabel = 'Status';
             $title = 'All Members';
@@ -620,8 +610,59 @@ class MemberController extends Controller
                     });
             }
 
+            $referralChildrenBySponsor = collect();
+            if ($stat === 'total_referrals' && !empty($pageUserIds)) {
+                $referralChildrenBySponsor = Customer::query()
+                    ->select([
+                        'c_userid',
+                        'c_username',
+                        'c_fname',
+                        'c_mname',
+                        'c_lname',
+                        'c_email',
+                        'c_mobile',
+                        'c_sponsor',
+                        'c_rank',
+                        'c_lockstatus',
+                        'c_accnt_status',
+                        'c_date_started',
+                    ])
+                    ->whereIn('c_sponsor', $pageUserIds)
+                    ->orderByDesc('c_date_started')
+                    ->orderByDesc('c_userid')
+                    ->get()
+                    ->groupBy('c_sponsor')
+                    ->map(function ($children) {
+                        return $children->map(function (Customer $child) {
+                            $fullName = trim(implode(' ', array_filter([
+                                (string) $child->c_fname,
+                                (string) $child->c_mname,
+                                (string) $child->c_lname,
+                            ])));
+
+                            if ($fullName === '') {
+                                $fullName = (string) ($child->c_username ?: ('Member #' . $child->c_userid));
+                            }
+
+                            return [
+                                'id' => (int) $child->c_userid,
+                                'name' => $fullName,
+                                'username' => (string) ($child->c_username ?? ''),
+                                'email' => (string) ($child->c_email ?: ''),
+                                'contactNumber' => (string) ($child->c_mobile ?: ''),
+                                'status' => $this->mapStatus(
+                                    (int) $child->c_lockstatus,
+                                    (int) $child->c_accnt_status
+                                ),
+                                'tier' => $this->mapTier((int) $child->c_rank),
+                                'joinedAt' => $this->formatDateTime($child->c_date_started) ?: $this->formatDate($child->c_date_started),
+                            ];
+                        })->values()->all();
+                    });
+            }
+
             $members = collect($paginator->items())
-                ->map(function (Customer $customer) use ($metricResolver, $referralCounts, $walletCreditsByCustomer, $sponsorsById): array {
+                ->map(function (Customer $customer) use ($metricResolver, $referralCounts, $walletCreditsByCustomer, $sponsorsById, $referralChildrenBySponsor): array {
                     $fullName = trim(implode(' ', array_filter([
                         (string) $customer->c_fname,
                         (string) $customer->c_mname,
@@ -687,6 +728,7 @@ class MemberController extends Controller
                         'zipCode' => (string) ($customer->c_zipcode ?? ''),
                         'fullAddress' => !empty($addressParts) ? implode(', ', $addressParts) : '',
                         'metricValue' => $metricResolver($customer, $referralTotal),
+                        'referralChildren' => $referralChildrenBySponsor->get((int) $customer->c_userid, []),
                     ];
                 })
                 ->values();
@@ -695,6 +737,7 @@ class MemberController extends Controller
                 'stat' => $stat,
                 'title' => $title,
                 'metricLabel' => $metricLabel,
+                'search' => $search,
                 'members' => $members,
                 'meta' => [
                     'current_page' => $paginator->currentPage(),
@@ -1017,6 +1060,34 @@ class MemberController extends Controller
     private function makeTemporaryPassword(): string
     {
         return 'Afh#' . random_int(1000, 9999) . Str::upper(Str::random(4));
+    }
+
+    private function applyMemberSearch($query, string $search)
+    {
+        $like = '%' . trim($search) . '%';
+
+        return $query->where(function ($inner) use ($like) {
+            $inner->where('tbl_customer.c_username', 'ilike', $like)
+                ->orWhere('tbl_customer.c_email', 'ilike', $like)
+                ->orWhere('tbl_customer.c_fname', 'ilike', $like)
+                ->orWhere('tbl_customer.c_mname', 'ilike', $like)
+                ->orWhere('tbl_customer.c_lname', 'ilike', $like)
+                ->orWhere('tbl_customer.c_mobile', 'ilike', $like)
+                ->orWhere('tbl_customer.c_address', 'ilike', $like)
+                ->orWhere('tbl_customer.c_barangay', 'ilike', $like)
+                ->orWhere('tbl_customer.c_city', 'ilike', $like)
+                ->orWhere('tbl_customer.c_province', 'ilike', $like)
+                ->orWhere('tbl_customer.c_region', 'ilike', $like)
+                ->orWhere('tbl_customer.c_zipcode', 'ilike', $like)
+                ->orWhereRaw(
+                    "TRIM(CONCAT_WS(' ', NULLIF(TRIM(tbl_customer.c_fname), ''), NULLIF(TRIM(tbl_customer.c_mname), ''), NULLIF(TRIM(tbl_customer.c_lname), ''))) ILIKE ?",
+                    [$like]
+                )
+                ->orWhereRaw(
+                    "TRIM(CONCAT_WS(', ', NULLIF(TRIM(tbl_customer.c_address), ''), NULLIF(TRIM(tbl_customer.c_barangay), ''), NULLIF(TRIM(tbl_customer.c_city), ''), NULLIF(TRIM(tbl_customer.c_province), ''), NULLIF(TRIM(tbl_customer.c_region), ''), NULLIF(TRIM(tbl_customer.c_zipcode), ''))) ILIKE ?",
+                    [$like]
+                );
+        });
     }
 
     private function displayName(Customer $customer): string

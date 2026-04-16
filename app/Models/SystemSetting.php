@@ -29,6 +29,7 @@ class SystemSetting extends Model
         'sms_notifications',
         'admin_alerts',
         'enable_test_payments',
+        'enable_manual_checkout_mode',
     ];
 
     protected $casts = [
@@ -37,5 +38,6 @@ class SystemSetting extends Model
         'sms_notifications' => 'boolean',
         'admin_alerts' => 'boolean',
         'enable_test_payments' => 'boolean',
+        'enable_manual_checkout_mode' => 'boolean',
     ];
 }

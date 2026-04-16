@@ -140,6 +140,7 @@ Route::middleware(['auth:sanctum', 'admin.or_supplier'])->group(function () {
     Route::post('/admin/products/bulk-price/apply', [ProductController::class, 'bulkPriceApply']);
     Route::post('/admin/products/bulk-update/preview', [ProductController::class, 'bulkUpdatePreview']);
     Route::post('/admin/products/bulk-update/apply', [ProductController::class, 'bulkUpdateApply']);
+    Route::post('/admin/products/manual-checkout/apply', [ProductController::class, 'manualCheckoutApply']);
     Route::get('/admin/webpages/adds-content', [AddsContentController::class, 'index']);
     Route::post('/admin/webpages/adds-content', [AddsContentController::class, 'store']);
     Route::patch('/admin/webpages/adds-content/{id}', [AddsContentController::class, 'update']);

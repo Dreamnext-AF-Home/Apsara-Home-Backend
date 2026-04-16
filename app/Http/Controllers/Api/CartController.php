@@ -43,6 +43,12 @@ class CartController extends Controller
                 return response()->json(['message' => 'Product not found'], 404);
             }
 
+            if (! (bool) ($product->pd_manual_checkout_enabled ?? false)) {
+                return response()->json([
+                    'message' => 'This product is not available for checkout at the moment.',
+                ], 422);
+            }
+
             Log::info('Cart: Product data', [
                 'product_id' => $validated['product_id'],
                 'product' => $product,

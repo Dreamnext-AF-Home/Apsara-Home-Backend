@@ -48,6 +48,7 @@ class Product extends Model
         'pd_status',
         'pd_image',
         'pd_salespromo',
+        'pd_manual_checkout_enabled',
     ];
 
     protected $casts = [
@@ -68,6 +69,7 @@ class Product extends Model
         'pd_musthave'    => 'integer',
         'pd_bestseller'  => 'integer',
         'pd_salespromo'  => 'integer',
+        'pd_manual_checkout_enabled' => 'boolean',
         'pd_status'      => 'integer',
         'pd_date'        => 'datetime',
         'pd_last_update' => 'datetime',
