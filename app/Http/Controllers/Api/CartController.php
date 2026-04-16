@@ -145,8 +145,20 @@ class CartController extends Controller
         }
 
         $cartItems = DB::table('tbl_add_to_cart')
-            ->where('crt_customer_id', $customer->c_userid)
-            ->where('crt_status', 'active')
+            ->leftJoin('tbl_product', 'tbl_add_to_cart.crt_product_id', '=', 'tbl_product.pd_id')
+            ->leftJoin('tbl_product_brand', 'tbl_product.pd_brand_type', '=', 'tbl_product_brand.pb_id')
+            ->where('tbl_add_to_cart.crt_customer_id', $customer->c_userid)
+            ->where('tbl_add_to_cart.crt_status', 'active')
+            ->select(
+                'tbl_add_to_cart.*',
+                'tbl_product.pd_name as product_name',
+                'tbl_product.pd_image as product_image',
+                'tbl_product.pd_price_srp as product_price_srp',
+                'tbl_product.pd_price_dp as product_price_dp',
+                'tbl_product.pd_price_member as product_price_member',
+                'tbl_product.pd_prodpv as product_prodpv',
+                'tbl_product_brand.pb_name as brand_name'
+            )
             ->get();
 
         $totalAmount = $cartItems->sum('crt_total_price');
