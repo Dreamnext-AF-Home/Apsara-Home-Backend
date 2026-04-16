@@ -17,6 +17,7 @@ class SystemSetting extends Model
         'branches',
         'logo_path',
         'favicon_path',
+        'website_qr_code_path',
         'timezone',
         'currency',
         'date_format',

@@ -10,8 +10,10 @@ use App\Models\SupplierUser;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
@@ -30,6 +32,8 @@ class SupplierUserController extends Controller
         $supplier = $this->resolveTargetSupplier($actor, [
             'supplier_id' => $request->query('supplier_id'),
         ]);
+
+        $this->ensureSupplierUsersHaveIds((int) $supplier->s_id);
 
         $users = SupplierUser::query()
             ->where('su_supplier', (int) $supplier->s_id)
@@ -50,6 +54,89 @@ class SupplierUserController extends Controller
         return response()->json([
             'supplier_id' => (int) $supplier->s_id,
             'users' => $users,
+        ]);
+    }
+
+    public function update(Request $request, int $id)
+    {
+        $actor = $this->resolveActor($request);
+        if (! $actor) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        $actorIsMainSupplier = $actor instanceof SupplierUser && (int) ($actor->su_level_type ?? 0) === 1;
+        $actorIsSelf = $actor instanceof SupplierUser && (int) ($actor->su_id ?? 0) === $id;
+        if ($actor instanceof SupplierUser && ! $actorIsMainSupplier && ! $actorIsSelf) {
+            return response()->json([
+                'message' => 'Forbidden: you can only edit your own supplier user account.',
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'fullname' => 'required|string|max:85',
+            'username' => 'required|string|max:45',
+            'email' => 'nullable|email|max:255',
+            'password' => 'nullable|string|min:8',
+        ]);
+
+        $query = SupplierUser::query()->where('su_id', $id);
+        if ($actor instanceof SupplierUser) {
+            $query->where('su_supplier', (int) $actor->su_supplier);
+        } elseif ($actor instanceof Admin && isset($actor->supplier_id) && (int) ($actor->supplier_id ?? 0) > 0) {
+            $query->where('su_supplier', (int) $actor->supplier_id);
+        }
+
+        $supplierUser = $query->first();
+        if (! $supplierUser) {
+            return response()->json(['message' => 'Supplier user not found.'], 404);
+        }
+
+        $newUsername = trim((string) $validated['username']);
+        $newEmail = trim((string) ($validated['email'] ?? ''));
+
+        if ($newUsername === '') {
+            throw ValidationException::withMessages([
+                'username' => ['Username is required.'],
+            ]);
+        }
+
+        $duplicateField = $this->findDuplicateFieldForUpdate(
+            currentId: (int) $supplierUser->su_id,
+            username: $newUsername,
+            email: $newEmail !== '' ? $newEmail : null,
+        );
+        if ($duplicateField) {
+            return response()->json([
+                'message' => $duplicateField === 'username'
+                    ? 'Supplier username already exists.'
+                    : 'Supplier email already exists.',
+            ], 409);
+        }
+
+        $updatePayload = [
+            'su_fullname' => trim((string) $validated['fullname']),
+            'su_username' => $newUsername,
+            'su_email' => $newEmail,
+        ];
+
+        if (! empty($validated['password'])) {
+            $updatePayload['su_password'] = Hash::make((string) $validated['password']);
+        }
+
+        $supplierUser->forceFill($updatePayload)->save();
+
+        return response()->json([
+            'message' => 'Supplier user updated successfully.',
+            'user' => [
+                'id' => (int) $supplierUser->su_id,
+                'supplier_id' => (int) $supplierUser->su_supplier,
+                'fullname' => (string) ($supplierUser->su_fullname ?: ''),
+                'username' => (string) ($supplierUser->su_username ?: ''),
+                'email' => (string) ($supplierUser->su_email ?? ''),
+                'level_type' => (int) ($supplierUser->su_level_type ?? 0),
+                'is_main_supplier' => (int) ($supplierUser->su_level_type ?? 0) === 1,
+                'role_label' => (int) ($supplierUser->su_level_type ?? 0) === 1 ? 'Main Supplier' : 'Sub Supplier',
+            ],
         ]);
     }
 
@@ -136,19 +223,28 @@ class SupplierUserController extends Controller
             ], 409);
         }
 
-        $supplierUser = SupplierUser::query()->create([
-            'su_level_type' => (int) ($payload['level_type'] ?? 0),
-            'su_supplier' => (int) $payload['supplier_id'],
-            'su_fullname' => trim((string) $payload['fullname']),
-            'su_username' => trim((string) $payload['username']),
-            'su_password' => Hash::make((string) $validated['password']),
-            'su_email' => $payloadEmail,
-            'su_date_created' => now(),
-            'su_PIN' => 'N/A',
-            'su_ASESSION_STAT' => '0',
-            'su_last_ipadd' => '0',
-            'su_last_loginloc' => '0',
-        ]);
+        $supplierUser = DB::transaction(function () use ($payload, $validated, $payloadEmail) {
+            $nextId = $this->nextSupplierUserId();
+
+            $createPayload = [
+                'su_id' => $nextId,
+                'su_level_type' => (int) ($payload['level_type'] ?? 0),
+                'su_supplier' => (int) $payload['supplier_id'],
+                'su_fullname' => trim((string) $payload['fullname']),
+                'su_username' => trim((string) $payload['username']),
+                'su_password' => Hash::make((string) $validated['password']),
+                'su_email' => $payloadEmail,
+                'su_date_created' => now(),
+                'su_pin' => 'N/A',
+                'su_asession_stat' => '0',
+                'su_last_ipadd' => '0',
+                'su_last_loginloc' => '0',
+            ];
+
+            return SupplierUser::query()->create(
+                $this->filterInsertableColumns('tbl_supplier_user', $createPayload),
+            );
+        });
 
         $this->inviteCacheStore()->forget($this->inviteCacheKey((string) $validated['token']));
 
@@ -173,9 +269,10 @@ class SupplierUserController extends Controller
         $query = SupplierUser::query()->where('su_id', $id);
 
         if ($actor instanceof SupplierUser) {
-            if ((int) ($actor->su_level_type ?? 0) !== 1) {
+            $actorIsMainSupplier = (int) ($actor->su_level_type ?? 0) === 1;
+            if (! $actorIsMainSupplier) {
                 return response()->json([
-                    'message' => 'Only the main supplier account can manage supplier users.',
+                    'message' => 'Forbidden: only the main supplier account can delete supplier users.',
                 ], 403);
             }
             $query->where('su_supplier', (int) $actor->su_supplier);
@@ -189,7 +286,7 @@ class SupplierUserController extends Controller
         }
 
         if ($actor instanceof SupplierUser && (int) $actor->su_id === (int) $supplierUser->su_id) {
-            return response()->json(['message' => 'You cannot delete your own supplier portal account.'], 422);
+            return response()->json(['message' => 'You cannot delete the main supplier owner account.'], 422);
         }
 
         $supplierUser->delete();
@@ -197,6 +294,86 @@ class SupplierUserController extends Controller
         return response()->json([
             'message' => 'Supplier user removed successfully.',
         ]);
+    }
+
+    /**
+     * Our production DB has multiple "legacy" variants of some tables.
+     * Filter the payload to only include real columns to avoid SQL errors
+     * like "Undefined column".
+     */
+    private function filterInsertableColumns(string $table, array $payload): array
+    {
+        try {
+            $columns = Schema::getColumnListing($table);
+        } catch (\Throwable $e) {
+            // If we cannot introspect (permissions/connection), be conservative
+            // and only send the fields that are required for account creation.
+            return array_intersect_key($payload, array_flip([
+                'su_level_type',
+                'su_supplier',
+                'su_fullname',
+                'su_username',
+                'su_password',
+                'su_email',
+                'su_date_created',
+            ]));
+        }
+
+        $allowed = array_flip($columns);
+
+        return array_filter(
+            $payload,
+            static fn ($_value, $key) => isset($allowed[$key]),
+            ARRAY_FILTER_USE_BOTH,
+        );
+    }
+
+    private function nextSupplierUserId(): int
+    {
+        // Some DB snapshots have nullable su_id with no default/sequence.
+        // Allocate the next integer manually.
+        $lastId = DB::table('tbl_supplier_user')
+            ->whereNotNull('su_id')
+            ->orderByDesc('su_id')
+            ->lockForUpdate()
+            ->value('su_id');
+
+        return ((int) ($lastId ?? 0)) + 1;
+    }
+
+    private function ensureSupplierUsersHaveIds(int $supplierId): void
+    {
+        DB::transaction(function () use ($supplierId) {
+            $usernames = DB::table('tbl_supplier_user')
+                ->where('su_supplier', $supplierId)
+                ->whereNull('su_id')
+                ->orderBy('su_username')
+                ->pluck('su_username')
+                ->filter(fn ($value) => is_string($value) && trim($value) !== '')
+                ->values();
+
+            if ($usernames->isEmpty()) {
+                return;
+            }
+
+            $lastId = DB::table('tbl_supplier_user')
+                ->whereNotNull('su_id')
+                ->orderByDesc('su_id')
+                ->lockForUpdate()
+                ->value('su_id');
+
+            $nextId = ((int) ($lastId ?? 0)) + 1;
+
+            foreach ($usernames as $username) {
+                DB::table('tbl_supplier_user')
+                    ->where('su_supplier', $supplierId)
+                    ->where('su_username', $username)
+                    ->whereNull('su_id')
+                    ->update(['su_id' => $nextId]);
+
+                $nextId++;
+            }
+        });
     }
 
     private function createInviteResponse(array $validated, Supplier $supplier, Admin|SupplierUser $actor): array
@@ -334,6 +511,33 @@ class SupplierUserController extends Controller
 
         $normalizedEmail = trim((string) $email);
         if ($normalizedEmail !== '' && SupplierUser::query()->where('su_email', $normalizedEmail)->exists()) {
+            return 'email';
+        }
+
+        return null;
+    }
+
+    private function findDuplicateFieldForUpdate(int $currentId, string $username, ?string $email = null): ?string
+    {
+        $normalizedUsername = trim($username);
+        if (
+            $normalizedUsername !== ''
+            && SupplierUser::query()
+                ->where('su_username', $normalizedUsername)
+                ->where('su_id', '!=', $currentId)
+                ->exists()
+        ) {
+            return 'username';
+        }
+
+        $normalizedEmail = trim((string) $email);
+        if (
+            $normalizedEmail !== ''
+            && SupplierUser::query()
+                ->where('su_email', $normalizedEmail)
+                ->where('su_id', '!=', $currentId)
+                ->exists()
+        ) {
             return 'email';
         }
 

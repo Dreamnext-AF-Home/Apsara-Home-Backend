@@ -36,7 +36,7 @@ class AdminSettingsController extends Controller
             'support_email' => 'nullable|email|max:150',
             'contact_number' => 'nullable|string|max:50',
             'address' => 'nullable|string|max:255',
-            'branches' => 'nullable|string|max:2000',
+            'branches' => 'nullable|string|max:8000',
             'timezone' => 'nullable|string|max:80',
             'currency' => 'nullable|string|max:20',
             'date_format' => 'nullable|string|max:40',
@@ -45,6 +45,7 @@ class AdminSettingsController extends Controller
             'enable_manual_checkout_mode' => 'nullable|boolean',
             'logo' => 'nullable|image|max:5120',
             'favicon' => 'nullable|image|max:2048',
+            'website_qr_code' => 'nullable|image|max:5120',
         ]);
 
         $settings = SystemSetting::query()->first();
@@ -65,6 +66,13 @@ class AdminSettingsController extends Controller
                 Storage::disk('public')->delete($settings->favicon_path);
             }
             $settings->favicon_path = $request->file('favicon')->store('settings/favicon', 'public');
+        }
+
+        if ($request->hasFile('website_qr_code')) {
+            if ($settings->website_qr_code_path) {
+                Storage::disk('public')->delete($settings->website_qr_code_path);
+            }
+            $settings->website_qr_code_path = $request->file('website_qr_code')->store('settings/website-qr-code', 'public');
         }
 
         foreach ([
@@ -175,6 +183,7 @@ class AdminSettingsController extends Controller
             'branches' => $settings?->branches ?? '',
             'logo_url' => $settings?->logo_path ? Storage::disk('public')->url($settings->logo_path) : null,
             'favicon_url' => $settings?->favicon_path ? Storage::disk('public')->url($settings->favicon_path) : null,
+            'website_qr_code_url' => $settings?->website_qr_code_path ? Storage::disk('public')->url($settings->website_qr_code_path) : null,
             'timezone' => $settings?->timezone ?? 'Asia/Manila',
             'currency' => $settings?->currency ?? 'PHP',
             'date_format' => $settings?->date_format ?? 'MM/DD/YYYY',

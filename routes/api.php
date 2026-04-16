@@ -153,6 +153,7 @@ Route::middleware(['auth:sanctum', 'admin.or_supplier'])->group(function () {
     Route::get('/admin/suppliers/{id}/categories', [SupplierController::class, 'categories']);
     Route::get('/admin/supplier-users', [SupplierUserController::class, 'index']);
     Route::post('/admin/supplier-users', [SupplierUserController::class, 'store']);
+    Route::put('/admin/supplier-users/{id}', [SupplierUserController::class, 'update']);
     Route::delete('/admin/supplier-users/{id}', [SupplierUserController::class, 'destroy']);
 });
 

@@ -11,9 +11,12 @@ class SupplierUser extends Authenticatable
 
     protected $table = 'tbl_supplier_user';
     protected $primaryKey = 'su_id';
+    protected $keyType = 'int';
+    public $incrementing = true;
     public $timestamps = false;
 
     protected $fillable = [
+        'su_id',
         'su_level_type',
         'su_supplier',
         'su_fullname',
@@ -21,8 +24,8 @@ class SupplierUser extends Authenticatable
         'su_password',
         'su_email',
         'su_date_created',
-        'su_PIN',
-        'su_ASESSION_STAT',
+        'su_pin',
+        'su_asession_stat',
         'su_last_logindate',
         'su_last_ipadd',
         'su_last_loginloc',
