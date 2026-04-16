@@ -61,7 +61,7 @@ class SupplierUserController extends Controller
         }
 
         $validated = $request->validate([
-            'supplier_id' => 'nullable|integer|exists:tbl_supplier,s_id',
+            'supplier_id' => 'required|integer',
             'fullname' => 'required|string|max:85',
             'username' => 'required|string|max:45',
             'email' => 'nullable|email|max:255',
@@ -272,7 +272,15 @@ class SupplierUserController extends Controller
             ]);
         }
 
-        return Supplier::query()->where('s_id', (int) $validated['supplier_id'])->firstOrFail();
+        $supplier = Supplier::query()->where('s_id', (int) $validated['supplier_id'])->first();
+
+        if (! $supplier) {
+            throw ValidationException::withMessages([
+                'supplier_id' => ['Supplier company could not be found. Please reselect the supplier and try again.'],
+            ]);
+        }
+
+        return $supplier;
     }
 
     private function getInvitePayload(string $token): ?array

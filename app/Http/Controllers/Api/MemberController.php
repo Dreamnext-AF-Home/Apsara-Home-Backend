@@ -417,6 +417,305 @@ class MemberController extends Controller
         return response()->json($payload);
     }
 
+    public function statDetails(Request $request, string $stat): JsonResponse
+    {
+        $perPage = (int) $request->integer('per_page', 25);
+        $perPage = max(1, min($perPage, 100));
+
+        $allowedStats = [
+            'total_members',
+            'active',
+            'pending',
+            'blocked',
+            'new_members',
+            'total_spent',
+            'total_earnings',
+            'total_referrals',
+        ];
+
+        if (!in_array($stat, $allowedStats, true)) {
+            return response()->json([
+                'message' => 'Unknown member stat type.',
+            ], 404);
+        }
+
+        $cacheVersion = $this->membersCacheVersion();
+        $cacheKey = 'admin:members:stat-details:' . md5(json_encode([
+            'v' => $cacheVersion,
+            'stat' => $stat,
+            'page' => (int) $request->integer('page', 1),
+            'per_page' => $perPage,
+        ]));
+
+        $payloadBuilder = function () use ($perPage, $stat) {
+            $query = Customer::query()
+                ->select([
+                    'tbl_customer.c_userid',
+                    'tbl_customer.c_username',
+                    'tbl_customer.c_fname',
+                    'tbl_customer.c_mname',
+                    'tbl_customer.c_lname',
+                    'tbl_customer.c_email',
+                    'tbl_customer.c_mobile',
+                    'tbl_customer.c_address',
+                    'tbl_customer.c_barangay',
+                    'tbl_customer.c_city',
+                    'tbl_customer.c_province',
+                    'tbl_customer.c_region',
+                    'tbl_customer.c_zipcode',
+                    'tbl_customer.c_avatar_url',
+                    'tbl_customer.c_lockstatus',
+                    'tbl_customer.c_accnt_status',
+                    'tbl_customer.c_rank',
+                    'tbl_customer.c_totalpair',
+                    'tbl_customer.c_gpv',
+                    'tbl_customer.c_totalincome',
+                    'tbl_customer.c_sponsor',
+                    'tbl_customer.c_date_started',
+                    'tbl_customer.c_last_logindate',
+                ]);
+
+            $metricLabel = 'Status';
+            $title = 'All Members';
+            $metricResolver = fn (Customer $customer, int $referrals): string => $this->mapStatus(
+                (int) $customer->c_lockstatus,
+                (int) $customer->c_accnt_status
+            );
+
+            if ($stat === 'active') {
+                $title = 'Active Members';
+                $metricLabel = 'Orders';
+                $metricResolver = fn (Customer $customer, int $referrals): string => (string) ((int) $customer->c_totalpair);
+                $query->where('tbl_customer.c_lockstatus', 0)->where('tbl_customer.c_accnt_status', 1)
+                    ->orderByDesc('tbl_customer.c_totalpair')
+                    ->orderByDesc('tbl_customer.c_userid');
+            } elseif ($stat === 'pending') {
+                $title = 'Pending / KYC Members';
+                $metricLabel = 'Verification';
+                $metricResolver = fn (Customer $customer, int $referrals): string => $this->mapVerificationStatus(
+                    (int) $customer->c_lockstatus,
+                    (int) $customer->c_accnt_status
+                );
+                $query->where('tbl_customer.c_lockstatus', 0)
+                    ->whereIn('tbl_customer.c_accnt_status', [0, 2])
+                    ->orderBy('tbl_customer.c_accnt_status')
+                    ->orderByDesc('tbl_customer.c_userid');
+            } elseif ($stat === 'blocked') {
+                $title = 'Blocked Members';
+                $metricLabel = 'Tier';
+                $metricResolver = fn (Customer $customer, int $referrals): string => $this->mapTier((int) $customer->c_rank);
+                $query->where('tbl_customer.c_lockstatus', 1)
+                    ->orderByDesc('tbl_customer.c_userid');
+            } elseif ($stat === 'new_members') {
+                $title = 'New Members This 7 Days';
+                $metricLabel = 'Joined';
+                $metricResolver = fn (Customer $customer, int $referrals): string => $this->formatDateTime($customer->c_date_started) ?: 'Unknown date';
+                $query->whereNotNull('tbl_customer.c_date_started')
+                    ->whereRaw("tbl_customer.c_date_started >= (CURRENT_DATE - INTERVAL '6 days')")
+                    ->orderByDesc('tbl_customer.c_date_started')
+                    ->orderByDesc('tbl_customer.c_userid');
+            } elseif ($stat === 'total_spent') {
+                $title = 'Members With Spending';
+                $metricLabel = 'Total Spent';
+                $metricResolver = fn (Customer $customer, int $referrals): string => 'PHP ' . number_format((float) ($customer->c_gpv ?? 0), 2);
+                $query->where('tbl_customer.c_gpv', '>', 0)
+                    ->orderByDesc('tbl_customer.c_gpv')
+                    ->orderByDesc('tbl_customer.c_userid');
+            } elseif ($stat === 'total_earnings') {
+                $title = 'Members With Earnings';
+                $metricLabel = 'Earnings';
+                $metricResolver = fn (Customer $customer, int $referrals): string => 'PHP ' . number_format((float) ($customer->c_totalincome ?? 0), 2);
+                $query->where('tbl_customer.c_totalincome', '>', 0)
+                    ->orderByDesc('tbl_customer.c_totalincome')
+                    ->orderByDesc('tbl_customer.c_userid');
+            } elseif ($stat === 'total_referrals') {
+                $title = 'Members With Referrals';
+                $metricLabel = 'Referrals';
+                $metricResolver = fn (Customer $customer, int $referrals): string => (string) $referrals;
+                $query
+                    ->leftJoin('tbl_customer as referrals', 'referrals.c_sponsor', '=', 'tbl_customer.c_userid')
+                    ->groupBy(
+                        'tbl_customer.c_userid',
+                        'tbl_customer.c_username',
+                        'tbl_customer.c_fname',
+                        'tbl_customer.c_mname',
+                        'tbl_customer.c_lname',
+                        'tbl_customer.c_email',
+                        'tbl_customer.c_mobile',
+                        'tbl_customer.c_address',
+                        'tbl_customer.c_barangay',
+                        'tbl_customer.c_city',
+                        'tbl_customer.c_province',
+                        'tbl_customer.c_region',
+                        'tbl_customer.c_zipcode',
+                        'tbl_customer.c_avatar_url',
+                        'tbl_customer.c_lockstatus',
+                        'tbl_customer.c_accnt_status',
+                        'tbl_customer.c_rank',
+                        'tbl_customer.c_totalpair',
+                        'tbl_customer.c_gpv',
+                        'tbl_customer.c_totalincome',
+                        'tbl_customer.c_sponsor',
+                        'tbl_customer.c_date_started',
+                        'tbl_customer.c_last_logindate',
+                    )
+                    ->selectRaw('COUNT(referrals.c_userid) as referral_sort_total')
+                    ->havingRaw('COUNT(referrals.c_userid) > 0')
+                    ->orderByDesc('referral_sort_total')
+                    ->orderByDesc('tbl_customer.c_userid');
+            } else {
+                $query->orderByDesc('tbl_customer.c_userid');
+            }
+
+            $paginator = $query->paginate($perPage);
+
+            $pageUserIds = collect($paginator->items())->pluck('c_userid')->all();
+            $sponsorIds = collect($paginator->items())
+                ->pluck('c_sponsor')
+                ->filter(fn ($value) => (int) $value > 0)
+                ->map(fn ($value) => (int) $value)
+                ->unique()
+                ->values()
+                ->all();
+
+            $referralCounts = empty($pageUserIds)
+                ? collect()
+                : Customer::query()
+                    ->selectRaw('c_sponsor, COUNT(*) as total')
+                    ->whereIn('c_sponsor', $pageUserIds)
+                    ->groupBy('c_sponsor')
+                    ->pluck('total', 'c_sponsor');
+
+            $sponsorsById = empty($sponsorIds)
+                ? collect()
+                : Customer::query()
+                    ->select([
+                        'c_userid',
+                        'c_username',
+                        'c_fname',
+                        'c_mname',
+                        'c_lname',
+                    ])
+                    ->whereIn('c_userid', $sponsorIds)
+                    ->get()
+                    ->keyBy('c_userid');
+
+            $walletCreditsByCustomer = collect();
+            if (!empty($pageUserIds) && Schema::hasTable('tbl_customer_wallet_ledger')) {
+                $walletCreditRows = CustomerWalletLedger::query()
+                    ->selectRaw('wl_customer_id, wl_wallet_type, SUM(wl_amount) as total_amount')
+                    ->whereIn('wl_customer_id', $pageUserIds)
+                    ->where('wl_entry_type', 'credit')
+                    ->whereIn('wl_wallet_type', ['cash', 'pv'])
+                    ->groupBy('wl_customer_id', 'wl_wallet_type')
+                    ->get();
+
+                $walletCreditsByCustomer = $walletCreditRows
+                    ->groupBy('wl_customer_id')
+                    ->map(function ($rows) {
+                        return [
+                            'cash' => (float) (($rows->firstWhere('wl_wallet_type', 'cash')->total_amount ?? 0)),
+                            'pv' => (float) (($rows->firstWhere('wl_wallet_type', 'pv')->total_amount ?? 0)),
+                        ];
+                    });
+            }
+
+            $members = collect($paginator->items())
+                ->map(function (Customer $customer) use ($metricResolver, $referralCounts, $walletCreditsByCustomer, $sponsorsById): array {
+                    $fullName = trim(implode(' ', array_filter([
+                        (string) $customer->c_fname,
+                        (string) $customer->c_mname,
+                        (string) $customer->c_lname,
+                    ])));
+
+                    if ($fullName === '') {
+                        $fullName = (string) ($customer->c_username ?: ('Member #' . $customer->c_userid));
+                    }
+
+                    $status = $this->mapStatus(
+                        (int) $customer->c_lockstatus,
+                        (int) $customer->c_accnt_status
+                    );
+                    $verificationStatus = $this->mapVerificationStatus(
+                        (int) $customer->c_lockstatus,
+                        (int) $customer->c_accnt_status
+                    );
+
+                    $walletCredits = $walletCreditsByCustomer->get((int) $customer->c_userid, ['cash' => 0, 'pv' => 0]);
+                    $sponsor = $sponsorsById->get((int) ($customer->c_sponsor ?? 0));
+                    $sponsorName = $sponsor instanceof Customer ? $this->displayName($sponsor) : '';
+                    $addressParts = array_filter([
+                        (string) ($customer->c_address ?? ''),
+                        (string) ($customer->c_barangay ?? ''),
+                        (string) ($customer->c_city ?? ''),
+                        (string) ($customer->c_province ?? ''),
+                        (string) ($customer->c_region ?? ''),
+                        (string) ($customer->c_zipcode ?? ''),
+                    ], fn ($value) => trim((string) $value) !== '');
+                    $referralTotal = (int) ($referralCounts[(int) $customer->c_userid] ?? 0);
+                    $registeredAt = $this->formatDateTime($customer->c_date_started);
+
+                    return [
+                        'id' => (int) $customer->c_userid,
+                        'name' => $fullName,
+                        'username' => (string) ($customer->c_username ?? ''),
+                        'email' => (string) ($customer->c_email ?: ''),
+                        'referredByName' => $sponsorName,
+                        'referredByUsername' => $sponsor instanceof Customer ? (string) ($sponsor->c_username ?? '') : '',
+                        'contactNumber' => (string) ($customer->c_mobile ?: ''),
+                        'avatar' => (string) ($customer->c_avatar_url ?: ''),
+                        'verificationStatus' => $verificationStatus,
+                        'status' => $status,
+                        'tier' => $this->mapTier((int) $customer->c_rank),
+                        'orders' => (int) $customer->c_totalpair,
+                        'totalSpent' => (float) $customer->c_gpv,
+                        'earnings' => (float) $customer->c_totalincome,
+                        'walletCashBalance' => (float) ($customer->c_totalincome ?? 0),
+                        'walletPvBalance' => (float) ($customer->c_gpv ?? 0),
+                        'walletCashCredits' => (float) ($walletCredits['cash'] ?? 0),
+                        'walletPvCredits' => (float) ($walletCredits['pv'] ?? 0),
+                        'referrals' => $referralTotal,
+                        'joinedAt' => $this->formatDate($customer->c_date_started),
+                        'createdAt' => $registeredAt,
+                        'created_at' => $registeredAt,
+                        'lastActiveAt' => $this->formatDate($customer->c_last_logindate) ?: $this->formatDate($customer->c_date_started),
+                        'addressLine' => (string) ($customer->c_address ?? ''),
+                        'barangay' => (string) ($customer->c_barangay ?? ''),
+                        'city' => (string) ($customer->c_city ?? ''),
+                        'province' => (string) ($customer->c_province ?? ''),
+                        'region' => (string) ($customer->c_region ?? ''),
+                        'zipCode' => (string) ($customer->c_zipcode ?? ''),
+                        'fullAddress' => !empty($addressParts) ? implode(', ', $addressParts) : '',
+                        'metricValue' => $metricResolver($customer, $referralTotal),
+                    ];
+                })
+                ->values();
+
+            return [
+                'stat' => $stat,
+                'title' => $title,
+                'metricLabel' => $metricLabel,
+                'members' => $members,
+                'meta' => [
+                    'current_page' => $paginator->currentPage(),
+                    'last_page' => $paginator->lastPage(),
+                    'per_page' => $paginator->perPage(),
+                    'total' => $paginator->total(),
+                    'from' => $paginator->firstItem(),
+                    'to' => $paginator->lastItem(),
+                ],
+            ];
+        };
+
+        try {
+            $payload = Cache::remember($cacheKey, now()->addMinutes(2), $payloadBuilder);
+        } catch (\Throwable $exception) {
+            $payload = $payloadBuilder();
+        }
+
+        return response()->json($payload);
+    }
+
     public function update(Request $request, int $id): JsonResponse
     {
         $customer = Customer::query()->where('c_userid', $id)->firstOrFail();
