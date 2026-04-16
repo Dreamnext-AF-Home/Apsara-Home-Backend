@@ -10,8 +10,10 @@ use App\Models\SupplierUser;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
@@ -136,19 +138,28 @@ class SupplierUserController extends Controller
             ], 409);
         }
 
-        $supplierUser = SupplierUser::query()->create([
-            'su_level_type' => (int) ($payload['level_type'] ?? 0),
-            'su_supplier' => (int) $payload['supplier_id'],
-            'su_fullname' => trim((string) $payload['fullname']),
-            'su_username' => trim((string) $payload['username']),
-            'su_password' => Hash::make((string) $validated['password']),
-            'su_email' => $payloadEmail,
-            'su_date_created' => now(),
-            'su_PIN' => 'N/A',
-            'su_ASESSION_STAT' => '0',
-            'su_last_ipadd' => '0',
-            'su_last_loginloc' => '0',
-        ]);
+        $supplierUser = DB::transaction(function () use ($payload, $validated, $payloadEmail) {
+            $nextId = $this->nextSupplierUserId();
+
+            $createPayload = [
+                'su_id' => $nextId,
+                'su_level_type' => (int) ($payload['level_type'] ?? 0),
+                'su_supplier' => (int) $payload['supplier_id'],
+                'su_fullname' => trim((string) $payload['fullname']),
+                'su_username' => trim((string) $payload['username']),
+                'su_password' => Hash::make((string) $validated['password']),
+                'su_email' => $payloadEmail,
+                'su_date_created' => now(),
+                'su_pin' => 'N/A',
+                'su_asession_stat' => '0',
+                'su_last_ipadd' => '0',
+                'su_last_loginloc' => '0',
+            ];
+
+            return SupplierUser::query()->create(
+                $this->filterInsertableColumns('tbl_supplier_user', $createPayload),
+            );
+        });
 
         $this->inviteCacheStore()->forget($this->inviteCacheKey((string) $validated['token']));
 
@@ -197,6 +208,51 @@ class SupplierUserController extends Controller
         return response()->json([
             'message' => 'Supplier user removed successfully.',
         ]);
+    }
+
+    /**
+     * Our production DB has multiple "legacy" variants of some tables.
+     * Filter the payload to only include real columns to avoid SQL errors
+     * like "Undefined column".
+     */
+    private function filterInsertableColumns(string $table, array $payload): array
+    {
+        try {
+            $columns = Schema::getColumnListing($table);
+        } catch (\Throwable $e) {
+            // If we cannot introspect (permissions/connection), be conservative
+            // and only send the fields that are required for account creation.
+            return array_intersect_key($payload, array_flip([
+                'su_level_type',
+                'su_supplier',
+                'su_fullname',
+                'su_username',
+                'su_password',
+                'su_email',
+                'su_date_created',
+            ]));
+        }
+
+        $allowed = array_flip($columns);
+
+        return array_filter(
+            $payload,
+            static fn ($_value, $key) => isset($allowed[$key]),
+            ARRAY_FILTER_USE_BOTH,
+        );
+    }
+
+    private function nextSupplierUserId(): int
+    {
+        // Some DB snapshots have nullable su_id with no default/sequence.
+        // Allocate the next integer manually.
+        $lastId = DB::table('tbl_supplier_user')
+            ->whereNotNull('su_id')
+            ->orderByDesc('su_id')
+            ->lockForUpdate()
+            ->value('su_id');
+
+        return ((int) ($lastId ?? 0)) + 1;
     }
 
     private function createInviteResponse(array $validated, Supplier $supplier, Admin|SupplierUser $actor): array

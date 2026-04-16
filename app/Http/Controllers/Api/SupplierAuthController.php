@@ -9,6 +9,7 @@ use App\Models\SupplierUser;
 use Illuminate\Http\Request;
 use App\Mail\Supplier\SupplierPasswordResetMail;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
@@ -95,6 +96,22 @@ class SupplierAuthController extends Controller
                 supplierUser: $supplierUser,
                 otp: $otp,
             );
+        }
+
+        // Some DB snapshots have nullable su_id (no default/sequence). Sanctum
+        // requires a non-null tokenable_id, so we auto-assign an ID on login.
+        if (! $supplierUser->getKey()) {
+            $this->ensureSupplierUserHasId($supplierUser);
+            $supplierUser = SupplierUser::query()
+                ->with('supplier')
+                ->where('su_username', $supplierUser->su_username)
+                ->orWhere('su_email', $supplierUser->su_email)
+                ->first();
+        }
+        if (! $supplierUser || ! $supplierUser->getKey()) {
+            throw ValidationException::withMessages([
+                'login' => ['Supplier account record is missing a valid ID. Please contact support.'],
+            ]);
         }
 
         $token = $supplierUser->createToken('supplier_auth_token')->plainTextToken;
@@ -392,6 +409,29 @@ class SupplierAuthController extends Controller
                 'login' => ['Unable to send OTP email right now. Please try again shortly.'],
             ]);
         }
+    }
+
+    private function ensureSupplierUserHasId(SupplierUser $supplierUser): void
+    {
+        if ($supplierUser->getKey()) {
+            return;
+        }
+
+        DB::transaction(function () use ($supplierUser) {
+            // Lock the current "max id" row to reduce race conditions.
+            $lastId = DB::table('tbl_supplier_user')
+                ->whereNotNull('su_id')
+                ->orderByDesc('su_id')
+                ->lockForUpdate()
+                ->value('su_id');
+
+            $nextId = ((int) ($lastId ?? 0)) + 1;
+
+            DB::table('tbl_supplier_user')
+                ->where('su_username', (string) $supplierUser->su_username)
+                ->whereNull('su_id')
+                ->update(['su_id' => $nextId]);
+        });
     }
 
     private function validateLoginOtpChallenge(string $challengeToken, SupplierUser $supplierUser, string $otp): void
