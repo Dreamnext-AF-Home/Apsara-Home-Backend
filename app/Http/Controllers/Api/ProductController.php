@@ -80,6 +80,18 @@ class ProductController extends Controller
         ]);
     }
 
+    public function clearSearchHistory(): JsonResponse
+    {
+        $customerId = auth('sanctum')->id();
+
+        $deletedCount = SearchHistory::where('sh_customer_id', $customerId)->delete();
+
+        return response()->json([
+            'message' => 'Search history cleared successfully.',
+            'deleted_count' => $deletedCount,
+        ]);
+    }
+
     public function reviews(int $id): JsonResponse
     {
         $exists = Product::query()->where('pd_id', $id)->exists();

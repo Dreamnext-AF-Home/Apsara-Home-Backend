@@ -112,6 +112,7 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::delete('/cart', [CartController::class, 'clearCart']);
     Route::post('/search/history', [ProductController::class, 'saveSearchHistory']);
     Route::get('/search/history', [ProductController::class, 'getSearchHistory']);
+    Route::delete('/search/history', [ProductController::class, 'clearSearchHistory']);
 });
 
 Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,csr'])->group(function () {
