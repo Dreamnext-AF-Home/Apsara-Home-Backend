@@ -17,6 +17,8 @@ class SupplierController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
+        $this->normalizeMissingSupplierIds();
+
         $admin = $this->resolveAdmin($request);
         $supplierUser = $this->resolveSupplierUser($request);
         if (! $admin && ! $supplierUser) {
@@ -106,6 +108,8 @@ class SupplierController extends Controller
 
     public function store(Request $request)
     {
+        $this->normalizeMissingSupplierIds();
+
         $admin = $this->resolveAdmin($request);
         if (! $admin) {
             return response()->json(['message' => 'Unauthorized'], 401);
@@ -129,6 +133,13 @@ class SupplierController extends Controller
             's_status' => (int) ($validated['status'] ?? 1),
         ]);
 
+        $this->normalizeMissingSupplierIds();
+        $supplier = Supplier::query()
+            ->where('s_company', trim((string) $validated['company']))
+            ->where('s_name', trim((string) $validated['name']))
+            ->orderByDesc('s_id')
+            ->first() ?? $supplier;
+
         return response()->json([
             'message' => 'Supplier company created successfully.',
             'supplier' => $this->transform($supplier),
@@ -137,6 +148,8 @@ class SupplierController extends Controller
 
     public function update(Request $request, int $id)
     {
+        $this->normalizeMissingSupplierIds();
+
         $admin = $this->resolveAdmin($request);
         if (! $admin) {
             return response()->json(['message' => 'Unauthorized'], 401);
@@ -172,14 +185,46 @@ class SupplierController extends Controller
         ]);
     }
 
-    public function destroy(Request $request, int $id)
+    public function destroy(Request $request, $id)
     {
+        $this->normalizeMissingSupplierIds();
+
         $admin = $this->resolveAdmin($request);
         if (! $admin) {
             return response()->json(['message' => 'Unauthorized'], 401);
         }
 
-        $supplier = Supplier::query()->find($id);
+        $supplierId = (int) $id;
+        $supplier = $supplierId > 0 ? Supplier::query()->find($supplierId) : null;
+        if (! $supplier) {
+            $company = trim((string) $request->input('company', ''));
+            $name = trim((string) $request->input('name', ''));
+
+            if ($company !== '' || $name !== '') {
+                if ($company !== '') {
+                    $supplier = Supplier::query()
+                        ->whereRaw('LOWER(TRIM(COALESCE(s_company, \'\'))) = ?', [mb_strtolower($company)])
+                        ->orderByDesc('s_id')
+                        ->first();
+                }
+
+                if (! $supplier && $name !== '') {
+                    $supplier = Supplier::query()
+                        ->whereRaw('LOWER(TRIM(COALESCE(s_name, \'\'))) = ?', [mb_strtolower($name)])
+                        ->orderByDesc('s_id')
+                        ->first();
+                }
+
+                if (! $supplier && $company !== '' && $name !== '') {
+                    $supplier = Supplier::query()
+                        ->whereRaw('LOWER(TRIM(COALESCE(s_company, \'\'))) = ?', [mb_strtolower($company)])
+                        ->orWhereRaw('LOWER(TRIM(COALESCE(s_name, \'\'))) = ?', [mb_strtolower($name)])
+                        ->orderByDesc('s_id')
+                        ->first();
+                }
+            }
+        }
+
         if (! $supplier) {
             return response()->json(['message' => 'Supplier company not found.'], 404);
         }
@@ -248,6 +293,32 @@ class SupplierController extends Controller
             'status' => (int) ($supplier->s_status ?? 0),
             'assigned_categories' => $this->assignedCategories((int) $supplier->s_id),
         ];
+    }
+
+    private function normalizeMissingSupplierIds(): void
+    {
+        $rows = DB::table('tbl_supplier')
+            ->selectRaw("ctid::text as row_ctid, s_name, s_company, s_email, s_contact, s_address, s_status")
+            ->whereNull('s_id')
+            ->orderBy('s_company')
+            ->orderBy('s_name')
+            ->get();
+
+        if ($rows->isEmpty()) {
+            return;
+        }
+
+        $nextId = ((int) (DB::table('tbl_supplier')->whereNotNull('s_id')->max('s_id') ?? 0)) + 1;
+
+        foreach ($rows as $row) {
+            DB::table('tbl_supplier')
+                ->whereRaw('ctid::text = ?', [$row->row_ctid])
+                ->update([
+                    's_id' => $nextId,
+                ]);
+
+            $nextId++;
+        }
     }
 
     private function resolveAccessibleSupplier(int $supplierId, ?Admin $admin, ?SupplierUser $supplierUser): ?Supplier
