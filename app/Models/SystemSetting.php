@@ -21,5 +21,19 @@ class SystemSetting extends Model
         'currency',
         'date_format',
         'language',
+        'session_timeout_minutes',
+        'max_login_attempts',
+        'password_min_length',
+        'enable_2fa',
+        'email_notifications',
+        'sms_notifications',
+        'admin_alerts',
+    ];
+
+    protected $casts = [
+        'enable_2fa' => 'boolean',
+        'email_notifications' => 'boolean',
+        'sms_notifications' => 'boolean',
+        'admin_alerts' => 'boolean',
     ];
 }

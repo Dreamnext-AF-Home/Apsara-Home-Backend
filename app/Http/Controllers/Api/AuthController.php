@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -20,6 +21,7 @@ use App\Mail\Auth\RegistrationOtpMail;
 use App\Mail\Auth\CustomerPasswordResetMail;
 use App\Mail\Auth\UsernameChangeOtpMail;
 use App\Mail\Auth\ReferralRegistrationAlertMail;
+use Pusher\Pusher;
 
 class AuthController extends Controller
 {
@@ -60,6 +62,10 @@ class AuthController extends Controller
             'city'                  => 'nullable|string|max:255',
             'province'              => 'nullable|string|max:255',
             'region'                => 'nullable|string|max:255',
+            'barangay_code'         => 'nullable|string|max:20',
+            'city_code'             => 'nullable|string|max:20',
+            'province_code'         => 'nullable|string|max:20',
+            'region_code'           => 'nullable|string|max:20',
             'zip_code'              => 'nullable|string|max:20',
         ], [
             'password.min' => 'Password must be at least 8 characters.',
@@ -74,6 +80,12 @@ class AuthController extends Controller
             'name' => $validated['name'] ?? null,
             'username' => $validated['username'] ?? null,
         ]);
+
+        if ($this->looksLikeEmailUsername((string) ($validated['username'] ?? ''))) {
+            throw ValidationException::withMessages([
+                'username' => ['Username must not be an email address. Please choose a username without @gmail.com, @yahoo.com, and similar email formats.'],
+            ]);
+        }
 
         $referrer = Customer::query()
             ->select(['c_userid', 'c_username', 'c_accnt_status', 'c_lockstatus'])
@@ -153,7 +165,9 @@ class AuthController extends Controller
         }
 
         $customer = DB::transaction(function () use ($registration, $referrerUserId) {
-            DB::statement('LOCK TABLE tbl_customer IN EXCLUSIVE MODE');
+            if (DB::connection()->getDriverName() === 'pgsql') {
+                DB::statement('LOCK TABLE tbl_customer IN EXCLUSIVE MODE');
+            }
 
             $nextCustomerId = ((int) DB::table('tbl_customer')->whereNotNull('c_userid')->max('c_userid')) + 1;
 
@@ -182,6 +196,10 @@ class AuthController extends Controller
                 'c_city'         => $registration['city'] ?? null,
                 'c_province'     => $registration['province'] ?? null,
                 'c_region'       => $registration['region'] ?? null,
+                'c_region_code'  => $registration['region_code'] ?? null,
+                'c_province_code'=> $registration['province_code'] ?? null,
+                'c_city_code'    => $registration['city_code'] ?? null,
+                'c_barangay_code'=> $registration['barangay_code'] ?? null,
                 'c_zipcode'      => $registration['zip_code'] ?? null,
             ]);
         });
@@ -191,6 +209,7 @@ class AuthController extends Controller
         if ($referrer instanceof Customer) {
             $this->notifyReferrerAboutRegistration($referrer, $customer);
         }
+        $this->notifyAdminsAboutNewRegistration($customer);
 
         Cache::forget($this->registrationOtpCacheKey($validated['verification_token']));
 
@@ -226,6 +245,38 @@ class AuthController extends Controller
 
         return response()->json([
             'message' => 'A new verification code has been sent.',
+        ]);
+    }
+
+    public function checkUsernameAvailability(Request $request)
+    {
+        $validated = $request->validate([
+            'username' => ['required', 'string', 'max:255'],
+        ]);
+
+        $username = trim((string) $validated['username']);
+
+        if ($username === '') {
+            return response()->json([
+                'available' => false,
+                'message' => 'Username is required.',
+            ], 422);
+        }
+
+        if ($this->looksLikeEmailUsername($username)) {
+            return response()->json([
+                'available' => false,
+                'message' => 'Username must not be an email address.',
+            ]);
+        }
+
+        $exists = Customer::query()
+            ->whereRaw('LOWER(c_username) = ?', [mb_strtolower($username, 'UTF-8')])
+            ->exists();
+
+        return response()->json([
+            'available' => ! $exists,
+            'message' => $exists ? 'This username is already taken.' : 'Username is available.',
         ]);
     }
 
@@ -570,6 +621,12 @@ class AuthController extends Controller
         ]);
 
         [$firstName, $middleName, $lastName] = $this->splitName((string) $validated['name']);
+
+        if (array_key_exists('username', $validated) && $validated['username'] !== null && $this->looksLikeEmailUsername((string) $validated['username'])) {
+            throw ValidationException::withMessages([
+                'username' => ['Username must not be an email address. Please choose a username without @gmail.com, @yahoo.com, and similar email formats.'],
+            ]);
+        }
 
         $customer->c_fname = $firstName;
         $customer->c_mname = $middleName;
@@ -1083,7 +1140,7 @@ class AuthController extends Controller
             'a_mobile' => (string) ($customer->c_mobile ?? '0'),
             'a_mobile_code' => '0',
             'a_address' => $street,
-            'a_country' => (string) ($customer->c_country ?? '175'),
+            'a_country' => $this->normalizeAddressCountryValue($customer->c_country ?? null),
             'a_region' => $region,
             'a_province' => $province,
             'a_city' => $city,
@@ -1098,6 +1155,87 @@ class AuthController extends Controller
             'a_address_type' => 'Home',
             'a_notes' => '',
         ]);
+    }
+
+    private function normalizeAddressCountryValue(?string $country): string
+    {
+        $value = trim((string) $country);
+
+        if ($value === '' || strcasecmp($value, 'philippines') === 0 || strtoupper($value) === 'PH') {
+            return '175';
+        }
+
+        if (ctype_digit($value)) {
+            return $value;
+        }
+
+        return '0';
+    }
+
+    private function notifyAdminsAboutNewRegistration(Customer $customer): void
+    {
+        $displayName = $this->fullName($customer);
+        $joinedAt = $customer->c_date_started ?? now();
+
+        $notification = AdminNotification::query()->firstOrCreate(
+            [
+                'an_type' => 'member_joined',
+                'an_source_type' => 'customer',
+                'an_source_id' => (int) $customer->c_userid,
+            ],
+            [
+                'an_severity' => 'success',
+                'an_title' => 'New Member Joined',
+                'an_message' => sprintf(
+                    '%s joined as a new member.',
+                    $displayName !== '' ? $displayName : ('Member #' . (int) $customer->c_userid)
+                ),
+                'an_href' => '/admin/members',
+                'an_payload' => [
+                    'customer_id' => (int) $customer->c_userid,
+                    'customer_name' => $displayName,
+                    'customer_email' => (string) ($customer->c_email ?? ''),
+                    'username' => (string) ($customer->c_username ?? ''),
+                    'joined_at' => optional($joinedAt)->toDateTimeString(),
+                ],
+                'an_created_at' => $joinedAt,
+            ]
+        );
+
+        $appId = (string) config('services.pusher.app_id', '');
+        $key = (string) config('services.pusher.key', '');
+        $secret = (string) config('services.pusher.secret', '');
+
+        if ($appId === '' || $key === '' || $secret === '') {
+            return;
+        }
+
+        try {
+            $pusher = new Pusher(
+                $key,
+                $secret,
+                $appId,
+                [
+                    'cluster' => (string) config('services.pusher.cluster', 'ap1'),
+                    'useTLS' => (bool) config('services.pusher.use_tls', true),
+                ]
+            );
+
+            $pusher->trigger('private-admin-orders', 'notification.created', [
+                'id' => (int) $notification->an_id,
+                'type' => 'member_joined',
+                'title' => (string) $notification->an_title,
+                'description' => (string) $notification->an_message,
+                'href' => (string) ($notification->an_href ?? '/admin/members'),
+                'created_at' => optional($notification->an_created_at)->toDateTimeString(),
+                'payload' => is_array($notification->an_payload) ? $notification->an_payload : null,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('Failed to publish admin realtime member registration notification.', [
+                'customer_id' => (int) $customer->c_userid,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     private function mapRole(int $level): string
@@ -1224,6 +1362,13 @@ class AuthController extends Controller
     private function usernameChangeOtpCacheKey(string $verificationToken): string
     {
         return "username_change_otp:{$verificationToken}";
+    }
+
+    private function looksLikeEmailUsername(string $value): bool
+    {
+        $trimmed = trim($value);
+
+        return $trimmed !== '' && str_contains($trimmed, '@');
     }
 
     private function passwordResetCacheKey(string $token): string

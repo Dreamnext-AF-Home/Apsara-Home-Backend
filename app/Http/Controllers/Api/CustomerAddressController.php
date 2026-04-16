@@ -172,7 +172,7 @@ class CustomerAddressController extends Controller
             'a_mobile' => (string) ($customer->c_mobile ?? '0'),
             'a_mobile_code' => '0',
             'a_address' => $street,
-            'a_country' => (string) ($customer->c_country ?? '175'),
+            'a_country' => $this->normalizeAddressCountryValue($customer->c_country ?? null),
             'a_region' => $region,
             'a_province' => $province,
             'a_city' => $city,
@@ -187,6 +187,21 @@ class CustomerAddressController extends Controller
             'a_address_type' => 'Home',
             'a_notes' => '',
         ]);
+    }
+
+    private function normalizeAddressCountryValue(?string $country): string
+    {
+        $value = trim((string) $country);
+
+        if ($value === '' || strcasecmp($value, 'philippines') === 0 || strtoupper($value) === 'PH') {
+            return '175';
+        }
+
+        if (ctype_digit($value)) {
+            return $value;
+        }
+
+        return '0';
     }
 
     private function syncCustomerPrimaryAddress(Customer $customer, CustomerAddress $address): void
