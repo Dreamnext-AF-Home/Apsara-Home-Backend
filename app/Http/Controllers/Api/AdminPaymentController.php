@@ -108,6 +108,11 @@ class AdminPaymentController extends Controller
 
         if (Schema::hasTable('tbl_affiliate_voucher_issuances')) {
             $voucherBase = DB::table('tbl_affiliate_voucher_issuances');
+            $hasVoucherMaxUses = Schema::hasColumn('tbl_affiliate_voucher_issuances', 'avi_max_uses');
+            $hasVoucherUsedCount = Schema::hasColumn('tbl_affiliate_voucher_issuances', 'avi_used_count');
+            $reservedValueExpression = $hasVoucherMaxUses
+                ? DB::raw('avi_amount * COALESCE(avi_max_uses, 1)')
+                : DB::raw('avi_amount');
 
             $voucherSummary = [
                 'available' => true,
@@ -133,36 +138,44 @@ class AdminPaymentController extends Controller
                 'issued_value' => round((float) (clone $voucherBase)->sum('avi_amount'), 2),
                 'reserved_value' => round((float) (clone $voucherBase)
                     ->where('avi_status', 'active')
-                    ->sum(DB::raw('avi_amount * COALESCE(avi_max_uses, 1)')), 2),
+                    ->sum($reservedValueExpression), 2),
             ];
+
+            $voucherColumns = [
+                'vouchers.avi_id',
+                'vouchers.avi_code',
+                'vouchers.avi_amount',
+                'vouchers.avi_status',
+                'vouchers.avi_expires_at',
+                'vouchers.avi_redeemed_at',
+                'vouchers.created_at',
+                'issuer.c_username as issuer_username',
+                'issuer.c_email as issuer_email',
+                'redeemer.c_username as redeemer_username',
+            ];
+
+            if ($hasVoucherUsedCount) {
+                $voucherColumns[] = 'vouchers.avi_used_count';
+            }
+
+            if ($hasVoucherMaxUses) {
+                $voucherColumns[] = 'vouchers.avi_max_uses';
+            }
 
             $recentVouchers = DB::table('tbl_affiliate_voucher_issuances as vouchers')
                 ->leftJoin('tbl_customer as issuer', 'issuer.c_userid', '=', 'vouchers.avi_customer_id')
                 ->leftJoin('tbl_customer as redeemer', 'redeemer.c_userid', '=', 'vouchers.avi_redeemed_by_customer_id')
                 ->orderByDesc('vouchers.created_at')
                 ->limit(8)
-                ->get([
-                    'vouchers.avi_id',
-                    'vouchers.avi_code',
-                    'vouchers.avi_amount',
-                    'vouchers.avi_status',
-                    'vouchers.avi_used_count',
-                    'vouchers.avi_max_uses',
-                    'vouchers.avi_expires_at',
-                    'vouchers.avi_redeemed_at',
-                    'vouchers.created_at',
-                    'issuer.c_username as issuer_username',
-                    'issuer.c_email as issuer_email',
-                    'redeemer.c_username as redeemer_username',
-                ])
+                ->get($voucherColumns)
                 ->map(function ($row): array {
                     return [
                         'id' => (int) $row->avi_id,
                         'code' => (string) $row->avi_code,
                         'amount' => (float) $row->avi_amount,
                         'status' => $this->normalizeVoucherStatus((string) ($row->avi_status ?? ''), $row->avi_expires_at),
-                        'used_count' => $row->avi_used_count !== null ? (int) $row->avi_used_count : 0,
-                        'max_uses' => $row->avi_max_uses !== null ? (int) $row->avi_max_uses : null,
+                        'used_count' => isset($row->avi_used_count) && $row->avi_used_count !== null ? (int) $row->avi_used_count : 0,
+                        'max_uses' => isset($row->avi_max_uses) && $row->avi_max_uses !== null ? (int) $row->avi_max_uses : null,
                         'expires_at' => $row->avi_expires_at,
                         'redeemed_at' => $row->avi_redeemed_at,
                         'created_at' => $row->created_at,
