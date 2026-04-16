@@ -92,6 +92,26 @@ class ProductController extends Controller
         ]);
     }
 
+    public function deleteSearchHistory(int $id): JsonResponse
+    {
+        $customerId = auth('sanctum')->id();
+
+        $searchHistory = SearchHistory::where('sh_id', $id)
+            ->where('sh_customer_id', $customerId)
+            ->first();
+
+        if (!$searchHistory) {
+            return response()->json(['message' => 'Search history not found.'], 404);
+        }
+
+        $searchHistory->delete();
+
+        return response()->json([
+            'message' => 'Search history deleted successfully.',
+            'deleted_id' => (int) $id,
+        ]);
+    }
+
     public function reviews(int $id): JsonResponse
     {
         $exists = Product::query()->where('pd_id', $id)->exists();
@@ -968,7 +988,7 @@ class ProductController extends Controller
         }
     }
 
-    private function mapProduct(Product $p): array
+    private function mapProduct(Product $p, int $soldCount = 0, float $avgRating = 0.0): array
     {
         $images = $p->photos
             ->map(fn (ProductPhoto $photo) => (string) $photo->pp_filename)
@@ -981,6 +1001,8 @@ class ProductController extends Controller
 
         return [
             'id'          => (int)   $p->pd_id,
+            'soldCount'    => (int)   $soldCount,
+            'avgRating'    => (float) $avgRating,
             'supplierId'  => (int)   ($p->pd_supplier ?? 0),
             'supplierName' => $p->supplier
                 ? (trim((string) ($p->supplier->s_company ?? '')) !== ''
@@ -1091,8 +1113,14 @@ class ProductController extends Controller
             return response()->json(['message' => 'Product not found.'], 404);
         }
 
+        // Calculate sold count from checkout history
+        $soldCount = DB::table('tbl_checkout_history')
+            ->where('ch_product_id', $id)
+            ->whereIn('ch_status', ['paid', 'completed', 'shipped'])
+            ->sum('ch_quantity');
+
         return response()->json([
-            'product' => $this->mapProduct($product),
+            'product' => $this->mapProduct($product, $soldCount),
         ]);
     }
 
@@ -1250,8 +1278,26 @@ class ProductController extends Controller
 
             $paginator = $query->paginate($perPage);
 
+            // Get all product IDs for batch sold count and rating calculation
+            $productIds = collect($paginator->items())->pluck('pd_id')->toArray();
+            
+            // Calculate sold counts for all products in one query
+            $soldCounts = DB::table('tbl_checkout_history')
+                ->whereIn('ch_product_id', $productIds)
+                ->whereIn('ch_status', ['paid', 'completed', 'shipped'])
+                ->groupBy('ch_product_id')
+                ->selectRaw('SUM(ch_quantity) as sold_count, ch_product_id as product_id')
+                ->pluck('sold_count', 'product_id');
+
+            // Calculate average ratings for all products in one query
+            $ratings = DB::table('tbl_product_reviews')
+                ->whereIn('pr_product_id', $productIds)
+                ->groupBy('pr_product_id')
+                ->selectRaw('AVG(pr_rating) as avg_rating, COUNT(*) as review_count')
+                ->pluck('avg_rating', 'pr_product_id');
+
             $products = collect($paginator->items())
-                ->map(fn (Product $p) => $this->mapProduct($p))
+                ->map(fn (Product $p) => $this->mapProduct($p, $soldCounts->get($p->pd_id, 0), $ratings->get($p->pd_id, 0)))
                 ->values();
 
             return response()->json([
