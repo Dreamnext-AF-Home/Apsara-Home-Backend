@@ -58,6 +58,7 @@ Route::get('/categories', [CategoryController::class, 'index']);
 Route::get('/products/slug/{slug}', [ProductController::class, 'showBySlug']);
 Route::get('/products/{id}/reviews', [ProductController::class, 'reviews']);
 Route::get('/products/{id}', [ProductController::class, 'show']);
+Route::get('/products/{id}/brand', [ProductController::class, 'brand']);
 Route::get('/products', [ProductController::class, 'index']);
 Route::get('/product-brands', [ProductBrandController::class, 'publicIndex']);
 Route::get('/web-pages/home', [WebPageController::class, 'home']);
@@ -108,6 +109,8 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::put('/cart/{id}', [CartController::class, 'updateCartItem']);
     Route::delete('/cart/{id}', [CartController::class, 'removeCartItem']);
     Route::delete('/cart', [CartController::class, 'clearCart']);
+    Route::post('/search/history', [ProductController::class, 'saveSearchHistory']);
+    Route::get('/search/history', [ProductController::class, 'getSearchHistory']);
 });
 
 Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,csr'])->group(function () {
