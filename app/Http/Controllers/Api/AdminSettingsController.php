@@ -128,7 +128,7 @@ class AdminSettingsController extends Controller
             'website_qr_code_url' => 'website_qr_code_path',
         ] as $source => $target) {
             if (array_key_exists($source, $validated) && is_string($validated[$source]) && $validated[$source] !== '') {
-                $settings->{$target} = $validated[$source];
+                $settings->{$target} = $this->sanitizeAssetValue($validated[$source]);
             }
         }
 
@@ -253,6 +253,7 @@ class AdminSettingsController extends Controller
 
     private function isExternalUrl(?string $value): bool
     {
+        $value = $this->sanitizeAssetValue($value);
         if (!is_string($value) || $value === '') {
             return false;
         }
@@ -262,6 +263,7 @@ class AdminSettingsController extends Controller
 
     private function resolveAssetUrl(?string $value): ?string
     {
+        $value = $this->sanitizeAssetValue($value);
         if (!is_string($value) || $value === '') {
             return null;
         }
@@ -271,6 +273,19 @@ class AdminSettingsController extends Controller
         }
 
         return Storage::disk('public')->url($value);
+    }
+
+    private function sanitizeAssetValue(?string $value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $sanitized = trim($value);
+        $sanitized = trim($sanitized, "\"'");
+        $sanitized = preg_replace('/%22$/i', '', $sanitized) ?? $sanitized;
+
+        return $sanitized !== '' ? $sanitized : null;
     }
 
     private function formatSecuritySettings(?SystemSetting $settings): array
