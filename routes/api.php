@@ -34,6 +34,8 @@ use App\Http\Controllers\Api\AdminSettingsController;
 use App\Http\Controllers\Api\AdminPaymentController;
 use App\Http\Controllers\Api\ExpenseCategoryController;
 use App\Http\Controllers\Api\ExpenseController;
+use App\Http\Controllers\Api\CustomerConversationController;
+use App\Http\Controllers\Api\AdminConversationController;
 
 
 // Public auth routes
@@ -114,6 +116,17 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::get('/search/history', [ProductController::class, 'getSearchHistory']);
     Route::delete('/search/history', [ProductController::class, 'clearSearchHistory']);
     Route::delete('/search/history/{id}', [ProductController::class, 'deleteSearchHistory']);
+
+    // Customer Service / Conversations
+    Route::get('/conversations', [CustomerConversationController::class, 'index']);
+    Route::post('/conversations', [CustomerConversationController::class, 'store']);
+    Route::get('/conversations/{id}', [CustomerConversationController::class, 'show']);
+    Route::post('/conversations/{id}/messages', [CustomerConversationController::class, 'sendMessage']);
+    Route::get('/conversations/{id}/messages', [CustomerConversationController::class, 'getMessages']);
+    Route::post('/conversations/{id}/close', [CustomerConversationController::class, 'closeConversation']);
+    Route::post('/conversations/{id}/reopen', [CustomerConversationController::class, 'reopenConversation']);
+    Route::get('/conversations/unread/count', [CustomerConversationController::class, 'unreadCount']);
+    Route::post('/conversations/pusher/auth', [CustomerConversationController::class, 'pusherAuth']);
 });
 
 Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,csr'])->group(function () {
@@ -129,6 +142,18 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,csr'])->group(f
     Route::get('/admin/inquiries/username-changes', [AdminInquiryController::class, 'usernameChangeRequests']);
     Route::patch('/admin/inquiries/username-changes/{id}/approve', [AdminInquiryController::class, 'approveUsernameChange']);
     Route::patch('/admin/inquiries/username-changes/{id}/reject', [AdminInquiryController::class, 'rejectUsernameChange']);
+
+    // Admin: Customer Service / Conversations
+    Route::get('/admin/conversations', [AdminConversationController::class, 'index']);
+    Route::get('/admin/conversations/open', [AdminConversationController::class, 'openConversations']);
+    Route::get('/admin/conversations/statistics', [AdminConversationController::class, 'statistics']);
+    Route::get('/admin/conversations/{id}', [AdminConversationController::class, 'show']);
+    Route::post('/admin/conversations/{id}/assign-agent', [AdminConversationController::class, 'assignAgent']);
+    Route::post('/admin/conversations/{id}/unassign-agent', [AdminConversationController::class, 'unassignAgent']);
+    Route::post('/admin/conversations/{id}/messages', [AdminConversationController::class, 'sendMessage']);
+    Route::get('/admin/conversations/{id}/messages', [AdminConversationController::class, 'getMessages']);
+    Route::patch('/admin/conversations/{id}/status', [AdminConversationController::class, 'updateStatus']);
+    Route::post('/admin/conversations/pusher/auth', [AdminConversationController::class, 'pusherAuth']);
 });
 
 Route::middleware(['auth:sanctum', 'admin.or_supplier'])->group(function () {
