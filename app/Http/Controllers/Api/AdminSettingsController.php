@@ -30,6 +30,50 @@ class AdminSettingsController extends Controller
 
     public function updateGeneral(Request $request): JsonResponse
     {
+        // When sending FormData from the frontend, "empty" inputs arrive as empty strings.
+        // Laravel's `nullable` validation only skips rules for actual null values, not ''.
+        // Normalize common optional fields to null so admin settings can be saved with blanks.
+        $normalized = [];
+        foreach ([
+            'system_name',
+            'company_name',
+            'support_email',
+            'contact_number',
+            'address',
+            'branches',
+            'timezone',
+            'currency',
+            'date_format',
+            'language',
+        ] as $field) {
+            if ($request->has($field) && is_string($request->input($field)) && trim((string)$request->input($field)) === '') {
+                $normalized[$field] = null;
+            }
+        }
+
+        foreach (['enable_test_payments', 'enable_manual_checkout_mode'] as $field) {
+            if (!$request->has($field)) {
+                continue;
+            }
+
+            $value = $request->input($field);
+            if (is_string($value) && trim($value) === '') {
+                $normalized[$field] = null;
+                continue;
+            }
+
+            // Accept common string boolean values from HTML forms / FormData.
+            if ($value === 'true') {
+                $normalized[$field] = 1;
+            } elseif ($value === 'false') {
+                $normalized[$field] = 0;
+            }
+        }
+
+        if (!empty($normalized)) {
+            $request->merge($normalized);
+        }
+
         $validated = $request->validate([
             'system_name' => 'nullable|string|max:150',
             'company_name' => 'nullable|string|max:150',
