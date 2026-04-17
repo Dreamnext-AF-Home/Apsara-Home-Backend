@@ -124,13 +124,14 @@ class ProductController extends Controller
             ->where('r.pr_product_id', $id);
 
         $summaryRow = (clone $baseQuery)
-            ->selectRaw('AVG(r.pr_rating) as avg_rating, COUNT(*) as review_count')
+            ->selectRaw('COALESCE(SUM(r.pr_rating), 0) as total_stars, COUNT(*) as review_count')
             ->first();
 
-        $average = $summaryRow && $summaryRow->avg_rating !== null
-            ? round((float) $summaryRow->avg_rating, 1)
-            : 0.0;
         $count = (int) ($summaryRow->review_count ?? 0);
+        $totalStars = (float) ($summaryRow->total_stars ?? 0);
+        $average = $count > 0
+            ? round($totalStars / $count, 2)
+            : 0.0;
 
         $breakdown = [1 => 0, 2 => 0, 3 => 0, 4 => 0, 5 => 0];
         $breakdownRows = (clone $baseQuery)
@@ -1003,7 +1004,7 @@ class ProductController extends Controller
         return [
             'id'          => (int)   $p->pd_id,
             'soldCount'    => (int)   $soldCount,
-            'avgRating'    => (float) $avgRating,
+            'avgRating'    => round((float) $avgRating, 2),
             'supplierId'  => (int)   ($p->pd_supplier ?? 0),
             'supplierName' => $p->supplier
                 ? (trim((string) ($p->supplier->s_company ?? '')) !== ''
@@ -1158,11 +1159,11 @@ class ProductController extends Controller
 
         $ratingRow = DB::table('tbl_product_reviews')
             ->where('pr_product_id', $id)
-            ->selectRaw('AVG(pr_rating) as avg_rating, COUNT(*) as review_count')
+            ->selectRaw('COALESCE(SUM(pr_rating), 0) as total_stars, COUNT(*) as review_count')
             ->first();
 
-        $overallRating = $ratingRow && $ratingRow->avg_rating !== null
-            ? round((float) $ratingRow->avg_rating, 1)
+        $overallRating = $ratingRow && (int) ($ratingRow->review_count ?? 0) > 0
+            ? round(((float) ($ratingRow->total_stars ?? 0)) / (int) $ratingRow->review_count, 2)
             : null;
 
         $totalReviews = $ratingRow ? (int) $ratingRow->review_count : 0;
@@ -1296,7 +1297,7 @@ class ProductController extends Controller
             $ratings = DB::table('tbl_product_reviews')
                 ->whereIn('pr_product_id', $productIds)
                 ->groupBy('pr_product_id')
-                ->selectRaw('AVG(pr_rating) as avg_rating, COUNT(*) as review_count')
+                ->selectRaw('pr_product_id, AVG(pr_rating) as avg_rating, COUNT(*) as review_count')
                 ->pluck('avg_rating', 'pr_product_id');
 
             $products = collect($paginator->items())
@@ -2493,7 +2494,9 @@ class ProductController extends Controller
                     'pd_usertype'    => 0,
                     'pd_date'        => $now,
                     'pd_last_update' => $now,
-                    'pd_status'      => $request->pd_status ?? 0,
+                    // Public storefront visibility expects active products to be status 1/2.
+                    // Default new products to active when status is omitted by a client.
+                    'pd_status'      => (int) $request->input('pd_status', 1),
                     'pd_image'       => $images[0] ?? ($request->pd_image ?? null),
                 ]);
             } catch (\Throwable $e) {
