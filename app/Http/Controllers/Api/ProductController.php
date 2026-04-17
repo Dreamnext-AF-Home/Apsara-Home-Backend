@@ -1296,7 +1296,7 @@ class ProductController extends Controller
             $ratings = DB::table('tbl_product_reviews')
                 ->whereIn('pr_product_id', $productIds)
                 ->groupBy('pr_product_id')
-                ->selectRaw('AVG(pr_rating) as avg_rating, COUNT(*) as review_count')
+                ->selectRaw('pr_product_id, AVG(pr_rating) as avg_rating, COUNT(*) as review_count')
                 ->pluck('avg_rating', 'pr_product_id');
 
             $products = collect($paginator->items())
