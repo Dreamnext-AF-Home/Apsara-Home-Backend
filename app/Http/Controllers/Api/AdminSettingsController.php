@@ -90,6 +90,9 @@ class AdminSettingsController extends Controller
             'logo' => 'nullable|image|max:5120',
             'favicon' => 'nullable|image|max:2048',
             'website_qr_code' => 'nullable|image|max:5120',
+            'logo_url' => 'nullable|url|max:2048',
+            'favicon_url' => 'nullable|url|max:2048',
+            'website_qr_code_url' => 'nullable|url|max:2048',
         ]);
 
         $settings = SystemSetting::query()->first();
@@ -99,24 +102,34 @@ class AdminSettingsController extends Controller
         }
 
         if ($request->hasFile('logo')) {
-            if ($settings->logo_path) {
+            if ($settings->logo_path && !$this->isExternalUrl($settings->logo_path)) {
                 Storage::disk('public')->delete($settings->logo_path);
             }
             $settings->logo_path = $request->file('logo')->store('settings/logo', 'public');
         }
 
         if ($request->hasFile('favicon')) {
-            if ($settings->favicon_path) {
+            if ($settings->favicon_path && !$this->isExternalUrl($settings->favicon_path)) {
                 Storage::disk('public')->delete($settings->favicon_path);
             }
             $settings->favicon_path = $request->file('favicon')->store('settings/favicon', 'public');
         }
 
         if ($request->hasFile('website_qr_code')) {
-            if ($settings->website_qr_code_path) {
+            if ($settings->website_qr_code_path && !$this->isExternalUrl($settings->website_qr_code_path)) {
                 Storage::disk('public')->delete($settings->website_qr_code_path);
             }
             $settings->website_qr_code_path = $request->file('website_qr_code')->store('settings/website-qr-code', 'public');
+        }
+
+        foreach ([
+            'logo_url' => 'logo_path',
+            'favicon_url' => 'favicon_path',
+            'website_qr_code_url' => 'website_qr_code_path',
+        ] as $source => $target) {
+            if (array_key_exists($source, $validated) && is_string($validated[$source]) && $validated[$source] !== '') {
+                $settings->{$target} = $validated[$source];
+            }
         }
 
         foreach ([
@@ -225,9 +238,9 @@ class AdminSettingsController extends Controller
             'contact_number' => $settings?->contact_number ?? '',
             'address' => $settings?->address ?? '',
             'branches' => $settings?->branches ?? '',
-            'logo_url' => $settings?->logo_path ? Storage::disk('public')->url($settings->logo_path) : null,
-            'favicon_url' => $settings?->favicon_path ? Storage::disk('public')->url($settings->favicon_path) : null,
-            'website_qr_code_url' => $settings?->website_qr_code_path ? Storage::disk('public')->url($settings->website_qr_code_path) : null,
+            'logo_url' => $this->resolveAssetUrl($settings?->logo_path),
+            'favicon_url' => $this->resolveAssetUrl($settings?->favicon_path),
+            'website_qr_code_url' => $this->resolveAssetUrl($settings?->website_qr_code_path),
             'timezone' => $settings?->timezone ?? 'Asia/Manila',
             'currency' => $settings?->currency ?? 'PHP',
             'date_format' => $settings?->date_format ?? 'MM/DD/YYYY',
@@ -236,6 +249,28 @@ class AdminSettingsController extends Controller
             'enable_manual_checkout_mode' => (bool)($settings?->enable_manual_checkout_mode ?? false),
             'updated_at' => optional($settings?->updated_at)->toDateTimeString(),
         ];
+    }
+
+    private function isExternalUrl(?string $value): bool
+    {
+        if (!is_string($value) || $value === '') {
+            return false;
+        }
+
+        return str_starts_with($value, 'http://') || str_starts_with($value, 'https://');
+    }
+
+    private function resolveAssetUrl(?string $value): ?string
+    {
+        if (!is_string($value) || $value === '') {
+            return null;
+        }
+
+        if ($this->isExternalUrl($value)) {
+            return $value;
+        }
+
+        return Storage::disk('public')->url($value);
     }
 
     private function formatSecuritySettings(?SystemSetting $settings): array
