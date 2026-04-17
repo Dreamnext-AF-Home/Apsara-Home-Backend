@@ -30,6 +30,50 @@ class AdminSettingsController extends Controller
 
     public function updateGeneral(Request $request): JsonResponse
     {
+        // When sending FormData from the frontend, "empty" inputs arrive as empty strings.
+        // Laravel's `nullable` validation only skips rules for actual null values, not ''.
+        // Normalize common optional fields to null so admin settings can be saved with blanks.
+        $normalized = [];
+        foreach ([
+            'system_name',
+            'company_name',
+            'support_email',
+            'contact_number',
+            'address',
+            'branches',
+            'timezone',
+            'currency',
+            'date_format',
+            'language',
+        ] as $field) {
+            if ($request->has($field) && is_string($request->input($field)) && trim((string)$request->input($field)) === '') {
+                $normalized[$field] = null;
+            }
+        }
+
+        foreach (['enable_test_payments', 'enable_manual_checkout_mode'] as $field) {
+            if (!$request->has($field)) {
+                continue;
+            }
+
+            $value = $request->input($field);
+            if (is_string($value) && trim($value) === '') {
+                $normalized[$field] = null;
+                continue;
+            }
+
+            // Accept common string boolean values from HTML forms / FormData.
+            if ($value === 'true') {
+                $normalized[$field] = 1;
+            } elseif ($value === 'false') {
+                $normalized[$field] = 0;
+            }
+        }
+
+        if (!empty($normalized)) {
+            $request->merge($normalized);
+        }
+
         $validated = $request->validate([
             'system_name' => 'nullable|string|max:150',
             'company_name' => 'nullable|string|max:150',
@@ -46,6 +90,9 @@ class AdminSettingsController extends Controller
             'logo' => 'nullable|image|max:5120',
             'favicon' => 'nullable|image|max:2048',
             'website_qr_code' => 'nullable|image|max:5120',
+            'logo_url' => 'nullable|url|max:2048',
+            'favicon_url' => 'nullable|url|max:2048',
+            'website_qr_code_url' => 'nullable|url|max:2048',
         ]);
 
         $settings = SystemSetting::query()->first();
@@ -55,24 +102,34 @@ class AdminSettingsController extends Controller
         }
 
         if ($request->hasFile('logo')) {
-            if ($settings->logo_path) {
+            if ($settings->logo_path && !$this->isExternalUrl($settings->logo_path)) {
                 Storage::disk('public')->delete($settings->logo_path);
             }
             $settings->logo_path = $request->file('logo')->store('settings/logo', 'public');
         }
 
         if ($request->hasFile('favicon')) {
-            if ($settings->favicon_path) {
+            if ($settings->favicon_path && !$this->isExternalUrl($settings->favicon_path)) {
                 Storage::disk('public')->delete($settings->favicon_path);
             }
             $settings->favicon_path = $request->file('favicon')->store('settings/favicon', 'public');
         }
 
         if ($request->hasFile('website_qr_code')) {
-            if ($settings->website_qr_code_path) {
+            if ($settings->website_qr_code_path && !$this->isExternalUrl($settings->website_qr_code_path)) {
                 Storage::disk('public')->delete($settings->website_qr_code_path);
             }
             $settings->website_qr_code_path = $request->file('website_qr_code')->store('settings/website-qr-code', 'public');
+        }
+
+        foreach ([
+            'logo_url' => 'logo_path',
+            'favicon_url' => 'favicon_path',
+            'website_qr_code_url' => 'website_qr_code_path',
+        ] as $source => $target) {
+            if (array_key_exists($source, $validated) && is_string($validated[$source]) && $validated[$source] !== '') {
+                $settings->{$target} = $this->sanitizeAssetValue($validated[$source]);
+            }
         }
 
         foreach ([
@@ -181,9 +238,9 @@ class AdminSettingsController extends Controller
             'contact_number' => $settings?->contact_number ?? '',
             'address' => $settings?->address ?? '',
             'branches' => $settings?->branches ?? '',
-            'logo_url' => $settings?->logo_path ? Storage::disk('public')->url($settings->logo_path) : null,
-            'favicon_url' => $settings?->favicon_path ? Storage::disk('public')->url($settings->favicon_path) : null,
-            'website_qr_code_url' => $settings?->website_qr_code_path ? Storage::disk('public')->url($settings->website_qr_code_path) : null,
+            'logo_url' => $this->resolveAssetUrl($settings?->logo_path),
+            'favicon_url' => $this->resolveAssetUrl($settings?->favicon_path),
+            'website_qr_code_url' => $this->resolveAssetUrl($settings?->website_qr_code_path),
             'timezone' => $settings?->timezone ?? 'Asia/Manila',
             'currency' => $settings?->currency ?? 'PHP',
             'date_format' => $settings?->date_format ?? 'MM/DD/YYYY',
@@ -192,6 +249,43 @@ class AdminSettingsController extends Controller
             'enable_manual_checkout_mode' => (bool)($settings?->enable_manual_checkout_mode ?? false),
             'updated_at' => optional($settings?->updated_at)->toDateTimeString(),
         ];
+    }
+
+    private function isExternalUrl(?string $value): bool
+    {
+        $value = $this->sanitizeAssetValue($value);
+        if (!is_string($value) || $value === '') {
+            return false;
+        }
+
+        return str_starts_with($value, 'http://') || str_starts_with($value, 'https://');
+    }
+
+    private function resolveAssetUrl(?string $value): ?string
+    {
+        $value = $this->sanitizeAssetValue($value);
+        if (!is_string($value) || $value === '') {
+            return null;
+        }
+
+        if ($this->isExternalUrl($value)) {
+            return $value;
+        }
+
+        return Storage::disk('public')->url($value);
+    }
+
+    private function sanitizeAssetValue(?string $value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $sanitized = trim($value);
+        $sanitized = trim($sanitized, "\"'");
+        $sanitized = preg_replace('/%22$/i', '', $sanitized) ?? $sanitized;
+
+        return $sanitized !== '' ? $sanitized : null;
     }
 
     private function formatSecuritySettings(?SystemSetting $settings): array
