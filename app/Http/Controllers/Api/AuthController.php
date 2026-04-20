@@ -722,7 +722,6 @@ class AuthController extends Controller
         $token = $customer->currentAccessToken();
         $tokenId = (int) ($token?->id ?? 0);
 
-<<<<<<< HEAD
         if ($token) {
             $token->delete();
         }
@@ -1445,7 +1444,6 @@ class AuthController extends Controller
             'id' => (int) $customer->c_userid,
             'name' => $fullName,
             'first_name' => (string) ($customer->c_fname ?? ''),
-            'middle_name' => (string) ($customer->c_mname ?? ''),
             'last_name' => (string) ($customer->c_lname ?? ''),
             'email' => $customer->c_email,
             'username' => $customer->c_username,
@@ -1453,11 +1451,6 @@ class AuthController extends Controller
             'referrer_username' => $customer->sponsor?->c_username ? (string) $customer->sponsor->c_username : null,
             'referrer_name' => $customer->sponsor instanceof Customer ? $this->fullName($customer->sponsor) : null,
             'phone' => $customer->c_mobile,
-            'birth_date' => $customer->c_bdate ? (string) $customer->c_bdate : null,
-            'gender' => $this->mapIntToGender((int) ($customer->c_gender ?? 0)),
-            'occupation' => (string) ($customer->c_occupation ?? ''),
-            'work_location' => $this->mapCountryToWorkLocation((string) ($customer->c_country ?? '')),
-            'country' => (string) ($customer->c_country ?? ''),
             'address' => (string) ($customer->c_address ?? ''),
             'barangay' => (string) ($customer->c_barangay ?? ''),
             'city' => (string) ($customer->c_city ?? ''),
@@ -1470,7 +1463,7 @@ class AuthController extends Controller
             'zip_code' => (string) ($customer->c_zipcode ?? ''),
             'middle_name' => ($middleName = trim((string) ($customer->c_mname ?? ''))) !== '' ? $middleName : null,
             'birth_date' => $this->formatNullableDate($customer->c_bdate ?? null),
-            'gender' => $this->mapGenderFromInt($customer->c_gender ?? null),
+            'gender' => $this->mapIntToGender((int) ($customer->c_gender ?? 0)),
             'occupation' => ($occupation = trim((string) ($customer->c_occupation ?? ''))) !== '' ? $occupation : null,
             'work_location' => $this->inferWorkLocation($customer->c_country ?? null),
             'country' => ($country = trim((string) ($customer->c_country ?? ''))) !== '' ? $country : null,
@@ -2107,7 +2100,6 @@ class AuthController extends Controller
         };
     }
 
-<<<<<<< HEAD
     private function mapIntToGender(int $gender): ?string
     {
         return match ($gender) {
