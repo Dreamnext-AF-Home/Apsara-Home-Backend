@@ -192,6 +192,10 @@ class PaymentController extends Controller
             'payment_mode' => 'nullable|in:test,live',
             'online_banking_provider' => 'nullable|in:dob,ubp',
             'voucher_code' => 'nullable|string|max:80',
+            'source_label' => 'nullable|string|max:255',
+            'source_slug' => 'nullable|string|max:255',
+            'source_host' => 'nullable|string|max:255',
+            'source_url' => 'nullable|string|max:2000',
 
             'customer' => 'nullable|array',
             'customer.name' => 'nullable|string|max:255',
@@ -272,6 +276,10 @@ class PaymentController extends Controller
         }
 
         $frontend = env('FRONTEND_URL', 'http://localhost:3000');
+        $sourceLabel = trim((string) ($validated['source_label'] ?? ''));
+        $sourceSlug = trim((string) ($validated['source_slug'] ?? ''));
+        $sourceHost = trim((string) ($validated['source_host'] ?? ''));
+        $sourceUrl = trim((string) ($validated['source_url'] ?? ''));
 
         $voucherCode = trim((string) ($validated['voucher_code'] ?? ''));
         $subtotal = (float) ($validated['order']['subtotal'] ?? $validated['amount'] ?? 0);
@@ -340,6 +348,10 @@ class PaymentController extends Controller
                 'payment_method' => $validated['payment_method'],
                 'online_banking_provider' => $validated['online_banking_provider'] ?? null,
                 'payment_mode' => $paymongoConfig['mode'],
+                'source_label' => $sourceLabel !== '' ? $sourceLabel : null,
+                'source_slug' => $sourceSlug !== '' ? $sourceSlug : null,
+                'source_host' => $sourceHost !== '' ? $sourceHost : null,
+                'source_url' => $sourceUrl !== '' ? $sourceUrl : null,
                 'order' => $resolvedOrderSnapshot,
                 'voucher' => $voucher ? [
                     'id' => (int) $voucher->avi_id,
@@ -846,6 +858,10 @@ class PaymentController extends Controller
                 'ch_customer_email' => (string) ($cached['email'] ?? ''),
                 'ch_customer_phone' => (string) ($cached['phone'] ?? ''),
                 'ch_customer_address' => (string) ($cached['address'] ?? ''),
+                'ch_source_label' => (string) ($cached['source_label'] ?? ''),
+                'ch_source_slug' => (string) ($cached['source_slug'] ?? ''),
+                'ch_source_host' => (string) ($cached['source_host'] ?? ''),
+                'ch_source_url' => (string) ($cached['source_url'] ?? ''),
                 'ch_paid_at' => $this->isPaidStatus($attrs['status'] ?? null) ? now() : null,
                 'ch_approval_status' => $existingApprovalStatus ?: 'pending_approval',
                 'ch_fulfillment_status' => $existingFulfillmentStatus ?: 'pending',
@@ -1392,6 +1408,10 @@ class PaymentController extends Controller
             'shipping_fee' => 0,
             'payment_method' => $this->formatPaymentMethod((string) $order->ch_payment_method),
             'shipping_address' => $order->ch_customer_address ?: 'No address provided',
+            'source_label' => $order->ch_source_label ?: null,
+            'source_slug' => $order->ch_source_slug ?: null,
+            'source_host' => $order->ch_source_host ?: null,
+            'source_url' => $order->ch_source_url ?: null,
             'created_at' => optional($order->ch_paid_at ?? $order->created_at)->toDateTimeString(),
             'estimated_delivery' => null,
         ];
