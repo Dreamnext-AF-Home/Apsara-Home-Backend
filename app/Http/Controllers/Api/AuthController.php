@@ -306,6 +306,31 @@ class AuthController extends Controller
         ]);
     }
 
+    public function checkEmailAvailability(Request $request)
+    {
+        $validated = $request->validate([
+            'email' => ['required', 'string', 'email', 'max:255'],
+        ]);
+
+        $email = trim((string) $validated['email']);
+
+        if ($email === '') {
+            return response()->json([
+                'available' => false,
+                'message' => 'Email address is required.',
+            ], 422);
+        }
+
+        $exists = Customer::query()
+            ->whereRaw('LOWER(c_email) = ?', [mb_strtolower($email, 'UTF-8')])
+            ->exists();
+
+        return response()->json([
+            'available' => ! $exists,
+            'message' => $exists ? 'This email is already registered.' : 'Email address is available.',
+        ]);
+    }
+
     public function login(Request $request)
     {
         $request->validate([
