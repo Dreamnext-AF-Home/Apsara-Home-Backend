@@ -41,6 +41,7 @@ use App\Http\Controllers\Api\AdminConversationController;
 // Public auth routes
 Route::prefix('auth')->group(function () {
     Route::post('/register', [AuthController::class, 'register']);
+    Route::get('/register/check-email', [AuthController::class, 'checkEmailAvailability']);
     Route::get('/register/check-username', [AuthController::class, 'checkUsernameAvailability']);
     Route::post('/register/verify-otp', [AuthController::class, 'verifyRegistrationOtp']);
     Route::post('/register/resend-otp', [AuthController::class, 'resendRegistrationOtp']);
