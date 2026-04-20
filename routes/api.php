@@ -36,6 +36,8 @@ use App\Http\Controllers\Api\ExpenseCategoryController;
 use App\Http\Controllers\Api\ExpenseController;
 use App\Http\Controllers\Api\CustomerConversationController;
 use App\Http\Controllers\Api\AdminConversationController;
+use App\Http\Controllers\Api\MemberTierController;
+use App\Http\Controllers\Api\MemberActivityLogController;
 
 
 // Public auth routes
@@ -127,6 +129,14 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::post('/conversations/{id}/reopen', [CustomerConversationController::class, 'reopenConversation']);
     Route::get('/conversations/unread/count', [CustomerConversationController::class, 'unreadCount']);
     Route::post('/conversations/pusher/auth', [CustomerConversationController::class, 'pusherAuth']);
+
+    // Activity Logs
+    Route::get('/activity-logs', [MemberActivityLogController::class, 'myLogs']);
+    Route::post('/activity-logs', [MemberActivityLogController::class, 'createLog']);
+    Route::get('/activity-logs/{id}', [MemberActivityLogController::class, 'show']);
+    Route::get('/activity-logs/logins/history', [MemberActivityLogController::class, 'loginHistory']);
+    Route::get('/activity-logs/purchases/history', [MemberActivityLogController::class, 'purchaseHistory']);
+    Route::get('/activity-logs/wallet/history', [MemberActivityLogController::class, 'walletHistory']);
 });
 
 Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,csr'])->group(function () {
@@ -154,6 +164,10 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,csr'])->group(f
     Route::get('/admin/conversations/{id}/messages', [AdminConversationController::class, 'getMessages']);
     Route::patch('/admin/conversations/{id}/status', [AdminConversationController::class, 'updateStatus']);
     Route::post('/admin/conversations/pusher/auth', [AdminConversationController::class, 'pusherAuth']);
+
+    // Admin: Member Activity Logs
+    Route::get('/admin/activity-logs', [MemberActivityLogController::class, 'allLogs']);
+    Route::get('/admin/members/{id}/activity-logs', [MemberActivityLogController::class, 'memberLogs']);
 });
 
 Route::middleware(['auth:sanctum', 'admin.or_supplier'])->group(function () {
@@ -204,6 +218,13 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin'])->group(funct
     Route::post('/admin/product-brands', [ProductBrandController::class, 'store']);
     Route::put('/admin/product-brands/{id}', [ProductBrandController::class, 'update']);
     Route::delete('/admin/product-brands/{id}', [ProductBrandController::class, 'destroy']);
+
+    // Member Tiers
+    Route::get('/admin/member-tiers', [MemberTierController::class, 'index']);
+    Route::post('/admin/member-tiers', [MemberTierController::class, 'store']);
+    Route::get('/admin/member-tiers/{id}', [MemberTierController::class, 'show']);
+    Route::patch('/admin/member-tiers/{id}', [MemberTierController::class, 'update']);
+    Route::delete('/admin/member-tiers/{id}', [MemberTierController::class, 'destroy']);
 });
 
 Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,csr,merchant_admin'])->group(function () {
@@ -237,6 +258,7 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,csr,merchant_ad
 Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,accounting,finance_officer'])->group(function () {
     Route::get('/admin/payments/overview', [AdminPaymentController::class, 'overview']);
     Route::get('/admin/encashment', [AdminEncashmentController::class, 'index']);
+    Route::get('/admin/encashment/vouchers/all', [AdminEncashmentController::class, 'allAffiliateVouchers']);
     Route::patch('/admin/encashment/{id}/approve', [AdminEncashmentController::class, 'approve']);
     Route::patch('/admin/encashment/{id}/reject', [AdminEncashmentController::class, 'reject']);
     Route::patch('/admin/encashment/{id}/release', [AdminEncashmentController::class, 'release']);
