@@ -23,6 +23,7 @@ use App\Support\MemberMonthlyActivation;
 use App\Support\MemberActivityLogger;
 use App\Mail\Auth\RegistrationOtpMail;
 use App\Mail\Auth\PortalLoginOtpMail;
+use App\Mail\Auth\PortalLoginApprovalMail;
 use App\Mail\Auth\CustomerPasswordResetMail;
 use App\Mail\Auth\UsernameChangeOtpMail;
 use App\Mail\Auth\ReferralRegistrationAlertMail;
@@ -34,6 +35,7 @@ class AuthController extends Controller
     private const PASSWORD_RESET_TTL_MINUTES = 60;
     private const LOGIN_OTP_TTL_MINUTES = 10;
     private const LOGIN_OTP_MAX_ATTEMPTS = 5;
+    private const LOGIN_APPROVAL_TTL_MINUTES = 10;
 
     public function register(Request $request)
     {
@@ -342,11 +344,14 @@ class AuthController extends Controller
     {
         $otpValue = trim((string) $request->input('otp', ''));
         $challengeTokenValue = trim((string) $request->input('otp_challenge_token', ''));
+        $mfaChallengeTokenValue = trim((string) $request->input('mfa_challenge_token', ''));
         $otpLower = strtolower($otpValue);
         $challengeLower = strtolower($challengeTokenValue);
+        $mfaChallengeLower = strtolower($mfaChallengeTokenValue);
         $request->merge([
             'otp' => (!in_array($otpLower, ['', 'undefined', 'null'], true)) ? $otpValue : null,
             'otp_challenge_token' => (!in_array($challengeLower, ['', 'undefined', 'null'], true)) ? $challengeTokenValue : null,
+            'mfa_challenge_token' => (!in_array($mfaChallengeLower, ['', 'undefined', 'null'], true)) ? $mfaChallengeTokenValue : null,
         ]);
 
         $request->validate([
@@ -354,6 +359,7 @@ class AuthController extends Controller
             'password' => 'required|string',
             'otp' => 'nullable|string|size:6',
             'otp_challenge_token' => 'nullable|string',
+            'mfa_challenge_token' => 'nullable|string',
         ]);
 
         $identifier = trim($request->email);
@@ -389,28 +395,48 @@ class AuthController extends Controller
         }
 
         if ((bool) ($customer->c_two_factor_enabled ?? false)) {
-            $otp = trim((string) $request->input('otp', ''));
-            $challengeToken = trim((string) $request->input('otp_challenge_token', ''));
+            $approvalRequired = $this->requiresLoginApproval($customer, $request);
+            $mfaChallengeToken = trim((string) $request->input('mfa_challenge_token', ''));
 
-            if ($otp === '' || $challengeToken === '') {
-                $challengeToken = (string) Str::uuid();
-                $this->issueLoginOtpChallenge(
-                    challengeToken: $challengeToken,
-                    customer: $customer,
-                );
+            if ($approvalRequired) {
+                if ($mfaChallengeToken === '') {
+                    $mfaChallengeToken = (string) Str::uuid();
+                    $this->issueLoginApprovalChallenge(
+                        challengeToken: $mfaChallengeToken,
+                        customer: $customer,
+                        request: $request,
+                    );
 
-                return response()->json([
-                    'requires_otp' => true,
-                    'otp_challenge_token' => $challengeToken,
-                    'message' => 'A 6-digit OTP has been sent to your email.',
-                ], 202);
+                    return response()->json([
+                        'requires_mfa_approval' => true,
+                        'mfa_challenge_token' => $mfaChallengeToken,
+                        'message' => 'A new device sign-in approval link was sent to your email.',
+                    ], 202);
+                }
+
+                $approvalStatus = $this->getLoginApprovalChallengeStatus($mfaChallengeToken, $customer);
+                if ($approvalStatus === 'pending') {
+                    return response()->json([
+                        'requires_mfa_approval' => true,
+                        'mfa_challenge_token' => $mfaChallengeToken,
+                        'message' => 'Please approve this sign-in from your email before continuing.',
+                    ], 202);
+                }
+
+                if ($approvalStatus === 'denied') {
+                    throw ValidationException::withMessages([
+                        'login' => ['This sign-in request was denied. Please try again if this was you.'],
+                    ]);
+                }
+
+                if ($approvalStatus !== 'approved') {
+                    throw ValidationException::withMessages([
+                        'login' => ['The sign-in approval session has expired. Please sign in again.'],
+                    ]);
+                }
+
+                $this->consumeLoginApprovalChallenge($mfaChallengeToken);
             }
-
-            $this->validateLoginOtpChallenge(
-                challengeToken: $challengeToken,
-                customer: $customer,
-                otp: $otp,
-            );
         }
 
         $modernPasswordInUse = $hashMatch
@@ -493,36 +519,94 @@ class AuthController extends Controller
     public function resendLoginOtp(Request $request)
     {
         $request->validate([
-            'otp_challenge_token' => 'required|string',
+            'mfa_challenge_token' => 'required|string',
         ]);
 
-        $challengeToken = trim((string) $request->input('otp_challenge_token'));
-        $cached = Cache::get($this->loginOtpCacheKey($challengeToken));
+        $challengeToken = trim((string) $request->input('mfa_challenge_token'));
+        $cached = Cache::get($this->loginApprovalCacheKey($challengeToken));
         if (! is_array($cached) || empty($cached['customer_id'])) {
             throw ValidationException::withMessages([
-                'otp_challenge_token' => ['The OTP session has expired. Please sign in again.'],
+                'mfa_challenge_token' => ['The sign-in approval session has expired. Please sign in again.'],
             ]);
         }
 
         $customer = Customer::query()->where('c_userid', (int) $cached['customer_id'])->first();
         if (! $customer) {
-            Cache::forget($this->loginOtpCacheKey($challengeToken));
+            Cache::forget($this->loginApprovalCacheKey($challengeToken));
             throw ValidationException::withMessages([
-                'otp_challenge_token' => ['Customer account not found. Please sign in again.'],
+                'mfa_challenge_token' => ['Customer account not found. Please sign in again.'],
             ]);
         }
 
-        $attempts = (int) ($cached['attempts'] ?? 0);
-        $this->issueLoginOtpChallenge(
+        $this->issueLoginApprovalChallenge(
             challengeToken: $challengeToken,
             customer: $customer,
-            attempts: $attempts,
+            request: $request,
+            preserveStatus: true,
         );
 
         return response()->json([
-            'requires_otp' => true,
-            'otp_challenge_token' => $challengeToken,
-            'message' => 'A new OTP has been sent to your email.',
+            'requires_mfa_approval' => true,
+            'mfa_challenge_token' => $challengeToken,
+            'message' => 'A new sign-in approval email has been sent.',
+        ]);
+    }
+
+    public function loginMfaStatus(Request $request)
+    {
+        $validated = $request->validate([
+            'mfa_challenge_token' => 'required|string',
+        ]);
+
+        $challengeToken = trim((string) $validated['mfa_challenge_token']);
+        $cached = Cache::get($this->loginApprovalCacheKey($challengeToken));
+        if (! is_array($cached) || empty($cached['status'])) {
+            return response()->json([
+                'status' => 'expired',
+                'message' => 'Sign-in approval session expired. Please sign in again.',
+            ], 410);
+        }
+
+        return response()->json([
+            'status' => (string) $cached['status'],
+            'message' => match ((string) $cached['status']) {
+                'approved' => 'Sign-in approved. You can continue in your app.',
+                'denied' => 'Sign-in request denied.',
+                default => 'Waiting for your approval.',
+            },
+        ]);
+    }
+
+    public function respondLoginMfa(Request $request)
+    {
+        $validated = $request->validate([
+            'mfa_challenge_token' => 'required|string',
+            'decision' => 'required|string|in:approve,deny',
+        ]);
+
+        $challengeToken = trim((string) $validated['mfa_challenge_token']);
+        $cached = Cache::get($this->loginApprovalCacheKey($challengeToken));
+        if (! is_array($cached) || empty($cached['customer_id'])) {
+            return response()->json([
+                'status' => 'expired',
+                'message' => 'This sign-in request has expired.',
+            ], 410);
+        }
+
+        $status = ((string) $validated['decision']) === 'approve' ? 'approved' : 'denied';
+        $cached['status'] = $status;
+        $cached['responded_at'] = now()->toIso8601String();
+        Cache::put(
+            $this->loginApprovalCacheKey($challengeToken),
+            $cached,
+            now()->addMinutes(self::LOGIN_APPROVAL_TTL_MINUTES),
+        );
+
+        return response()->json([
+            'status' => $status,
+            'message' => $status === 'approved'
+                ? 'Sign-in approved. You can go back to the app.'
+                : 'Sign-in denied. If this was not you, please change your password.',
         ]);
     }
 
@@ -1538,6 +1622,122 @@ class AuthController extends Controller
     private function loginOtpCacheKey(string $challengeToken): string
     {
         return 'customer:login-otp:' . $challengeToken;
+    }
+
+    private function requiresLoginApproval(Customer $customer, Request $request): bool
+    {
+        if (! $this->isSessionTrackingReady()) {
+            return true;
+        }
+
+        $userAgent = trim((string) ($request->userAgent() ?? ''));
+        if ($userAgent === '') {
+            return true;
+        }
+
+        return ! CustomerLoginSession::query()
+            ->where('cls_customer_id', (int) $customer->c_userid)
+            ->whereNull('cls_revoked_at')
+            ->where('cls_user_agent', $userAgent)
+            ->exists();
+    }
+
+    private function issueLoginApprovalChallenge(
+        string $challengeToken,
+        Customer $customer,
+        Request $request,
+        bool $preserveStatus = false,
+    ): void {
+        $email = trim((string) $customer->c_email);
+        if ($email === '') {
+            throw ValidationException::withMessages([
+                'login' => ['This account has no email configured for login approval.'],
+            ]);
+        }
+
+        $existing = Cache::get($this->loginApprovalCacheKey($challengeToken));
+        $status = ($preserveStatus && is_array($existing)) ? (string) ($existing['status'] ?? 'pending') : 'pending';
+        if (! in_array($status, ['pending', 'approved', 'denied'], true)) {
+            $status = 'pending';
+        }
+
+        $userAgent = trim((string) ($request->userAgent() ?? ''));
+        [$platform, $browser, $device] = $this->detectDeviceInfo($userAgent);
+        $location = $this->resolveRequestLocation($request);
+        $ipAddress = (string) ($request->ip() ?? '');
+
+        $frontendUrl = rtrim((string) env('FRONTEND_URL', config('app.url')), '/');
+        $approveUrl = sprintf(
+            '%s/mfa-approval?token=%s&decision=approve',
+            $frontendUrl,
+            urlencode($challengeToken),
+        );
+        $denyUrl = sprintf(
+            '%s/mfa-approval?token=%s&decision=deny',
+            $frontendUrl,
+            urlencode($challengeToken),
+        );
+
+        Cache::put($this->loginApprovalCacheKey($challengeToken), [
+            'customer_id' => (int) $customer->c_userid,
+            'status' => $status,
+            'device' => $device,
+            'platform' => $platform,
+            'browser' => $browser,
+            'ip_address' => $ipAddress,
+            'location' => $location,
+            'user_agent' => $userAgent,
+            'responded_at' => is_array($existing) ? ($existing['responded_at'] ?? null) : null,
+        ], now()->addMinutes(self::LOGIN_APPROVAL_TTL_MINUTES));
+
+        try {
+            Mail::mailer('resend')->to($email)->send(new PortalLoginApprovalMail(
+                portalLabel: 'AF Home',
+                email: $email,
+                device: $device,
+                platform: $platform,
+                browser: $browser,
+                location: $location,
+                ipAddress: $ipAddress,
+                approveUrl: $approveUrl,
+                denyUrl: $denyUrl,
+                expiresInMinutes: (string) self::LOGIN_APPROVAL_TTL_MINUTES,
+            ));
+        } catch (\Throwable $e) {
+            report($e);
+            throw ValidationException::withMessages([
+                'login' => ['Unable to send sign-in approval email right now. Please try again shortly.'],
+            ]);
+        }
+    }
+
+    private function getLoginApprovalChallengeStatus(string $challengeToken, Customer $customer): string
+    {
+        $cached = Cache::get($this->loginApprovalCacheKey($challengeToken));
+        if (! is_array($cached) || empty($cached['customer_id'])) {
+            return 'expired';
+        }
+
+        if ((int) $cached['customer_id'] !== (int) $customer->c_userid) {
+            return 'expired';
+        }
+
+        $status = (string) ($cached['status'] ?? 'pending');
+        if (! in_array($status, ['pending', 'approved', 'denied'], true)) {
+            return 'pending';
+        }
+
+        return $status;
+    }
+
+    private function consumeLoginApprovalChallenge(string $challengeToken): void
+    {
+        Cache::forget($this->loginApprovalCacheKey($challengeToken));
+    }
+
+    private function loginApprovalCacheKey(string $challengeToken): string
+    {
+        return 'customer:login-approval:' . $challengeToken;
     }
 
     private function customerRequiresPasswordChange(Customer $customer): bool

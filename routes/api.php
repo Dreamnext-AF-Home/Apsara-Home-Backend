@@ -49,6 +49,9 @@ Route::prefix('auth')->group(function () {
     Route::post('/register/resend-otp', [AuthController::class, 'resendRegistrationOtp']);
     Route::post('/login',    [AuthController::class, 'login']);
     Route::post('/login/2fa/resend', [AuthController::class, 'resendLoginOtp']);
+    Route::post('/login/mfa/resend', [AuthController::class, 'resendLoginOtp']);
+    Route::post('/login/mfa/status', [AuthController::class, 'loginMfaStatus']);
+    Route::post('/login/mfa/respond', [AuthController::class, 'respondLoginMfa']);
     Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
     Route::get('/reset-password/{token}', [AuthController::class, 'showResetToken']);
     Route::post('/reset-password', [AuthController::class, 'resetPassword']);
