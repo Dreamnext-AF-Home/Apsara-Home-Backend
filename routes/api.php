@@ -48,6 +48,7 @@ Route::prefix('auth')->group(function () {
     Route::post('/register/verify-otp', [AuthController::class, 'verifyRegistrationOtp']);
     Route::post('/register/resend-otp', [AuthController::class, 'resendRegistrationOtp']);
     Route::post('/login',    [AuthController::class, 'login']);
+    Route::post('/login/2fa/resend', [AuthController::class, 'resendLoginOtp']);
     Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
     Route::get('/reset-password/{token}', [AuthController::class, 'showResetToken']);
     Route::post('/reset-password', [AuthController::class, 'resetPassword']);
@@ -85,6 +86,9 @@ Route::match(['GET', 'POST'], '/jnt/webhook/order-status', [JntWebhookController
 Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::post('/auth/logout', [AuthController::class, 'logout']);
     Route::get('/auth/me',      [AuthController::class, 'me']);
+    Route::get('/auth/activity', [AuthController::class, 'activity']);
+    Route::get('/auth/sessions', [AuthController::class, 'sessions']);
+    Route::delete('/auth/sessions/{tokenId}', [AuthController::class, 'revokeSession']);
     Route::get('/auth/referral-tree', [AuthController::class, 'referralTree']);
     Route::put('/auth/me',      [AuthController::class, 'updateMe']);
     Route::patch('/auth/change-password', [AuthController::class, 'changePassword']);
