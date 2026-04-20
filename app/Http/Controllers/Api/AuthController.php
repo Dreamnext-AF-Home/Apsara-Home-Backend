@@ -219,6 +219,31 @@ class AuthController extends Controller
         }
         $this->notifyAdminsAboutNewRegistration($customer);
 
+        // Log registration activity
+        try {
+            MemberActivityLog::create([
+                'mal_customer_id' => (int) $customer->c_userid,
+                'mal_activity_type' => 'registration',
+                'mal_action' => MemberActivityLog::ACTION_CREATE,
+                'mal_description' => 'New member registered',
+                'mal_resource_type' => 'account',
+                'mal_resource_id' => (int) $customer->c_userid,
+                'mal_details' => [
+                    'username' => $customer->c_username,
+                    'email' => $customer->c_email,
+                    'referrer_id' => $referrerUserId,
+                ],
+                'mal_ip_address' => request()->ip(),
+                'mal_user_agent' => request()->userAgent(),
+                'mal_created_at' => now(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('Failed to log registration activity', [
+                'customer_id' => (int) $customer->c_userid,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
         Cache::forget($this->registrationOtpCacheKey($validated['verification_token']));
 
         return response()->json([
@@ -285,6 +310,31 @@ class AuthController extends Controller
         return response()->json([
             'available' => ! $exists,
             'message' => $exists ? 'This username is already taken.' : 'Username is available.',
+        ]);
+    }
+
+    public function checkEmailAvailability(Request $request)
+    {
+        $validated = $request->validate([
+            'email' => ['required', 'string', 'email', 'max:255'],
+        ]);
+
+        $email = trim((string) $validated['email']);
+
+        if ($email === '') {
+            return response()->json([
+                'available' => false,
+                'message' => 'Email address is required.',
+            ], 422);
+        }
+
+        $exists = Customer::query()
+            ->whereRaw('LOWER(c_email) = ?', [mb_strtolower($email, 'UTF-8')])
+            ->exists();
+
+        return response()->json([
+            'available' => ! $exists,
+            'message' => $exists ? 'This email is already registered.' : 'Email address is available.',
         ]);
     }
 
@@ -410,6 +460,25 @@ class AuthController extends Controller
             MemberActivityLogger::logLogin((int) $customer->c_userid, $request);
         } catch (\Throwable $e) {
             report($e);
+        }
+
+        // Log login activity
+        try {
+            MemberActivityLog::create([
+                'mal_customer_id' => (int) $customer->c_userid,
+                'mal_activity_type' => MemberActivityLog::ACTIVITY_LOGIN,
+                'mal_action' => MemberActivityLog::ACTION_CREATE,
+                'mal_description' => 'Member logged in',
+                'mal_ip_address' => $request->ip(),
+                'mal_user_agent' => $request->userAgent(),
+                'mal_created_at' => now(),
+            ]);
+        } catch (\Throwable $e) {
+            // Log silently if activity logging fails
+            Log::warning('Failed to log login activity', [
+                'customer_id' => (int) $customer->c_userid,
+                'error' => $e->getMessage(),
+            ]);
         }
 
         return response()->json([
@@ -580,6 +649,26 @@ class AuthController extends Controller
             MemberActivityLogger::logLogout((int) $customer->c_userid, $request);
         } catch (\Throwable $e) {
             report($e);
+        }
+
+        // Log logout activity
+        try {
+            if ($customer instanceof Customer) {
+                MemberActivityLog::create([
+                    'mal_customer_id' => (int) $customer->c_userid,
+                    'mal_activity_type' => MemberActivityLog::ACTIVITY_LOGOUT,
+                    'mal_action' => MemberActivityLog::ACTION_CREATE,
+                    'mal_description' => 'Member logged out',
+                    'mal_ip_address' => $request->ip(),
+                    'mal_user_agent' => $request->userAgent(),
+                    'mal_created_at' => now(),
+                ]);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Failed to log logout activity', [
+                'customer_id' => $customer->c_userid ?? null,
+                'error' => $e->getMessage(),
+            ]);
         }
 
         return response()->json(['message' => 'Logged out successfully.']);

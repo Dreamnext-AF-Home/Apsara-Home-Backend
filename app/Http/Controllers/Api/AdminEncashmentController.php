@@ -374,6 +374,95 @@ class AdminEncashmentController extends Controller
         };
     }
 
+    public function allAffiliateVouchers(Request $request)
+    {
+        $validated = $request->validate([
+            'per_page' => 'nullable|integer|min:1|max:100',
+            'status' => 'nullable|string|in:active,redeemed,expired',
+            'customer_id' => 'nullable|integer|min:1',
+            'search' => 'nullable|string|max:120',
+        ]);
+
+        $perPage = (int) ($validated['per_page'] ?? 50);
+        $status = $validated['status'] ?? null;
+        $customerId = $validated['customer_id'] ?? null;
+        $search = trim((string) ($validated['search'] ?? ''));
+
+        $query = DB::table('tbl_affiliate_voucher_issuances')
+            ->select([
+                'tbl_affiliate_voucher_issuances.*',
+                'tbl_customer.c_userid',
+                'tbl_customer.c_username',
+                'tbl_customer.c_email',
+                'tbl_customer.c_fname',
+                'tbl_customer.c_mname',
+                'tbl_customer.c_lname',
+            ])
+            ->leftJoin('tbl_customer', 'tbl_affiliate_voucher_issuances.avi_customer_id', '=', 'tbl_customer.c_userid');
+
+        if ($status) {
+            if ($status === 'expired') {
+                $query->whereDate('avi_expires_at', '<', now());
+            } elseif ($status === 'redeemed') {
+                $query->whereNotNull('avi_redeemed_at');
+            } elseif ($status === 'active') {
+                $query->whereDate('avi_expires_at', '>=', now())
+                    ->whereNull('avi_redeemed_at');
+            }
+        }
+
+        if ($customerId) {
+            $query->where('avi_customer_id', (int) $customerId);
+        }
+
+        if ($search !== '') {
+            $query->where(function ($q) use ($search) {
+                $q->where('avi_code', 'like', "%{$search}%")
+                    ->orWhere('tbl_customer.c_username', 'like', "%{$search}%")
+                    ->orWhere('tbl_customer.c_email', 'like', "%{$search}%");
+            });
+        }
+
+        $vouchers = $query->orderByDesc('tbl_affiliate_voucher_issuances.created_at')->paginate($perPage);
+
+        return response()->json([
+            'data' => $vouchers->map(fn ($row) => $this->formatVoucher($row))->values(),
+            'meta' => [
+                'current_page' => $vouchers->currentPage(),
+                'last_page' => $vouchers->lastPage(),
+                'per_page' => $vouchers->perPage(),
+                'total' => $vouchers->total(),
+            ],
+        ]);
+    }
+
+    private function formatVoucher($row): array
+    {
+        return [
+            'id' => (int) $row->avi_id,
+            'code' => (string) $row->avi_code,
+            'amount' => (float) $row->avi_amount,
+            'status' => (string) $row->avi_status,
+            'customer' => [
+                'id' => (int) $row->c_userid,
+                'username' => (string) $row->c_username,
+                'email' => (string) $row->c_email,
+                'name' => trim(implode(' ', array_filter([
+                    $row->c_fname,
+                    $row->c_mname,
+                    $row->c_lname,
+                ]))),
+            ],
+            'redeemed_by_customer_id' => $row->avi_redeemed_by_customer_id ? (int) $row->avi_redeemed_by_customer_id : null,
+            'redeemed_at' => $row->avi_redeemed_at,
+            'expires_at' => $row->avi_expires_at,
+            'max_uses' => $row->avi_max_uses !== null ? (int) $row->avi_max_uses : null,
+            'used_count' => $row->avi_used_count !== null ? (int) $row->avi_used_count : null,
+            'created_at' => $row->created_at,
+            'updated_at' => $row->updated_at,
+        ];
+    }
+
     private function generateInvoiceNo(): string
     {
         $year = now()->format('Y');

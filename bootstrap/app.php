@@ -9,6 +9,7 @@ use App\Http\Middleware\EnsureAdminRole;
 use App\Http\Middleware\EnsureCustomerActor;
 use App\Http\Middleware\EnsureSupplierActor;
 use App\Http\Middleware\JsonAuthentication;
+use App\Http\Middleware\AdminTokenValidation;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -25,6 +26,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'customer.actor' => EnsureCustomerActor::class,
             'supplier.actor' => EnsureSupplierActor::class,
             'auth.json' => JsonAuthentication::class,
+            'admin.token.validation' => AdminTokenValidation::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

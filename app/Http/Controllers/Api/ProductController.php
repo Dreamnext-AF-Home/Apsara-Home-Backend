@@ -2298,18 +2298,6 @@ class ProductController extends Controller
                 continue;
             }
 
-            $brandName = strtolower(trim((string) ($product->brand?->pb_name ?? '')));
-            if ($brandName !== 'affordahome') {
-                $failed++;
-                $results[] = [
-                    'product_id' => (int) $product->pd_id,
-                    'status' => 'failed',
-                    'name' => $product->pd_name,
-                    'message' => 'Only Affordahome products can be assigned to manual checkout.',
-                ];
-                continue;
-            }
-
             try {
                 $beforeProduct = clone $product;
                 $product->pd_manual_checkout_enabled = $enabled ? 1 : 0;
