@@ -279,12 +279,14 @@ class MemberActivityLogger
             1 => 'Active',
             2 => 'KYC Review',
         ];
+        $oldStatusLabel = $statusNames[$oldStatus] ?? 'Unknown';
+        $newStatusLabel = $statusNames[$newStatus] ?? 'Unknown';
 
         self::log(
             customerId: $customerId,
             activityType: MemberActivityLog::ACTIVITY_ACCOUNT_STATUS_CHANGE,
             action: MemberActivityLog::ACTION_UPDATE,
-            description: "Account status changed from {$statusNames[$oldStatus] ?? 'Unknown'} to {$statusNames[$newStatus] ?? 'Unknown'}",
+            description: "Account status changed from {$oldStatusLabel} to {$newStatusLabel}",
             details: [
                 'old_status' => $oldStatus,
                 'new_status' => $newStatus,

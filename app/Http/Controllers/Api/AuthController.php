@@ -5,7 +5,9 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\AdminNotification;
 use App\Models\Customer;
+use App\Models\CustomerLoginSession;
 use App\Models\CustomerAddress;
+use App\Models\MemberActivityLog;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
@@ -13,19 +15,27 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Support\Str;
 use App\Support\MemberMonthlyActivation;
+use App\Support\MemberActivityLogger;
 use App\Mail\Auth\RegistrationOtpMail;
+use App\Mail\Auth\PortalLoginOtpMail;
+use App\Mail\Auth\PortalLoginApprovalMail;
 use App\Mail\Auth\CustomerPasswordResetMail;
 use App\Mail\Auth\UsernameChangeOtpMail;
 use App\Mail\Auth\ReferralRegistrationAlertMail;
 use Pusher\Pusher;
+use Laravel\Sanctum\PersonalAccessToken;
 
 class AuthController extends Controller
 {
     private const PASSWORD_RESET_TTL_MINUTES = 60;
+    private const LOGIN_OTP_TTL_MINUTES = 10;
+    private const LOGIN_OTP_MAX_ATTEMPTS = 5;
+    private const LOGIN_APPROVAL_TTL_MINUTES = 10;
 
     public function register(Request $request)
     {
@@ -211,6 +221,31 @@ class AuthController extends Controller
         }
         $this->notifyAdminsAboutNewRegistration($customer);
 
+        // Log registration activity
+        try {
+            MemberActivityLog::create([
+                'mal_customer_id' => (int) $customer->c_userid,
+                'mal_activity_type' => 'registration',
+                'mal_action' => MemberActivityLog::ACTION_CREATE,
+                'mal_description' => 'New member registered',
+                'mal_resource_type' => 'account',
+                'mal_resource_id' => (int) $customer->c_userid,
+                'mal_details' => [
+                    'username' => $customer->c_username,
+                    'email' => $customer->c_email,
+                    'referrer_id' => $referrerUserId,
+                ],
+                'mal_ip_address' => request()->ip(),
+                'mal_user_agent' => request()->userAgent(),
+                'mal_created_at' => now(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('Failed to log registration activity', [
+                'customer_id' => (int) $customer->c_userid,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
         Cache::forget($this->registrationOtpCacheKey($validated['verification_token']));
 
         return response()->json([
@@ -307,9 +342,24 @@ class AuthController extends Controller
 
     public function login(Request $request)
     {
+        $otpValue = trim((string) $request->input('otp', ''));
+        $challengeTokenValue = trim((string) $request->input('otp_challenge_token', ''));
+        $mfaChallengeTokenValue = trim((string) $request->input('mfa_challenge_token', ''));
+        $otpLower = strtolower($otpValue);
+        $challengeLower = strtolower($challengeTokenValue);
+        $mfaChallengeLower = strtolower($mfaChallengeTokenValue);
+        $request->merge([
+            'otp' => (!in_array($otpLower, ['', 'undefined', 'null'], true)) ? $otpValue : null,
+            'otp_challenge_token' => (!in_array($challengeLower, ['', 'undefined', 'null'], true)) ? $challengeTokenValue : null,
+            'mfa_challenge_token' => (!in_array($mfaChallengeLower, ['', 'undefined', 'null'], true)) ? $mfaChallengeTokenValue : null,
+        ]);
+
         $request->validate([
             'email'    => 'required|string',
             'password' => 'required|string',
+            'otp' => 'nullable|string|size:6',
+            'otp_challenge_token' => 'nullable|string',
+            'mfa_challenge_token' => 'nullable|string',
         ]);
 
         $identifier = trim($request->email);
@@ -342,6 +392,51 @@ class AuthController extends Controller
                 'message' => 'Your account has been banned. Please contact support for assistance.',
                 'reason' => 'banned',
             ], 403);
+        }
+
+        if ((bool) ($customer->c_two_factor_enabled ?? false)) {
+            $approvalRequired = $this->requiresLoginApproval($customer, $request);
+            $mfaChallengeToken = trim((string) $request->input('mfa_challenge_token', ''));
+
+            if ($approvalRequired) {
+                if ($mfaChallengeToken === '') {
+                    $mfaChallengeToken = (string) Str::uuid();
+                    $this->issueLoginApprovalChallenge(
+                        challengeToken: $mfaChallengeToken,
+                        customer: $customer,
+                        request: $request,
+                    );
+
+                    return response()->json([
+                        'requires_mfa_approval' => true,
+                        'mfa_challenge_token' => $mfaChallengeToken,
+                        'message' => 'A new device sign-in approval link was sent to your email.',
+                    ], 202);
+                }
+
+                $approvalStatus = $this->getLoginApprovalChallengeStatus($mfaChallengeToken, $customer);
+                if ($approvalStatus === 'pending') {
+                    return response()->json([
+                        'requires_mfa_approval' => true,
+                        'mfa_challenge_token' => $mfaChallengeToken,
+                        'message' => 'Please approve this sign-in from your email before continuing.',
+                    ], 202);
+                }
+
+                if ($approvalStatus === 'denied') {
+                    throw ValidationException::withMessages([
+                        'login' => ['This sign-in request was denied. Please try again if this was you.'],
+                    ]);
+                }
+
+                if ($approvalStatus !== 'approved') {
+                    throw ValidationException::withMessages([
+                        'login' => ['The sign-in approval session has expired. Please sign in again.'],
+                    ]);
+                }
+
+                $this->consumeLoginApprovalChallenge($mfaChallengeToken);
+            }
         }
 
         $modernPasswordInUse = $hashMatch
@@ -383,7 +478,34 @@ class AuthController extends Controller
             $customer->save();
         }
 
-        $token = $customer->createToken('auth_token')->plainTextToken;
+        $tokenResult = $customer->createToken('auth_token');
+        $token = $tokenResult->plainTextToken;
+        $plainTokenId = (int) ($tokenResult->accessToken->id ?? 0);
+        try {
+            $this->recordLoginSession($customer, $request, $plainTokenId > 0 ? $plainTokenId : null);
+            MemberActivityLogger::logLogin((int) $customer->c_userid, $request);
+        } catch (\Throwable $e) {
+            report($e);
+        }
+
+        // Log login activity
+        try {
+            MemberActivityLog::create([
+                'mal_customer_id' => (int) $customer->c_userid,
+                'mal_activity_type' => MemberActivityLog::ACTIVITY_LOGIN,
+                'mal_action' => MemberActivityLog::ACTION_CREATE,
+                'mal_description' => 'Member logged in',
+                'mal_ip_address' => $request->ip(),
+                'mal_user_agent' => $request->userAgent(),
+                'mal_created_at' => now(),
+            ]);
+        } catch (\Throwable $e) {
+            // Log silently if activity logging fails
+            Log::warning('Failed to log login activity', [
+                'customer_id' => (int) $customer->c_userid,
+                'error' => $e->getMessage(),
+            ]);
+        }
 
         return response()->json([
             'user'  => $this->transformCustomer($customer),
@@ -391,6 +513,100 @@ class AuthController extends Controller
             'message' => $mustChangePassword
                 ? 'Your account was signed in using a legacy password. Please change your password before continuing to the shop.'
                 : null,
+        ]);
+    }
+
+    public function resendLoginOtp(Request $request)
+    {
+        $request->validate([
+            'mfa_challenge_token' => 'required|string',
+        ]);
+
+        $challengeToken = trim((string) $request->input('mfa_challenge_token'));
+        $cached = Cache::get($this->loginApprovalCacheKey($challengeToken));
+        if (! is_array($cached) || empty($cached['customer_id'])) {
+            throw ValidationException::withMessages([
+                'mfa_challenge_token' => ['The sign-in approval session has expired. Please sign in again.'],
+            ]);
+        }
+
+        $customer = Customer::query()->where('c_userid', (int) $cached['customer_id'])->first();
+        if (! $customer) {
+            Cache::forget($this->loginApprovalCacheKey($challengeToken));
+            throw ValidationException::withMessages([
+                'mfa_challenge_token' => ['Customer account not found. Please sign in again.'],
+            ]);
+        }
+
+        $this->issueLoginApprovalChallenge(
+            challengeToken: $challengeToken,
+            customer: $customer,
+            request: $request,
+            preserveStatus: true,
+        );
+
+        return response()->json([
+            'requires_mfa_approval' => true,
+            'mfa_challenge_token' => $challengeToken,
+            'message' => 'A new sign-in approval email has been sent.',
+        ]);
+    }
+
+    public function loginMfaStatus(Request $request)
+    {
+        $validated = $request->validate([
+            'mfa_challenge_token' => 'required|string',
+        ]);
+
+        $challengeToken = trim((string) $validated['mfa_challenge_token']);
+        $cached = Cache::get($this->loginApprovalCacheKey($challengeToken));
+        if (! is_array($cached) || empty($cached['status'])) {
+            return response()->json([
+                'status' => 'expired',
+                'message' => 'Sign-in approval session expired. Please sign in again.',
+            ], 410);
+        }
+
+        return response()->json([
+            'status' => (string) $cached['status'],
+            'message' => match ((string) $cached['status']) {
+                'approved' => 'Sign-in approved. You can continue in your app.',
+                'denied' => 'Sign-in request denied.',
+                default => 'Waiting for your approval.',
+            },
+        ]);
+    }
+
+    public function respondLoginMfa(Request $request)
+    {
+        $validated = $request->validate([
+            'mfa_challenge_token' => 'required|string',
+            'decision' => 'required|string|in:approve,deny',
+        ]);
+
+        $challengeToken = trim((string) $validated['mfa_challenge_token']);
+        $cached = Cache::get($this->loginApprovalCacheKey($challengeToken));
+        if (! is_array($cached) || empty($cached['customer_id'])) {
+            return response()->json([
+                'status' => 'expired',
+                'message' => 'This sign-in request has expired.',
+            ], 410);
+        }
+
+        $status = ((string) $validated['decision']) === 'approve' ? 'approved' : 'denied';
+        $cached['status'] = $status;
+        $cached['responded_at'] = now()->toIso8601String();
+        Cache::put(
+            $this->loginApprovalCacheKey($challengeToken),
+            $cached,
+            now()->addMinutes(self::LOGIN_APPROVAL_TTL_MINUTES),
+        );
+
+        return response()->json([
+            'status' => $status,
+            'message' => $status === 'approved'
+                ? 'Sign-in approved. You can go back to the app.'
+                : 'Sign-in denied. If this was not you, please change your password.',
         ]);
     }
 
@@ -501,9 +717,46 @@ class AuthController extends Controller
 
     public function logout(Request $request)
     {
-        $request->user()->currentAccessToken()->delete();
+        /** @var Customer $customer */
+        $customer = $request->user();
+        $token = $customer->currentAccessToken();
+        $tokenId = (int) ($token?->id ?? 0);
 
-        return response()->json(['message' => 'Logged out successfully.']);
+<<<<<<< HEAD
+        if ($token) {
+            $token->delete();
+        }
+
+        try {
+            if ($tokenId > 0) {
+                $this->revokeSessionByTokenId((int) $customer->c_userid, $tokenId, 'logout');
+            }
+            MemberActivityLogger::logLogout((int) $customer->c_userid, $request);
+        } catch (\Throwable $e) {
+            report($e);
+        }
+
+        // Log logout activity
+        try {
+            if ($customer instanceof Customer) {
+                MemberActivityLog::create([
+                    'mal_customer_id' => (int) $customer->c_userid,
+                    'mal_activity_type' => MemberActivityLog::ACTIVITY_LOGOUT,
+                    'mal_action' => MemberActivityLog::ACTION_CREATE,
+                    'mal_description' => 'Member logged out from all devices',
+                    'mal_ip_address' => $request->ip(),
+                    'mal_user_agent' => $request->userAgent(),
+                    'mal_created_at' => now(),
+                ]);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Failed to log logout activity', [
+                'customer_id' => $customer->c_userid ?? null,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return response()->json(['message' => 'Logged out successfully from all devices.']);
     }
 
     public function me(Request $request)
@@ -523,7 +776,154 @@ class AuthController extends Controller
             ], 401);
         }
 
+        try {
+            $currentTokenId = (int) ($customer->currentAccessToken()?->id ?? 0);
+            if ($currentTokenId > 0) {
+                $this->touchSessionByTokenId((int) $customer->c_userid, $currentTokenId);
+            }
+        } catch (\Throwable $e) {
+            report($e);
+        }
+
         return response()->json($this->transformCustomer($customer));
+    }
+
+    public function activity(Request $request)
+    {
+        /** @var Customer $customer */
+        $customer = $request->user();
+
+        $items = MemberActivityLog::forCustomer((int) $customer->c_userid)
+            ->limit(30)
+            ->get()
+            ->map(function (MemberActivityLog $log): array {
+                return [
+                    'id' => (int) $log->mal_id,
+                    'activity_type' => (string) $log->mal_activity_type,
+                    'action' => (string) $log->mal_action,
+                    'title' => $this->activityTitle($log),
+                    'description' => (string) ($log->mal_description ?? ''),
+                    'created_at' => optional($log->mal_created_at)->toIso8601String(),
+                    'ip_address' => (string) ($log->mal_ip_address ?? ''),
+                    'user_agent' => (string) ($log->mal_user_agent ?? ''),
+                ];
+            })
+            ->values();
+
+        return response()->json([
+            'items' => $items,
+        ]);
+    }
+
+    public function sessions(Request $request)
+    {
+        /** @var Customer $customer */
+        $customer = $request->user();
+        $currentTokenId = (int) ($customer->currentAccessToken()?->id ?? 0);
+
+        $tokenRows = PersonalAccessToken::query()
+            ->where('tokenable_type', Customer::class)
+            ->where('tokenable_id', (int) $customer->c_userid)
+            ->orderByDesc('last_used_at')
+            ->orderByDesc('created_at')
+            ->limit(50)
+            ->get();
+
+        $tokenIds = $tokenRows->pluck('id')->map(fn ($id) => (int) $id)->filter(fn (int $id) => $id > 0)->values();
+
+        $sessionsByToken = collect();
+        if ($this->isSessionTrackingReady() && $tokenIds->isNotEmpty()) {
+            $sessionsByToken = CustomerLoginSession::query()
+                ->where('cls_customer_id', (int) $customer->c_userid)
+                ->whereIn('cls_token_id', $tokenIds->all())
+                ->whereNull('cls_revoked_at')
+                ->orderByDesc('cls_last_active_at')
+                ->orderByDesc('cls_created_at')
+                ->get()
+                ->keyBy(fn (CustomerLoginSession $row) => (int) ($row->cls_token_id ?? 0));
+        }
+
+        $items = $tokenRows
+            ->map(function (PersonalAccessToken $token) use ($sessionsByToken, $currentTokenId): array {
+                $tokenId = (int) $token->id;
+                /** @var CustomerLoginSession|null $session */
+                $session = $sessionsByToken->get($tokenId);
+
+                $platform = (string) ($session?->cls_platform ?? 'Unknown OS');
+                $browser = (string) ($session?->cls_browser ?? 'Unknown Browser');
+                $device = (string) ($session?->cls_device ?? 'Desktop');
+                $location = (string) ($session?->cls_location ?? 'Unknown location');
+                $ipAddress = (string) ($session?->cls_ip_address ?? '');
+                $userAgent = (string) ($session?->cls_user_agent ?? '');
+
+                if (($platform === 'Unknown OS' || $browser === 'Unknown Browser') && $userAgent !== '') {
+                    [$uaPlatform, $uaBrowser, $uaDevice] = $this->detectDeviceInfo($userAgent);
+                    $platform = $uaPlatform;
+                    $browser = $uaBrowser;
+                    $device = $uaDevice;
+                }
+
+                $createdAt = $session?->cls_created_at ?? $token->created_at;
+                $lastActiveAt = $session?->cls_last_active_at ?? $token->last_used_at ?? $token->created_at;
+
+                return [
+                    'id' => (int) ($session?->cls_id ?? 0),
+                    'token_id' => $tokenId,
+                    'device' => $device,
+                    'platform' => $platform,
+                    'browser' => $browser,
+                    'location' => $location,
+                    'ip_address' => $ipAddress,
+                    'user_agent' => $userAgent,
+                    'created_at' => optional($createdAt)->toIso8601String(),
+                    'last_active_at' => optional($lastActiveAt)->toIso8601String(),
+                    'is_current' => $tokenId === $currentTokenId,
+                ];
+            })
+            ->values();
+
+        return response()->json([
+            'items' => $items,
+        ]);
+    }
+
+    public function revokeSession(Request $request, int $tokenId)
+    {
+        /** @var Customer $customer */
+        $customer = $request->user();
+        $tokenId = (int) $tokenId;
+        if ($tokenId <= 0) {
+            throw ValidationException::withMessages([
+                'token_id' => ['Invalid session token.'],
+            ]);
+        }
+
+        $token = PersonalAccessToken::query()
+            ->where('id', $tokenId)
+            ->where('tokenable_type', Customer::class)
+            ->where('tokenable_id', (int) $customer->c_userid)
+            ->first();
+
+        if (! $token) {
+            throw ValidationException::withMessages([
+                'token_id' => ['Session not found.'],
+            ]);
+        }
+
+        $isCurrent = (int) ($customer->currentAccessToken()?->id ?? 0) === $tokenId;
+
+        $token->delete();
+        $this->revokeSessionByTokenId((int) $customer->c_userid, $tokenId, $isCurrent ? 'logout_current' : 'logout_device');
+
+        if ($isCurrent) {
+            MemberActivityLogger::logLogout((int) $customer->c_userid, $request);
+        }
+
+        return response()->json([
+            'message' => $isCurrent ? 'Current device signed out successfully.' : 'Device signed out successfully.',
+            'revoked_token_id' => $tokenId,
+            'is_current' => $isCurrent,
+        ]);
     }
 
     public function referralTree(Request $request)
@@ -629,14 +1029,16 @@ class AuthController extends Controller
 
         $validated = $request->validate([
             'name' => 'required|string|max:255',
+            'first_name' => 'nullable|string|max:255',
             'middle_name' => 'nullable|string|max:255',
+            'last_name' => 'nullable|string|max:255',
             'username' => [
                 'nullable',
                 'string',
                 'max:255',
                 Rule::unique('tbl_customer', 'c_username')->ignore($customer->c_userid, 'c_userid'),
             ],
-            'phone' => 'nullable|string|max:25',
+            'phone' => 'nullable|string|max:20',
             'birth_date' => 'nullable|date',
             'gender' => 'nullable|in:male,female,other',
             'occupation' => 'nullable|string|max:155',
@@ -647,11 +1049,22 @@ class AuthController extends Controller
             'city' => 'nullable|string|max:255',
             'province' => 'nullable|string|max:255',
             'region' => 'nullable|string|max:255',
+            'barangay_code' => 'nullable|string|max:20',
+            'city_code' => 'nullable|string|max:20',
+            'province_code' => 'nullable|string|max:20',
+            'region_code' => 'nullable|string|max:20',
             'zip_code' => 'nullable|string|max:20',
             'avatar_url' => 'nullable|url|max:1200',
+            'two_factor_enabled' => 'nullable|boolean',
         ]);
 
-        [$firstName, $middleName, $lastName] = $this->splitName((string) $validated['name']);
+        if (array_key_exists('first_name', $validated) || array_key_exists('middle_name', $validated) || array_key_exists('last_name', $validated)) {
+            $firstName = $validated['first_name'] ?? $customer->c_fname;
+            $middleName = $validated['middle_name'] ?? $customer->c_mname;
+            $lastName = $validated['last_name'] ?? $customer->c_lname;
+        } else {
+            [$firstName, $middleName, $lastName] = $this->splitName((string) $validated['name']);
+        }
 
         if (array_key_exists('username', $validated) && $validated['username'] !== null && $this->looksLikeEmailUsername((string) $validated['username'])) {
             throw ValidationException::withMessages([
@@ -719,12 +1132,32 @@ class AuthController extends Controller
             $customer->c_region = $validated['region'] ?: null;
         }
 
+        if (array_key_exists('barangay_code', $validated)) {
+            $customer->c_barangay_code = $validated['barangay_code'] ?: null;
+        }
+
+        if (array_key_exists('city_code', $validated)) {
+            $customer->c_city_code = $validated['city_code'] ?: null;
+        }
+
+        if (array_key_exists('province_code', $validated)) {
+            $customer->c_province_code = $validated['province_code'] ?: null;
+        }
+
+        if (array_key_exists('region_code', $validated)) {
+            $customer->c_region_code = $validated['region_code'] ?: null;
+        }
+
         if (array_key_exists('zip_code', $validated)) {
             $customer->c_zipcode = $validated['zip_code'] ?: null;
         }
 
         if (array_key_exists('avatar_url', $validated)) {
             $customer->c_avatar_url = $validated['avatar_url'] ?: null;
+        }
+
+        if (array_key_exists('two_factor_enabled', $validated)) {
+            $customer->c_two_factor_enabled = (bool) $validated['two_factor_enabled'];
         }
 
         $customer->save();
@@ -1011,17 +1444,29 @@ class AuthController extends Controller
         return [
             'id' => (int) $customer->c_userid,
             'name' => $fullName,
+            'first_name' => (string) ($customer->c_fname ?? ''),
+            'middle_name' => (string) ($customer->c_mname ?? ''),
+            'last_name' => (string) ($customer->c_lname ?? ''),
             'email' => $customer->c_email,
             'username' => $customer->c_username,
             'referrer_id' => (int) ($customer->c_sponsor ?? 0),
             'referrer_username' => $customer->sponsor?->c_username ? (string) $customer->sponsor->c_username : null,
             'referrer_name' => $customer->sponsor instanceof Customer ? $this->fullName($customer->sponsor) : null,
             'phone' => $customer->c_mobile,
+            'birth_date' => $customer->c_bdate ? (string) $customer->c_bdate : null,
+            'gender' => $this->mapIntToGender((int) ($customer->c_gender ?? 0)),
+            'occupation' => (string) ($customer->c_occupation ?? ''),
+            'work_location' => $this->mapCountryToWorkLocation((string) ($customer->c_country ?? '')),
+            'country' => (string) ($customer->c_country ?? ''),
             'address' => (string) ($customer->c_address ?? ''),
             'barangay' => (string) ($customer->c_barangay ?? ''),
             'city' => (string) ($customer->c_city ?? ''),
             'province' => (string) ($customer->c_province ?? ''),
             'region' => (string) ($customer->c_region ?? ''),
+            'barangay_code' => (string) ($customer->c_barangay_code ?? ''),
+            'city_code' => (string) ($customer->c_city_code ?? ''),
+            'province_code' => (string) ($customer->c_province_code ?? ''),
+            'region_code' => (string) ($customer->c_region_code ?? ''),
             'zip_code' => (string) ($customer->c_zipcode ?? ''),
             'middle_name' => ($middleName = trim((string) ($customer->c_mname ?? ''))) !== '' ? $middleName : null,
             'birth_date' => $this->formatNullableDate($customer->c_bdate ?? null),
@@ -1039,7 +1484,343 @@ class AuthController extends Controller
             'profile_completion_percentage' => $this->customerProfileCompletionPercentage($customer),
             'email_verified' => true,
             'password_change_required' => $this->customerRequiresPasswordChange($customer),
+            'two_factor_enabled' => (bool) ($customer->c_two_factor_enabled ?? false),
         ];
+    }
+
+    private function activityTitle(MemberActivityLog $log): string
+    {
+        $type = (string) ($log->mal_activity_type ?? '');
+        $description = trim((string) ($log->mal_description ?? ''));
+        if ($description !== '') {
+            return $description;
+        }
+
+        return match ($type) {
+            MemberActivityLog::ACTIVITY_LOGIN => 'Signed in',
+            MemberActivityLog::ACTIVITY_LOGOUT => 'Signed out',
+            MemberActivityLog::ACTIVITY_PROFILE_UPDATE => 'Updated profile details',
+            MemberActivityLog::ACTIVITY_PASSWORD_CHANGE => 'Changed account password',
+            MemberActivityLog::ACTIVITY_ADDRESS_UPDATE => 'Updated address information',
+            MemberActivityLog::ACTIVITY_PURCHASE => 'Placed an order',
+            default => 'Account activity',
+        };
+    }
+
+    private function recordLoginSession(Customer $customer, Request $request, ?int $tokenId = null): void
+    {
+        if (! $this->isSessionTrackingReady()) {
+            return;
+        }
+        $userAgent = trim((string) ($request->userAgent() ?? ''));
+        [$platform, $browser, $device] = $this->detectDeviceInfo($userAgent);
+        $location = $this->resolveRequestLocation($request);
+
+        CustomerLoginSession::create([
+            'cls_customer_id' => (int) $customer->c_userid,
+            'cls_token_id' => $tokenId,
+            'cls_device' => $device,
+            'cls_platform' => $platform,
+            'cls_browser' => $browser,
+            'cls_location' => $location,
+            'cls_ip_address' => (string) ($request->ip() ?? ''),
+            'cls_user_agent' => $userAgent,
+            'cls_last_active_at' => now(),
+            'cls_created_at' => now(),
+        ]);
+    }
+
+    private function revokeSessionByTokenId(int $customerId, int $tokenId, string $reason): void
+    {
+        if (! $this->isSessionTrackingReady()) {
+            return;
+        }
+        CustomerLoginSession::query()
+            ->where('cls_customer_id', $customerId)
+            ->where('cls_token_id', $tokenId)
+            ->whereNull('cls_revoked_at')
+            ->update([
+                'cls_revoked_at' => now(),
+                'cls_revoke_reason' => $reason,
+            ]);
+    }
+
+    private function touchSessionByTokenId(int $customerId, int $tokenId): void
+    {
+        if (! $this->isSessionTrackingReady()) {
+            return;
+        }
+
+        CustomerLoginSession::query()
+            ->where('cls_customer_id', $customerId)
+            ->where('cls_token_id', $tokenId)
+            ->whereNull('cls_revoked_at')
+            ->update([
+                'cls_last_active_at' => now(),
+            ]);
+    }
+
+    private function isSessionTrackingReady(): bool
+    {
+        try {
+            return Schema::hasTable('tbl_customer_login_sessions');
+        } catch (\Throwable $e) {
+            report($e);
+            return false;
+        }
+    }
+
+    private function resolveRequestLocation(Request $request): string
+    {
+        $city = trim((string) ($request->header('X-App-City') ?? $request->header('X-City') ?? ''));
+        $region = trim((string) ($request->header('X-App-Region') ?? $request->header('X-Region') ?? ''));
+        $country = trim((string) ($request->header('CF-IPCountry') ?? $request->header('X-App-Country') ?? $request->header('X-Country') ?? ''));
+
+        $parts = array_values(array_filter([$city, $region, $country], fn (string $v): bool => $v !== ''));
+        if (!empty($parts)) {
+            return implode(', ', $parts);
+        }
+
+        $ip = (string) ($request->ip() ?? '');
+        if ($ip === '127.0.0.1' || $ip === '::1' || strtolower($ip) === 'localhost') {
+            return 'Localhost';
+        }
+
+        return $ip !== '' ? $ip : 'Unknown location';
+    }
+
+    private function detectDeviceInfo(string $userAgent): array
+    {
+        $ua = strtolower($userAgent);
+
+        $platform = 'Unknown OS';
+        if (str_contains($ua, 'windows')) {
+            $platform = 'Windows';
+        } elseif (str_contains($ua, 'mac os') || str_contains($ua, 'macintosh')) {
+            $platform = 'macOS';
+        } elseif (str_contains($ua, 'android')) {
+            $platform = 'Android';
+        } elseif (str_contains($ua, 'iphone') || str_contains($ua, 'ipad') || str_contains($ua, 'ios')) {
+            $platform = 'iOS';
+        } elseif (str_contains($ua, 'linux')) {
+            $platform = 'Linux';
+        }
+
+        $browser = 'Unknown Browser';
+        if (str_contains($ua, 'edg/')) {
+            $browser = 'Edge';
+        } elseif (str_contains($ua, 'opr/') || str_contains($ua, 'opera')) {
+            $browser = 'Opera';
+        } elseif (str_contains($ua, 'chrome/') && !str_contains($ua, 'edg/')) {
+            $browser = 'Chrome';
+        } elseif (str_contains($ua, 'safari/') && !str_contains($ua, 'chrome/')) {
+            $browser = 'Safari';
+        } elseif (str_contains($ua, 'firefox/')) {
+            $browser = 'Firefox';
+        }
+
+        $device = 'Desktop';
+        if (str_contains($ua, 'mobile') || str_contains($ua, 'iphone') || str_contains($ua, 'android')) {
+            $device = 'Mobile';
+        } elseif (str_contains($ua, 'ipad') || str_contains($ua, 'tablet')) {
+            $device = 'Tablet';
+        }
+
+        return [$platform, $browser, $device];
+    }
+
+    private function issueLoginOtpChallenge(string $challengeToken, Customer $customer, int $attempts = 0): void
+    {
+        $email = trim((string) $customer->c_email);
+        if ($email === '') {
+            throw ValidationException::withMessages([
+                'login' => ['This account has no email configured for OTP verification.'],
+            ]);
+        }
+
+        $otp = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+        $expiresAt = now()->addMinutes(self::LOGIN_OTP_TTL_MINUTES);
+
+        Cache::put($this->loginOtpCacheKey($challengeToken), [
+            'customer_id' => (int) $customer->c_userid,
+            'otp_hash' => Hash::make($otp),
+            'attempts' => $attempts,
+        ], $expiresAt);
+
+        try {
+            Mail::mailer('resend')->to($email)->send(new PortalLoginOtpMail(
+                otp: $otp,
+                email: $email,
+                portalLabel: 'AF Home',
+                expiresInMinutes: (string) self::LOGIN_OTP_TTL_MINUTES,
+            ));
+        } catch (\Throwable $e) {
+            report($e);
+            throw ValidationException::withMessages([
+                'login' => ['Unable to send OTP email right now. Please try again shortly.'],
+            ]);
+        }
+    }
+
+    private function validateLoginOtpChallenge(string $challengeToken, Customer $customer, string $otp): void
+    {
+        $cached = Cache::get($this->loginOtpCacheKey($challengeToken));
+        if (! is_array($cached) || empty($cached['otp_hash']) || empty($cached['customer_id'])) {
+            throw ValidationException::withMessages([
+                'otp' => ['OTP session expired. Please sign in again.'],
+            ]);
+        }
+
+        if ((int) $cached['customer_id'] !== (int) $customer->c_userid) {
+            throw ValidationException::withMessages([
+                'otp' => ['OTP session mismatch. Please sign in again.'],
+            ]);
+        }
+
+        $attempts = (int) ($cached['attempts'] ?? 0);
+        if (! Hash::check($otp, (string) $cached['otp_hash'])) {
+            $attempts++;
+            if ($attempts >= self::LOGIN_OTP_MAX_ATTEMPTS) {
+                Cache::forget($this->loginOtpCacheKey($challengeToken));
+                throw ValidationException::withMessages([
+                    'otp' => ['Too many invalid OTP attempts. Please sign in again.'],
+                ]);
+            }
+
+            $cached['attempts'] = $attempts;
+            Cache::put(
+                $this->loginOtpCacheKey($challengeToken),
+                $cached,
+                now()->addMinutes(self::LOGIN_OTP_TTL_MINUTES),
+            );
+
+            throw ValidationException::withMessages([
+                'otp' => ['Invalid OTP code.'],
+            ]);
+        }
+
+        Cache::forget($this->loginOtpCacheKey($challengeToken));
+    }
+
+    private function loginOtpCacheKey(string $challengeToken): string
+    {
+        return 'customer:login-otp:' . $challengeToken;
+    }
+
+    private function requiresLoginApproval(Customer $customer, Request $request): bool
+    {
+        if (! $this->isSessionTrackingReady()) {
+            return true;
+        }
+
+        $userAgent = trim((string) ($request->userAgent() ?? ''));
+        if ($userAgent === '') {
+            return true;
+        }
+
+        return ! CustomerLoginSession::query()
+            ->where('cls_customer_id', (int) $customer->c_userid)
+            ->whereNull('cls_revoked_at')
+            ->where('cls_user_agent', $userAgent)
+            ->exists();
+    }
+
+    private function issueLoginApprovalChallenge(
+        string $challengeToken,
+        Customer $customer,
+        Request $request,
+        bool $preserveStatus = false,
+    ): void {
+        $email = trim((string) $customer->c_email);
+        if ($email === '') {
+            throw ValidationException::withMessages([
+                'login' => ['This account has no email configured for login approval.'],
+            ]);
+        }
+
+        $existing = Cache::get($this->loginApprovalCacheKey($challengeToken));
+        $status = ($preserveStatus && is_array($existing)) ? (string) ($existing['status'] ?? 'pending') : 'pending';
+        if (! in_array($status, ['pending', 'approved', 'denied'], true)) {
+            $status = 'pending';
+        }
+
+        $userAgent = trim((string) ($request->userAgent() ?? ''));
+        [$platform, $browser, $device] = $this->detectDeviceInfo($userAgent);
+        $location = $this->resolveRequestLocation($request);
+        $ipAddress = (string) ($request->ip() ?? '');
+
+        $frontendUrl = rtrim((string) env('FRONTEND_URL', config('app.url')), '/');
+        $approveUrl = sprintf(
+            '%s/mfa-approval?token=%s&decision=approve',
+            $frontendUrl,
+            urlencode($challengeToken),
+        );
+        $denyUrl = sprintf(
+            '%s/mfa-approval?token=%s&decision=deny',
+            $frontendUrl,
+            urlencode($challengeToken),
+        );
+
+        Cache::put($this->loginApprovalCacheKey($challengeToken), [
+            'customer_id' => (int) $customer->c_userid,
+            'status' => $status,
+            'device' => $device,
+            'platform' => $platform,
+            'browser' => $browser,
+            'ip_address' => $ipAddress,
+            'location' => $location,
+            'user_agent' => $userAgent,
+            'responded_at' => is_array($existing) ? ($existing['responded_at'] ?? null) : null,
+        ], now()->addMinutes(self::LOGIN_APPROVAL_TTL_MINUTES));
+
+        try {
+            Mail::mailer('resend')->to($email)->send(new PortalLoginApprovalMail(
+                portalLabel: 'AF Home',
+                email: $email,
+                device: $device,
+                platform: $platform,
+                browser: $browser,
+                location: $location,
+                ipAddress: $ipAddress,
+                approveUrl: $approveUrl,
+                denyUrl: $denyUrl,
+                expiresInMinutes: (string) self::LOGIN_APPROVAL_TTL_MINUTES,
+            ));
+        } catch (\Throwable $e) {
+            report($e);
+            throw ValidationException::withMessages([
+                'login' => ['Unable to send sign-in approval email right now. Please try again shortly.'],
+            ]);
+        }
+    }
+
+    private function getLoginApprovalChallengeStatus(string $challengeToken, Customer $customer): string
+    {
+        $cached = Cache::get($this->loginApprovalCacheKey($challengeToken));
+        if (! is_array($cached) || empty($cached['customer_id'])) {
+            return 'expired';
+        }
+
+        if ((int) $cached['customer_id'] !== (int) $customer->c_userid) {
+            return 'expired';
+        }
+
+        $status = (string) ($cached['status'] ?? 'pending');
+        if (! in_array($status, ['pending', 'approved', 'denied'], true)) {
+            return 'pending';
+        }
+
+        return $status;
+    }
+
+    private function consumeLoginApprovalChallenge(string $challengeToken): void
+    {
+        Cache::forget($this->loginApprovalCacheKey($challengeToken));
+    }
+
+    private function loginApprovalCacheKey(string $challengeToken): string
+    {
+        return 'customer:login-approval:' . $challengeToken;
     }
 
     private function customerRequiresPasswordChange(Customer $customer): bool
@@ -1326,9 +2107,10 @@ class AuthController extends Controller
         };
     }
 
-    private function mapGenderFromInt(mixed $gender): ?string
+<<<<<<< HEAD
+    private function mapIntToGender(int $gender): ?string
     {
-        return match ((int) $gender) {
+        return match ($gender) {
             1 => 'male',
             2 => 'female',
             3 => 'other',
