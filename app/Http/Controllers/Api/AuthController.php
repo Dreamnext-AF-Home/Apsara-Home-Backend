@@ -629,6 +629,7 @@ class AuthController extends Controller
 
         $validated = $request->validate([
             'name' => 'required|string|max:255',
+            'middle_name' => 'nullable|string|max:255',
             'username' => [
                 'nullable',
                 'string',
@@ -636,6 +637,11 @@ class AuthController extends Controller
                 Rule::unique('tbl_customer', 'c_username')->ignore($customer->c_userid, 'c_userid'),
             ],
             'phone' => 'nullable|string|max:25',
+            'birth_date' => 'nullable|date',
+            'gender' => 'nullable|in:male,female,other',
+            'occupation' => 'nullable|string|max:155',
+            'work_location' => 'nullable|in:local,overseas',
+            'country' => 'nullable|string|max:45',
             'address' => 'nullable|string|max:500',
             'barangay' => 'nullable|string|max:255',
             'city' => 'nullable|string|max:255',
@@ -654,7 +660,13 @@ class AuthController extends Controller
         }
 
         $customer->c_fname = $firstName;
-        $customer->c_mname = $middleName;
+        if (array_key_exists('middle_name', $validated)) {
+            $customer->c_mname = ($validated['middle_name'] ?? '') !== ''
+                ? trim((string) $validated['middle_name'])
+                : null;
+        } else {
+            $customer->c_mname = $middleName;
+        }
         $customer->c_lname = $lastName;
 
         if (array_key_exists('username', $validated) && $validated['username'] !== null) {
@@ -663,6 +675,28 @@ class AuthController extends Controller
 
         if (array_key_exists('phone', $validated) && $validated['phone'] !== null) {
             $customer->c_mobile = $validated['phone'];
+        }
+
+        if (array_key_exists('birth_date', $validated)) {
+            $customer->c_bdate = $validated['birth_date'] ?: null;
+        }
+
+        if (array_key_exists('gender', $validated)) {
+            $customer->c_gender = $this->mapGenderToInt($validated['gender'] ?? null);
+        }
+
+        if (array_key_exists('occupation', $validated)) {
+            $customer->c_occupation = $validated['occupation'] ?: null;
+        }
+
+        if (array_key_exists('country', $validated)) {
+            $customer->c_country = $validated['country'] ?: null;
+        } elseif (
+            array_key_exists('work_location', $validated)
+            && ($validated['work_location'] ?? null) === 'local'
+            && trim((string) ($customer->c_country ?? '')) === ''
+        ) {
+            $customer->c_country = 'Philippines';
         }
 
         if (array_key_exists('address', $validated)) {
@@ -989,12 +1023,20 @@ class AuthController extends Controller
             'province' => (string) ($customer->c_province ?? ''),
             'region' => (string) ($customer->c_region ?? ''),
             'zip_code' => (string) ($customer->c_zipcode ?? ''),
+            'middle_name' => ($middleName = trim((string) ($customer->c_mname ?? ''))) !== '' ? $middleName : null,
+            'birth_date' => $this->formatNullableDate($customer->c_bdate ?? null),
+            'gender' => $this->mapGenderFromInt($customer->c_gender ?? null),
+            'occupation' => ($occupation = trim((string) ($customer->c_occupation ?? ''))) !== '' ? $occupation : null,
+            'work_location' => $this->inferWorkLocation($customer->c_country ?? null),
+            'country' => ($country = trim((string) ($customer->c_country ?? ''))) !== '' ? $country : null,
             'avatar_url' => $customer->c_avatar_url,
             'rank' => (int) ($customer->c_rank ?? 0),
             'account_status' => $accountStatus,
             'lock_status' => $lockStatus,
             'verification_status' => $verificationStatus,
             'monthly_activation' => MemberMonthlyActivation::summary($customer),
+            'profile_complete' => $this->isCustomerProfileComplete($customer),
+            'profile_completion_percentage' => $this->customerProfileCompletionPercentage($customer),
             'email_verified' => true,
             'password_change_required' => $this->customerRequiresPasswordChange($customer),
         ];
@@ -1282,6 +1324,80 @@ class AuthController extends Controller
             'other' => 3,
             default => 0,
         };
+    }
+
+    private function mapGenderFromInt(mixed $gender): ?string
+    {
+        return match ((int) $gender) {
+            1 => 'male',
+            2 => 'female',
+            3 => 'other',
+            default => null,
+        };
+    }
+
+    private function formatNullableDate(mixed $value): ?string
+    {
+        if ($value instanceof \DateTimeInterface) {
+            return $value->format('Y-m-d');
+        }
+
+        $stringValue = trim((string) $value);
+        if ($stringValue === '') {
+            return null;
+        }
+
+        $timestamp = strtotime($stringValue);
+        if ($timestamp === false) {
+            return $stringValue;
+        }
+
+        return date('Y-m-d', $timestamp);
+    }
+
+    private function inferWorkLocation(?string $country): ?string
+    {
+        $value = trim((string) $country);
+        if ($value === '') {
+            return null;
+        }
+
+        if (
+            strcasecmp($value, 'philippines') === 0
+            || strtoupper($value) === 'PH'
+            || $value === '175'
+            || strcasecmp($value, 'local') === 0
+        ) {
+            return 'local';
+        }
+
+        return 'overseas';
+    }
+
+    private function customerProfileCompletionPercentage(Customer $customer): int
+    {
+        $country = trim((string) ($customer->c_country ?? ''));
+        $occupation = trim((string) ($customer->c_occupation ?? ''));
+        $phone = trim((string) ($customer->c_mobile ?? ''));
+
+        $checks = [
+            trim($this->fullName($customer)) !== '',
+            trim((string) ($customer->c_email ?? '')) !== '',
+            $phone !== '' && $phone !== '0',
+            trim((string) ($customer->c_username ?? '')) !== '',
+            $this->formatNullableDate($customer->c_bdate ?? null) !== null,
+            $this->mapGenderFromInt($customer->c_gender ?? null) !== null,
+            $occupation !== '' && strcasecmp($occupation, 'none') !== 0,
+            $this->inferWorkLocation($country) !== null,
+            $country !== '',
+        ];
+
+        return (int) round((count(array_filter($checks)) / count($checks)) * 100);
+    }
+
+    private function isCustomerProfileComplete(Customer $customer): bool
+    {
+        return $this->customerProfileCompletionPercentage($customer) >= 100;
     }
 
     private function validateNoBadWords(array $values): void
