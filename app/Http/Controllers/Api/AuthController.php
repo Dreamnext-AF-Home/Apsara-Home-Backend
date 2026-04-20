@@ -523,7 +523,7 @@ class AuthController extends Controller
     {
         $customer = $request->user();
 
-        $request->user()->currentAccessToken()->delete();
+        $request->user()->tokens()->delete();
 
         // Log logout activity
         try {
@@ -532,7 +532,7 @@ class AuthController extends Controller
                     'mal_customer_id' => (int) $customer->c_userid,
                     'mal_activity_type' => MemberActivityLog::ACTIVITY_LOGOUT,
                     'mal_action' => MemberActivityLog::ACTION_CREATE,
-                    'mal_description' => 'Member logged out',
+                    'mal_description' => 'Member logged out from all devices',
                     'mal_ip_address' => $request->ip(),
                     'mal_user_agent' => $request->userAgent(),
                     'mal_created_at' => now(),
@@ -545,7 +545,7 @@ class AuthController extends Controller
             ]);
         }
 
-        return response()->json(['message' => 'Logged out successfully.']);
+        return response()->json(['message' => 'Logged out successfully from all devices.']);
     }
 
     public function me(Request $request)
@@ -671,23 +671,41 @@ class AuthController extends Controller
 
         $validated = $request->validate([
             'name' => 'required|string|max:255',
+            'first_name' => 'nullable|string|max:255',
+            'middle_name' => 'nullable|string|max:255',
+            'last_name' => 'nullable|string|max:255',
             'username' => [
                 'nullable',
                 'string',
                 'max:255',
                 Rule::unique('tbl_customer', 'c_username')->ignore($customer->c_userid, 'c_userid'),
             ],
-            'phone' => 'nullable|string|max:25',
+            'phone' => 'nullable|string|max:20',
+            'birth_date' => 'nullable|date',
+            'gender' => 'nullable|in:male,female,other',
+            'occupation' => 'nullable|string|max:155',
+            'work_location' => 'nullable|in:local,overseas',
+            'country' => 'nullable|string|max:45',
             'address' => 'nullable|string|max:500',
             'barangay' => 'nullable|string|max:255',
             'city' => 'nullable|string|max:255',
             'province' => 'nullable|string|max:255',
             'region' => 'nullable|string|max:255',
+            'barangay_code' => 'nullable|string|max:20',
+            'city_code' => 'nullable|string|max:20',
+            'province_code' => 'nullable|string|max:20',
+            'region_code' => 'nullable|string|max:20',
             'zip_code' => 'nullable|string|max:20',
             'avatar_url' => 'nullable|url|max:1200',
         ]);
 
-        [$firstName, $middleName, $lastName] = $this->splitName((string) $validated['name']);
+        if (array_key_exists('first_name', $validated) || array_key_exists('middle_name', $validated) || array_key_exists('last_name', $validated)) {
+            $firstName = $validated['first_name'] ?? $customer->c_fname;
+            $middleName = $validated['middle_name'] ?? $customer->c_mname;
+            $lastName = $validated['last_name'] ?? $customer->c_lname;
+        } else {
+            [$firstName, $middleName, $lastName] = $this->splitName((string) $validated['name']);
+        }
 
         if (array_key_exists('username', $validated) && $validated['username'] !== null && $this->looksLikeEmailUsername((string) $validated['username'])) {
             throw ValidationException::withMessages([
@@ -705,6 +723,22 @@ class AuthController extends Controller
 
         if (array_key_exists('phone', $validated) && $validated['phone'] !== null) {
             $customer->c_mobile = $validated['phone'];
+        }
+
+        if (array_key_exists('birth_date', $validated)) {
+            $customer->c_bdate = $validated['birth_date'] ?: null;
+        }
+
+        if (array_key_exists('gender', $validated)) {
+            $customer->c_gender = $this->mapGenderToInt($validated['gender'] ?? null);
+        }
+
+        if (array_key_exists('occupation', $validated)) {
+            $customer->c_occupation = $validated['occupation'] ?: 'None';
+        }
+
+        if (array_key_exists('country', $validated)) {
+            $customer->c_country = $validated['country'] ?: null;
         }
 
         if (array_key_exists('address', $validated)) {
@@ -725,6 +759,22 @@ class AuthController extends Controller
 
         if (array_key_exists('region', $validated)) {
             $customer->c_region = $validated['region'] ?: null;
+        }
+
+        if (array_key_exists('barangay_code', $validated)) {
+            $customer->c_barangay_code = $validated['barangay_code'] ?: null;
+        }
+
+        if (array_key_exists('city_code', $validated)) {
+            $customer->c_city_code = $validated['city_code'] ?: null;
+        }
+
+        if (array_key_exists('province_code', $validated)) {
+            $customer->c_province_code = $validated['province_code'] ?: null;
+        }
+
+        if (array_key_exists('region_code', $validated)) {
+            $customer->c_region_code = $validated['region_code'] ?: null;
         }
 
         if (array_key_exists('zip_code', $validated)) {
@@ -1019,17 +1069,29 @@ class AuthController extends Controller
         return [
             'id' => (int) $customer->c_userid,
             'name' => $fullName,
+            'first_name' => (string) ($customer->c_fname ?? ''),
+            'middle_name' => (string) ($customer->c_mname ?? ''),
+            'last_name' => (string) ($customer->c_lname ?? ''),
             'email' => $customer->c_email,
             'username' => $customer->c_username,
             'referrer_id' => (int) ($customer->c_sponsor ?? 0),
             'referrer_username' => $customer->sponsor?->c_username ? (string) $customer->sponsor->c_username : null,
             'referrer_name' => $customer->sponsor instanceof Customer ? $this->fullName($customer->sponsor) : null,
             'phone' => $customer->c_mobile,
+            'birth_date' => $customer->c_bdate ? (string) $customer->c_bdate : null,
+            'gender' => $this->mapIntToGender((int) ($customer->c_gender ?? 0)),
+            'occupation' => (string) ($customer->c_occupation ?? ''),
+            'work_location' => $this->mapCountryToWorkLocation((string) ($customer->c_country ?? '')),
+            'country' => (string) ($customer->c_country ?? ''),
             'address' => (string) ($customer->c_address ?? ''),
             'barangay' => (string) ($customer->c_barangay ?? ''),
             'city' => (string) ($customer->c_city ?? ''),
             'province' => (string) ($customer->c_province ?? ''),
             'region' => (string) ($customer->c_region ?? ''),
+            'barangay_code' => (string) ($customer->c_barangay_code ?? ''),
+            'city_code' => (string) ($customer->c_city_code ?? ''),
+            'province_code' => (string) ($customer->c_province_code ?? ''),
+            'region_code' => (string) ($customer->c_region_code ?? ''),
             'zip_code' => (string) ($customer->c_zipcode ?? ''),
             'avatar_url' => $customer->c_avatar_url,
             'rank' => (int) ($customer->c_rank ?? 0),
@@ -1324,6 +1386,28 @@ class AuthController extends Controller
             'other' => 3,
             default => 0,
         };
+    }
+
+    private function mapIntToGender(int $gender): ?string
+    {
+        return match ($gender) {
+            1 => 'male',
+            2 => 'female',
+            3 => 'other',
+            default => null,
+        };
+    }
+
+    private function mapCountryToWorkLocation(string $country): ?string
+    {
+        $value = trim($country);
+        if ($value === '' || strcasecmp($value, 'philippines') === 0 || strtoupper($value) === 'PH') {
+            return 'local';
+        }
+        if (strcasecmp($value, 'Overseas') === 0 || strcasecmp($value, 'overseas') === 0) {
+            return 'overseas';
+        }
+        return null;
     }
 
     private function validateNoBadWords(array $values): void
