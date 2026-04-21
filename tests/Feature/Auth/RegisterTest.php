@@ -126,6 +126,123 @@ class RegisterTest extends TestCase
             ->assertJsonValidationErrors(['email']);
     }
 
+    public function test_check_username_availability_accepts_alphanumeric_username(): void
+    {
+        $response = $this->getJson('/api/auth/register/check-username?username=test1122');
+
+        $response
+            ->assertOk()
+            ->assertJson([
+                'available' => true,
+                'message' => 'Username is available.',
+            ]);
+    }
+
+    public function test_check_username_availability_rejects_symbols(): void
+    {
+        $response = $this->getJson('/api/auth/register/check-username?username=test_1122');
+
+        $response
+            ->assertOk()
+            ->assertJson([
+                'available' => false,
+                'message' => 'Username must contain letters and numbers only.',
+            ]);
+    }
+
+    public function test_check_referral_availability_accepts_full_referral_link(): void
+    {
+        Customer::create([
+            'c_userid' => 1,
+            'c_fname' => 'Ref',
+            'c_lname' => 'User',
+            'c_username' => 'referrer1',
+            'c_email' => 'referrer@example.com',
+            'c_password' => bcrypt('Password@123'),
+            'c_password_pin' => '',
+            'c_password_change_required' => false,
+            'c_accnt_status' => 1,
+            'c_lockstatus' => 0,
+        ]);
+
+        $response = $this->getJson('/api/auth/register/check-referral?referred_by=' . urlencode('https://afhome.ph/signup?ref=referrer1'));
+
+        $response
+            ->assertOk()
+            ->assertJson([
+                'available' => true,
+                'message' => 'Referral code is valid.',
+                'normalized_referral' => 'referrer1',
+                'referrer_username' => 'referrer1',
+            ]);
+    }
+
+    public function test_check_referral_availability_rejects_locked_referrer(): void
+    {
+        Customer::create([
+            'c_userid' => 1,
+            'c_fname' => 'Locked',
+            'c_lname' => 'User',
+            'c_username' => 'lockedref',
+            'c_email' => 'locked@example.com',
+            'c_password' => bcrypt('Password@123'),
+            'c_password_pin' => '',
+            'c_password_change_required' => false,
+            'c_accnt_status' => 1,
+            'c_lockstatus' => 1,
+        ]);
+
+        $response = $this->getJson('/api/auth/register/check-referral?referred_by=lockedref');
+
+        $response
+            ->assertOk()
+            ->assertJson([
+                'available' => false,
+                'message' => 'Referral code is invalid or referrer account is unavailable.',
+                'normalized_referral' => 'lockedref',
+            ]);
+    }
+
+    public function test_register_rejects_username_with_symbols(): void
+    {
+        Mail::fake();
+
+        Customer::create([
+            'c_userid' => 1,
+            'c_fname' => 'Ref',
+            'c_lname' => 'User',
+            'c_username' => 'referrer1',
+            'c_email' => 'referrer@example.com',
+            'c_password' => bcrypt('Password@123'),
+            'c_password_pin' => '',
+            'c_password_change_required' => false,
+            'c_accnt_status' => 1,
+            'c_lockstatus' => 0,
+        ]);
+
+        $response = $this->postJson('/api/auth/register', [
+            'first_name' => 'Rafa',
+            'last_name' => 'Santos',
+            'middle_name' => '',
+            'name' => 'Rafa Santos',
+            'email' => 'rafa.symbol@example.com',
+            'username' => 'rafa_1122',
+            'phone' => '09123456789',
+            'birth_date' => '2000-01-01',
+            'gender' => 'male',
+            'occupation' => 'Developer',
+            'work_location' => 'local',
+            'country' => 'Philippines',
+            'referred_by' => 'referrer1',
+            'password' => 'Password@123',
+            'password_confirmation' => 'Password@123',
+        ]);
+
+        $response
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['username']);
+    }
+
     public function test_verify_registration_otp_creates_customer_address_when_country_is_philippines_text(): void
     {
         Mail::fake();
