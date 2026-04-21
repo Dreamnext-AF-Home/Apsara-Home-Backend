@@ -49,7 +49,7 @@ class AuthController extends Controller
             'middle_name'           => 'nullable|string|max:255',
             'name'                  => 'required|string|max:255',
             'email'                 => ['required', 'email', Rule::unique('tbl_customer', 'c_email')],
-            'username'              => ['required', 'string', 'max:255', Rule::unique('tbl_customer', 'c_username')],
+            'username'              => ['required', 'string', 'max:255', 'regex:/^[A-Za-z0-9]+$/', Rule::unique('tbl_customer', 'c_username')],
             'phone'                 => 'nullable|string|max:20',
             'birth_date'            => 'nullable|date',
             'gender'                => 'nullable|in:male,female,other',
@@ -81,6 +81,7 @@ class AuthController extends Controller
             'password.min' => 'Password must be at least 8 characters.',
             'password.confirmed' => 'Password confirmation does not match.',
             'password.regex' => 'Password must include uppercase, lowercase, number, and special character.',
+            'username.regex' => 'Username must contain letters and numbers only.',
         ]);
 
         $this->validateNoBadWords([
@@ -298,6 +299,13 @@ class AuthController extends Controller
             ], 422);
         }
 
+        if (! preg_match('/^[A-Za-z0-9]+$/', $username)) {
+            return response()->json([
+                'available' => false,
+                'message' => 'Username must contain letters and numbers only.',
+            ]);
+        }
+
         if ($this->looksLikeEmailUsername($username)) {
             return response()->json([
                 'available' => false,
@@ -337,6 +345,37 @@ class AuthController extends Controller
         return response()->json([
             'available' => ! $exists,
             'message' => $exists ? 'This email is already registered.' : 'Email address is available.',
+        ]);
+    }
+
+    public function checkReferralAvailability(Request $request)
+    {
+        $validated = $request->validate([
+            'referred_by' => ['required', 'string', 'max:255'],
+        ]);
+
+        $referral = $this->normalizeReferralValue((string) $validated['referred_by']);
+
+        if ($referral === '') {
+            return response()->json([
+                'available' => false,
+                'message' => 'Referral code is required.',
+            ], 422);
+        }
+
+        $referrer = Customer::query()
+            ->select(['c_userid', 'c_username'])
+            ->whereRaw('LOWER(c_username) = ?', [mb_strtolower($referral, 'UTF-8')])
+            ->where('c_lockstatus', 0)
+            ->first();
+
+        return response()->json([
+            'available' => $referrer instanceof Customer,
+            'message' => $referrer instanceof Customer
+                ? 'Referral code is valid.'
+                : 'Referral code is invalid or referrer account is unavailable.',
+            'normalized_referral' => $referral,
+            'referrer_username' => $referrer instanceof Customer ? (string) ($referrer->c_username ?? '') : null,
         ]);
     }
 
@@ -1223,9 +1262,9 @@ class AuthController extends Controller
         }
 
         $validated = $request->validate([
-            'username' => ['required', 'string', 'max:120', 'regex:/^[A-Za-z]+$/'],
+            'username' => ['required', 'string', 'max:120', 'regex:/^[A-Za-z0-9]+$/'],
         ], [
-            'username.regex' => 'Username must contain letters only (A-Z).',
+            'username.regex' => 'Username must contain letters and numbers only.',
         ]);
 
         $nextUsername = trim((string) $validated['username']);

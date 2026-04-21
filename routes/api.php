@@ -45,6 +45,7 @@ Route::prefix('auth')->group(function () {
     Route::post('/register', [AuthController::class, 'register']);
     Route::get('/register/check-email', [AuthController::class, 'checkEmailAvailability']);
     Route::get('/register/check-username', [AuthController::class, 'checkUsernameAvailability']);
+    Route::get('/register/check-referral', [AuthController::class, 'checkReferralAvailability']);
     Route::post('/register/verify-otp', [AuthController::class, 'verifyRegistrationOtp']);
     Route::post('/register/resend-otp', [AuthController::class, 'resendRegistrationOtp']);
     Route::post('/login',    [AuthController::class, 'login']);
