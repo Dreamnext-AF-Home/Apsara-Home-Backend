@@ -2160,7 +2160,7 @@ class AuthController extends Controller
             $phone !== '' && $phone !== '0',
             trim((string) ($customer->c_username ?? '')) !== '',
             $this->formatNullableDate($customer->c_bdate ?? null) !== null,
-            $this->mapGenderFromInt($customer->c_gender ?? null) !== null,
+            $this->mapIntToGender((int) ($customer->c_gender ?? 0)) !== null,
             $occupation !== '' && strcasecmp($occupation, 'none') !== 0,
             $this->inferWorkLocation($country) !== null,
             $country !== '',
