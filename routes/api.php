@@ -38,6 +38,7 @@ use App\Http\Controllers\Api\CustomerConversationController;
 use App\Http\Controllers\Api\AdminConversationController;
 use App\Http\Controllers\Api\MemberTierController;
 use App\Http\Controllers\Api\MemberActivityLogController;
+use App\Http\Controllers\Api\LeadController;
 
 
 // Public auth routes
@@ -345,4 +346,10 @@ Route::middleware(['auth:sanctum', 'supplier.actor'])->group(function () {
     Route::get('/supplier/orders', [SupplierOrderController::class, 'index']);
     Route::patch('/supplier/orders/{id}/fulfillment', [SupplierOrderController::class, 'updateFulfillment']);
     Route::patch('/supplier/orders/{id}/tracking', [SupplierOrderController::class, 'updateTracking']);
+});
+
+// Leads
+Route::prefix('leads')->group(function () {
+    Route::post('/', [LeadController::class, 'store']);
+    Route::post('/batch', [LeadController::class, 'storeBatch']);
 });
