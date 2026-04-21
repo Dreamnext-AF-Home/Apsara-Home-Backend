@@ -15,6 +15,7 @@ use App\Models\Supplier;
 use App\Models\SupplierCategoryAccess;
 use App\Models\SupplierUser;
 use App\Models\SearchHistory;
+use App\Services\Zq\ZqApiService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -23,6 +24,11 @@ use Illuminate\Support\Facades\Validator;
 
 class ProductController extends Controller
 {
+    public function __construct(
+        private readonly ZqApiService $zqApiService
+    ) {
+    }
+
     private function validationErrorResponse($validator): JsonResponse
     {
         return response()->json([
@@ -2907,5 +2913,58 @@ class ProductController extends Controller
         }
 
         return response()->json(['message' => 'Product deleted successfully.']);
+    }
+
+    public function fetchZqImportPreview(Request $request): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'cursor' => 'nullable',
+            'size' => 'nullable|integer|min:1|max:100',
+            'keyword' => 'nullable|string|max:255',
+            'status' => 'nullable|string|max:50',
+            'sourceType' => 'nullable|array',
+            'sourceType.*' => 'string|max:50',
+            'ids' => 'nullable|array',
+            'ids.*' => 'integer',
+        ]);
+
+        if ($validator->fails()) {
+            return $this->validationErrorResponse($validator);
+        }
+
+        if (! $this->zqApiService->isConfigured()) {
+            return response()->json([
+                'message' => 'ZQ API configuration is incomplete.',
+            ], 422);
+        }
+
+        $payload = array_filter([
+            'cursor' => $request->input('cursor'),
+            'size' => $request->input('size', 20),
+            'keyword' => $request->input('keyword'),
+            'status' => $request->input('status'),
+            'sourceType' => $request->input('sourceType'),
+            'ids' => $request->input('ids'),
+        ], static fn ($value) => $value !== null && $value !== '' && $value !== []);
+
+        try {
+            $response = $this->zqApiService->getImportProductList($payload);
+
+            return response()->json([
+                'message' => 'ZQ import product list fetched successfully.',
+                'request' => $payload,
+                'zq' => $response,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('ZQ import product preview failed', [
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+                'payload' => $payload,
+            ]);
+
+            return response()->json([
+                'message' => $e->getMessage(),
+            ], 500);
+        }
     }
 }
