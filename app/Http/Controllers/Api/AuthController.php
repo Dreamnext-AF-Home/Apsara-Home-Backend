@@ -2110,6 +2110,15 @@ class AuthController extends Controller
         };
     }
 
+    private function mapGenderFromInt(mixed $gender): ?string
+    {
+        if ($gender === null || $gender === '') {
+            return null;
+        }
+
+        return $this->mapIntToGender((int) $gender);
+    }
+
     private function formatNullableDate(mixed $value): ?string
     {
         if ($value instanceof \DateTimeInterface) {
