@@ -1009,6 +1009,21 @@ class AuthController extends Controller
 
         $levelOneMembers = $descendants
             ->where('c_sponsor', (int) $customer->c_userid)
+            ->values();
+
+        $inferredDirectIds = $this->inferredDirectReferralIdsFromCheckouts((int) $customer->c_userid);
+        if (! empty($inferredDirectIds)) {
+            $inferredMembers = $descendants
+                ->whereIn('c_userid', $inferredDirectIds)
+                ->values();
+
+            $levelOneMembers = $levelOneMembers
+                ->concat($inferredMembers)
+                ->unique(fn (Customer $member) => (int) $member->c_userid)
+                ->values();
+        }
+
+        $levelOneMembers = $levelOneMembers
             ->sortByDesc('c_userid')
             ->values();
 
@@ -2431,6 +2446,30 @@ class AuthController extends Controller
         }
 
         return $trimmed;
+    }
+
+    private function inferredDirectReferralIdsFromCheckouts(int $customerId): array
+    {
+        if (
+            $customerId <= 0
+            || !Schema::hasTable('tbl_checkout_history')
+            || !Schema::hasColumn('tbl_checkout_history', 'ch_referrer_customer_id')
+            || !Schema::hasColumn('tbl_checkout_history', 'ch_customer_id')
+        ) {
+            return [];
+        }
+
+        return DB::table('tbl_checkout_history')
+            ->where('ch_referrer_customer_id', $customerId)
+            ->whereNotNull('ch_customer_id')
+            ->where('ch_customer_id', '<>', 0)
+            ->where('ch_customer_id', '<>', $customerId)
+            ->distinct()
+            ->pluck('ch_customer_id')
+            ->map(fn ($id): int => (int) $id)
+            ->filter(fn (int $id): bool => $id > 0)
+            ->values()
+            ->all();
     }
 
 }

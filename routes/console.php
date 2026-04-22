@@ -1,11 +1,14 @@
 <?php
 
+use App\Services\DatabaseExportService;
 use App\Services\Payments\PaymongoPaymentSyncService;
 use App\Services\Zq\ZqTrackingSyncService;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schedule;
 use Illuminate\Support\Facades\Schema;
 
@@ -75,6 +78,50 @@ Artisan::command('zq:sync-tracking {--limit=25}', function () {
 
     $this->newLine();
 })->purpose('Sync pending ZQ tracking updates into local orders');
+
+Artisan::command('database:export-daily', function () {
+    /** @var DatabaseExportService $service */
+    $service = app(DatabaseExportService::class);
+    $export = $service->exportDatabaseZip();
+    $disk = \Illuminate\Support\Facades\Storage::disk('local');
+    $absolutePath = $disk->path((string) ($export['path'] ?? ''));
+    $backupDir = (string) env('GOOGLE_DRIVE_DESKTOP_BACKUP_PATH', 'G:\\My Drive\\db_backup');
+    $downloadName = (string) ($export['download_name'] ?? $service->buildBackupDownloadName());
+
+    if (! str_ends_with(strtolower($downloadName), '.zip')) {
+        $downloadName .= '.zip';
+    }
+
+    if (! File::isDirectory($backupDir)) {
+        File::makeDirectory($backupDir, 0755, true);
+    }
+
+    $destinationPath = rtrim($backupDir, "\\/") . DIRECTORY_SEPARATOR . $downloadName;
+    if (File::exists($destinationPath)) {
+        $base = pathinfo($downloadName, PATHINFO_FILENAME);
+        $ext = pathinfo($downloadName, PATHINFO_EXTENSION);
+        $destinationPath = rtrim($backupDir, "\\/") . DIRECTORY_SEPARATOR . $base . '_' . now()->format('His') . ($ext !== '' ? '.' . $ext : '');
+    }
+
+    try {
+        File::copy($absolutePath, $destinationPath);
+        $this->line('Google Drive Desktop copy: OK');
+        $this->line('Saved to: ' . $destinationPath);
+    } catch (\Throwable $e) {
+        Log::warning('Daily backup copy to Google Drive Desktop path failed.', [
+            'destination' => $destinationPath,
+            'error' => $e->getMessage(),
+        ]);
+        $this->warn('Google Drive Desktop copy failed: ' . $e->getMessage());
+        $this->warn('Backup was still created in local storage exports folder.');
+    }
+
+    $this->info('Daily database export completed.');
+    $this->line('File: ' . (string) ($export['name'] ?? 'unknown'));
+    $this->line('Tables: ' . (int) ($export['table_count'] ?? 0));
+    $this->line('Rows: ' . (int) ($export['total_rows'] ?? 0));
+    $this->line('Size: ' . (int) ($export['size_bytes'] ?? 0) . ' bytes');
+})->purpose('Create a CSV ZIP database backup');
 
 Artisan::command('psgc:import-addresses {--truncate : Truncate address tables before import}', function () {
     $psgcBaseUrl = 'https://psgc.gitlab.io/api';
@@ -264,3 +311,11 @@ Schedule::command('payments:sync-pending --limit=25')
 Schedule::command('zq:sync-tracking --limit=25')
     ->everyFiveMinutes()
     ->withoutOverlapping();
+
+Schedule::command('database:export-daily')
+    ->dailyAt('17:00')
+    ->timezone(config('app.timezone', 'UTC'))
+    ->withoutOverlapping()
+    ->onFailure(function () {
+        Log::error('Scheduled daily database export failed.');
+    });
