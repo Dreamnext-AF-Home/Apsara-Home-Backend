@@ -297,6 +297,9 @@ Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_a
 });
 
 Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,web_content'])->group(function () {
+    Route::get('/admin/web-pages/database/exports', [WebPageController::class, 'listDatabaseExports']);
+    Route::post('/admin/web-pages/database/exports', [WebPageController::class, 'exportDatabase']);
+    Route::post('/admin/web-pages/database/exports/download', [WebPageController::class, 'downloadDatabaseExport']);
     Route::get('/admin/web-pages/{type}', [WebPageController::class, 'adminIndex']);
     Route::post('/admin/web-pages/{type}', [WebPageController::class, 'adminStore']);
     Route::put('/admin/web-pages/{type}/{id}', [WebPageController::class, 'adminUpdate']);

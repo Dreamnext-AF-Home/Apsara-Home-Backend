@@ -156,4 +156,11 @@ return [
         'timeout' => (int) env('ZQ_TIMEOUT', 30),
     ],
 
+    'google_drive' => [
+        'folder_id' => env('GOOGLE_DRIVE_FOLDER_ID'),
+        'folder_url' => env('GOOGLE_DRIVE_FOLDER_URL'),
+        'service_account_email' => env('GOOGLE_DRIVE_SERVICE_ACCOUNT_EMAIL'),
+        'service_account_private_key' => env('GOOGLE_DRIVE_SERVICE_ACCOUNT_PRIVATE_KEY'),
+    ],
+
 ];

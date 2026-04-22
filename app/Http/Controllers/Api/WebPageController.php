@@ -5,12 +5,18 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Admin;
 use App\Models\WebPageContent;
+use App\Services\DatabaseExportService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
+use Throwable;
 
 class WebPageController extends Controller
 {
+    private const DATABASE_EXPORT_DIR = 'exports/database';
+
     public function home(Request $request): JsonResponse
     {
         return response()->json([
@@ -58,12 +64,13 @@ class WebPageController extends Controller
         $query = WebPageContent::query()
             ->where('wpc_type', $resolvedType)
             ->when($search !== '', function ($query) use ($search) {
-                $query->where(function ($inner) use ($search) {
+                $likeOperator = $this->likeOperator();
+                $query->where(function ($inner) use ($search, $likeOperator) {
                     $like = '%' . $search . '%';
-                    $inner->where('wpc_title', 'ilike', $like)
-                        ->orWhere('wpc_subtitle', 'ilike', $like)
-                        ->orWhere('wpc_body', 'ilike', $like)
-                        ->orWhere('wpc_key', 'ilike', $like);
+                    $inner->where('wpc_title', $likeOperator, $like)
+                        ->orWhere('wpc_subtitle', $likeOperator, $like)
+                        ->orWhere('wpc_body', $likeOperator, $like)
+                        ->orWhere('wpc_key', $likeOperator, $like);
                 });
             })
             ->when($status !== 'all', function ($query) use ($status) {
@@ -269,6 +276,96 @@ class WebPageController extends Controller
         return response()->json(['message' => 'Web content item deleted successfully.']);
     }
 
+    public function listDatabaseExports(Request $request, DatabaseExportService $databaseExportService): JsonResponse
+    {
+        $validated = $request->validate([
+            'limit' => 'nullable|integer|min:1|max:30',
+        ]);
+
+        $limit = (int) ($validated['limit'] ?? 10);
+        $disk = Storage::disk('local');
+
+        if (! $disk->exists(self::DATABASE_EXPORT_DIR)) {
+            return response()->json([
+                'exports' => [],
+            ]);
+        }
+
+        $exports = collect($disk->files(self::DATABASE_EXPORT_DIR))
+            ->filter(fn (string $path): bool => str_ends_with(strtolower($path), '.zip'))
+            ->map(function (string $path) use ($disk): array {
+                $timestamp = $disk->lastModified($path);
+
+                return [
+                    'path' => $path,
+                    'name' => basename($path),
+                    'size_bytes' => (int) $disk->size($path),
+                    'last_modified_at' => date('c', $timestamp),
+                    'download_name' => $databaseExportService->buildBackupDownloadName(),
+                ];
+            })
+            ->sortByDesc('last_modified_at')
+            ->take($limit)
+            ->values();
+
+        return response()->json([
+            'exports' => $exports,
+        ]);
+    }
+
+    public function exportDatabase(Request $request, DatabaseExportService $databaseExportService): JsonResponse
+    {
+        try {
+            $export = $databaseExportService->exportDatabaseZip();
+
+            return response()->json([
+                'message' => 'Database export generated successfully.',
+                'export' => $export,
+            ]);
+        } catch (Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'message' => 'Database export failed. Please try again.',
+            ], 500);
+        }
+    }
+
+    public function downloadDatabaseExport(Request $request, DatabaseExportService $databaseExportService)
+    {
+        $validated = $request->validate([
+            'path' => 'required|string',
+            'download_name' => 'nullable|string|max:200',
+        ]);
+
+        $path = trim((string) $validated['path']);
+        if (! str_starts_with($path, $databaseExportService->exportDirectory() . '/')) {
+            return response()->json([
+                'message' => 'Invalid export path.',
+            ], 422);
+        }
+
+        $disk = Storage::disk('local');
+        if (! $disk->exists($path)) {
+            return response()->json([
+                'message' => 'Export file not found.',
+            ], 404);
+        }
+
+        $absolutePath = $disk->path($path);
+        $downloadName = trim((string) ($validated['download_name'] ?? ''));
+        if ($downloadName === '') {
+            $downloadName = $databaseExportService->buildBackupDownloadName();
+        }
+        if (! str_ends_with(strtolower($downloadName), '.zip')) {
+            $downloadName .= '.zip';
+        }
+
+        return response()->download($absolutePath, $downloadName, [
+            'Content-Type' => 'application/zip',
+        ]);
+    }
+
     private function resolveType(string $type): ?string
     {
         return match (strtolower(trim($type))) {
@@ -280,6 +377,11 @@ class WebPageController extends Controller
             'partner-storefront', 'partner-storefronts', 'partner_storefront', 'partner_storefronts', 'storefront', 'storefronts' => 'partner-storefront',
             default => null,
         };
+    }
+
+    private function likeOperator(): string
+    {
+        return DB::connection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
     }
 
     private function resolveStorefrontIds(mixed $actor): array
