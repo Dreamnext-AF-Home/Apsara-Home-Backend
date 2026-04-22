@@ -1,0 +1,17 @@
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: Apsara-Home-Backend/Dockerfile
+    container_name: afhome-backend
+    restart: unless-stopped
+    working_dir: /app
+    env_file:
+      - ./.env.docker
+    ports:
+      - "8000:8000"
+      - "5173:5173"
+    volumes:
+      - ./:/app
+      - /app/vendor
+      - /app/node_modules
