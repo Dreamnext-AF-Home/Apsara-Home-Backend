@@ -185,6 +185,7 @@ Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.or_supplier'
     Route::get('/admin/products/activity-logs', [ProductController::class, 'activityLogs']);
     Route::post('/admin/products', [ProductController::class, 'store']);
     Route::post('/admin/products/import', [ProductController::class, 'import']);
+    Route::post('/admin/products/zq/fetch-preview', [ProductController::class, 'fetchZqImportPreview']);
     Route::post('/admin/products/bulk-price/preview', [ProductController::class, 'bulkPricePreview']);
     Route::post('/admin/products/bulk-price/apply', [ProductController::class, 'bulkPriceApply']);
     Route::post('/admin/products/bulk-update/preview', [ProductController::class, 'bulkUpdatePreview']);
