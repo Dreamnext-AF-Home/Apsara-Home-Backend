@@ -38,6 +38,7 @@ use App\Http\Controllers\Api\CustomerConversationController;
 use App\Http\Controllers\Api\AdminConversationController;
 use App\Http\Controllers\Api\MemberTierController;
 use App\Http\Controllers\Api\MemberActivityLogController;
+use App\Http\Controllers\Api\LeadController;
 
 
 // Public auth routes
@@ -45,6 +46,7 @@ Route::prefix('auth')->group(function () {
     Route::post('/register', [AuthController::class, 'register']);
     Route::get('/register/check-email', [AuthController::class, 'checkEmailAvailability']);
     Route::get('/register/check-username', [AuthController::class, 'checkUsernameAvailability']);
+    Route::get('/register/check-referral', [AuthController::class, 'checkReferralAvailability']);
     Route::post('/register/verify-otp', [AuthController::class, 'verifyRegistrationOtp']);
     Route::post('/register/resend-otp', [AuthController::class, 'resendRegistrationOtp']);
     Route::post('/login',    [AuthController::class, 'login']);
@@ -183,6 +185,7 @@ Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.or_supplier'
     Route::get('/admin/products/activity-logs', [ProductController::class, 'activityLogs']);
     Route::post('/admin/products', [ProductController::class, 'store']);
     Route::post('/admin/products/import', [ProductController::class, 'import']);
+    Route::post('/admin/products/zq/fetch-preview', [ProductController::class, 'fetchZqImportPreview']);
     Route::post('/admin/products/bulk-price/preview', [ProductController::class, 'bulkPricePreview']);
     Route::post('/admin/products/bulk-price/apply', [ProductController::class, 'bulkPriceApply']);
     Route::post('/admin/products/bulk-update/preview', [ProductController::class, 'bulkUpdatePreview']);
@@ -345,4 +348,10 @@ Route::middleware(['auth:sanctum', 'supplier.actor'])->group(function () {
     Route::get('/supplier/orders', [SupplierOrderController::class, 'index']);
     Route::patch('/supplier/orders/{id}/fulfillment', [SupplierOrderController::class, 'updateFulfillment']);
     Route::patch('/supplier/orders/{id}/tracking', [SupplierOrderController::class, 'updateTracking']);
+});
+
+// Leads
+Route::prefix('leads')->group(function () {
+    Route::post('/', [LeadController::class, 'store']);
+    Route::post('/batch', [LeadController::class, 'storeBatch']);
 });

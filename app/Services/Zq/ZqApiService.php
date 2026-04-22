@@ -33,6 +33,16 @@ class ZqApiService
         return $this->request('get', '/order/inventory/' . rawurlencode($sku));
     }
 
+    public function getImportProductList(array $filters = []): array
+    {
+        return $this->request('post', '/import_product/list', $filters);
+    }
+
+    public function getImportProductDetail(int|string $id): array
+    {
+        return $this->request('get', '/import_product/' . rawurlencode((string) $id));
+    }
+
     private function request(string $method, string $path, ?array $payload = null): array
     {
         $baseUrl = rtrim((string) config('services.zq.base_url', ''), '/');
