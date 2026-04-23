@@ -2915,6 +2915,159 @@ class ProductController extends Controller
         return response()->json(['message' => 'Product deleted successfully.']);
     }
 
+    public function importWithVariants(Request $request): JsonResponse
+    {
+        $admin = $this->resolveAdmin($request);
+        $supplierUser = $this->resolveSupplierUser($request);
+        $actorSupplierId = $this->actorSupplierId($admin, $supplierUser);
+
+        if ($admin && $this->roleFromLevel((int) $admin->user_level_id) === 'supplier_admin' && !$admin->supplier_id) {
+            return response()->json([
+                'message' => 'Supplier Admin account is not linked to a supplier company.',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'mode'                           => 'nullable|in:create_only,create_or_update',
+            'rows'                           => 'required|array|min:1|max:500',
+            'rows.*'                         => 'required|array',
+            'rows.*.pd_name'                 => 'required|string|max:255',
+            'rows.*.pd_parent_sku'           => 'required|string|max:50',
+            'rows.*.pd_catid'                => 'required|integer|min:1',
+            'rows.*.pd_price_srp'            => 'required|numeric|min:0.01',
+            'rows.*.pd_price_dp'             => 'nullable|numeric|min:0',
+            'rows.*.pd_price_member'         => 'nullable|numeric|min:0',
+            'rows.*.pd_prodpv'               => 'nullable|numeric|min:0',
+            'rows.*.pd_qty'                  => 'nullable|numeric|min:0',
+            'rows.*.pd_weight'               => 'nullable|numeric|min:0',
+            'rows.*.pd_psweight'             => 'nullable|numeric|min:0',
+            'rows.*.pd_pswidth'              => 'nullable|numeric|min:0',
+            'rows.*.pd_pslenght'             => 'nullable|numeric|min:0',
+            'rows.*.pd_psheight'             => 'nullable|numeric|min:0',
+            'rows.*.pd_description'          => 'nullable|string',
+            'rows.*.pd_specifications'       => 'nullable|string',
+            'rows.*.pd_material'             => 'nullable|string|max:255',
+            'rows.*.pd_warranty'             => 'nullable|string|max:255',
+            'rows.*.pd_brand_type'           => 'nullable|integer|min:0',
+            'rows.*.pd_room_type'            => 'nullable|integer|min:0|max:8',
+            'rows.*.pd_image'                => 'nullable|string|max:500',
+            'rows.*.pd_images'               => 'nullable|array',
+            'rows.*.pd_images.*'             => 'nullable|string|max:1000',
+            'rows.*.pd_status'               => 'nullable|integer|in:0,1,2',
+            'rows.*.pd_variants'             => 'required|array|min:1',
+            'rows.*.pd_variants.*.pv_sku'    => 'nullable|string|max:80',
+            'rows.*.pd_variants.*.pv_name'   => 'nullable|string|max:120',
+            'rows.*.pd_variants.*.pv_color'  => 'nullable|string|max:80',
+            'rows.*.pd_variants.*.pv_color_hex' => 'nullable|string|max:16',
+            'rows.*.pd_variants.*.pv_size'   => 'nullable|string|max:40',
+            'rows.*.pd_variants.*.pv_style'  => 'nullable|string|max:80',
+            'rows.*.pd_variants.*.pv_width'  => 'nullable|numeric|min:0',
+            'rows.*.pd_variants.*.pv_dimension' => 'nullable|numeric|min:0',
+            'rows.*.pd_variants.*.pv_height' => 'nullable|numeric|min:0',
+            'rows.*.pd_variants.*.pv_price_srp'    => 'nullable|numeric|min:0',
+            'rows.*.pd_variants.*.pv_price_dp'     => 'nullable|numeric|min:0',
+            'rows.*.pd_variants.*.pv_price_member' => 'nullable|numeric|min:0',
+            'rows.*.pd_variants.*.pv_prodpv'       => 'nullable|numeric|min:0',
+            'rows.*.pd_variants.*.pv_qty'          => 'nullable|numeric|min:0',
+            'rows.*.pd_variants.*.pv_status'       => 'nullable|integer|in:0,1',
+            'rows.*.pd_variants.*.pv_images'       => 'nullable|array',
+            'rows.*.pd_variants.*.pv_images.*'     => 'nullable|string|max:1000',
+        ]);
+
+        $mode    = (string) ($validated['mode'] ?? 'create_or_update');
+        $rows    = $validated['rows'];
+        $now     = now();
+        $results = [];
+        $created = 0;
+        $updated = 0;
+        $failed  = 0;
+
+        foreach ($rows as $index => $row) {
+            $rowNumber = $index + 1;
+            $name      = trim((string) ($row['pd_name'] ?? ''));
+            $sku       = trim((string) ($row['pd_parent_sku'] ?? ''));
+
+            try {
+                $categoryId = (int) ($row['pd_catid'] ?? 0);
+                if ($actorSupplierId > 0 && !$this->supplierCanUseCategory($actorSupplierId, $categoryId)) {
+                    throw new \RuntimeException('This supplier is not allowed to use the selected category.');
+                }
+
+                $brandType = (int) ($row['pd_brand_type'] ?? 0);
+                if ($brandType > 0 && !ProductBrand::query()->where('pb_id', $brandType)->exists()) {
+                    throw new \RuntimeException('The selected brand does not exist.');
+                }
+
+                // Match by both SKU and name
+                $productQuery = Product::query()
+                    ->where('pd_parent_sku', $sku)
+                    ->where('pd_name', $name);
+                $this->scopeQueryToActor($productQuery, $admin, $supplierUser);
+                $existing = $productQuery->first();
+
+                if ($existing && $mode === 'create_only') {
+                    throw new \RuntimeException('Product with this SKU and name already exists. Use create_or_update mode to update it.');
+                }
+
+                $product      = $existing ?? new Product();
+                $beforeProduct = $existing ? clone $existing : null;
+                $status       = $existing ? 'updated' : 'created';
+
+                $row['pd_type'] = 1;
+
+                $product = DB::transaction(function () use ($product, $row, $actorSupplierId, $now) {
+                    return $this->fillProductFromImportRow($product, $row, $actorSupplierId, $now);
+                });
+
+                $this->syncVariants($product, $row['pd_variants'] ?? [], $now);
+
+                $changes = $status === 'updated' && $beforeProduct instanceof Product
+                    ? $this->buildProductChangeLog($beforeProduct, $product)
+                    : null;
+
+                $this->recordProductActivity($status, $product, $admin, $supplierUser, $name, $sku, $changes);
+
+                $status === 'updated' ? $updated++ : $created++;
+
+                $results[] = [
+                    'row'        => $rowNumber,
+                    'status'     => $status,
+                    'product_id' => (int) $product->pd_id,
+                    'name'       => $product->pd_name,
+                    'sku'        => $product->pd_parent_sku ?: null,
+                    'variants'   => count($row['pd_variants'] ?? []),
+                    'message'    => $status === 'updated' ? 'Existing product updated.' : 'Product created successfully.',
+                ];
+            } catch (\Throwable $e) {
+                $failed++;
+                $this->recordFailedProductActivity('created', $admin, $supplierUser, null, $name, $sku);
+
+                $results[] = [
+                    'row'        => $rowNumber,
+                    'status'     => 'failed',
+                    'product_id' => null,
+                    'name'       => $name !== '' ? $name : null,
+                    'sku'        => $sku !== '' ? $sku : null,
+                    'variants'   => null,
+                    'message'    => $e->getMessage(),
+                ];
+            }
+        }
+
+        return response()->json([
+            'message' => $failed > 0
+                ? 'Import finished with some row errors.'
+                : 'Import completed successfully.',
+            'summary' => [
+                'total'   => count($rows),
+                'created' => $created,
+                'updated' => $updated,
+                'failed'  => $failed,
+            ],
+            'results' => $results,
+        ]);
+    }
+
     public function fetchZqImportPreview(Request $request): JsonResponse
     {
         $validator = Validator::make($request->all(), [
