@@ -185,8 +185,17 @@ Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.or_supplier'
     Route::get('/admin/products/activity-logs', [ProductController::class, 'activityLogs']);
     Route::post('/admin/products', [ProductController::class, 'store']);
     Route::post('/admin/products/import', [ProductController::class, 'import']);
+<<<<<<< HEAD
     Route::post('/admin/products/import-with-variants', [ProductController::class, 'importWithVariants']);
     Route::post('/admin/products/zq/fetch-preview', [ProductController::class, 'fetchZqImportPreview']);
+=======
+     Route::post('/admin/products/zq/fetch-preview', [ProductController::class, 'fetchZqImportPreview']);
+     Route::get('/admin/products/zq/detail/{id}', [ProductController::class, 'fetchZqImportDetail']);
+     Route::post('/admin/products/zq/sync', [ProductController::class, 'syncZqProducts']);
+     Route::get('/admin/products/zq/summary', [ProductController::class, 'zqProductsSummary']);
+     Route::get('/admin/products/zq/cached', [ProductController::class, 'listCachedZqProducts']);
+     Route::post('/admin/products/zq/import-to-local/{id}', [ProductController::class, 'importZqProductToLocal']);
+>>>>>>> 25ece36ad6cc482d54d80e3cb09e164737450a18
     Route::post('/admin/products/bulk-price/preview', [ProductController::class, 'bulkPricePreview']);
     Route::post('/admin/products/bulk-price/apply', [ProductController::class, 'bulkPriceApply']);
     Route::post('/admin/products/bulk-update/preview', [ProductController::class, 'bulkUpdatePreview']);

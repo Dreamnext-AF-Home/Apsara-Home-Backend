@@ -16,6 +16,8 @@ use App\Models\SupplierCategoryAccess;
 use App\Models\SupplierUser;
 use App\Models\SearchHistory;
 use App\Services\Zq\ZqApiService;
+use App\Services\Zq\ZqProductSyncService;
+use App\Models\ZqProduct;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -25,7 +27,8 @@ use Illuminate\Support\Facades\Validator;
 class ProductController extends Controller
 {
     public function __construct(
-        private readonly ZqApiService $zqApiService
+        private readonly ZqApiService $zqApiService,
+        private readonly ZqProductSyncService $zqProductSyncService
     ) {
     }
 
@@ -3119,5 +3122,409 @@ class ProductController extends Controller
                 'message' => $e->getMessage(),
             ], 500);
         }
+    }
+
+    public function fetchZqImportDetail(int|string $id): JsonResponse
+    {
+        if (! $this->zqApiService->isConfigured()) {
+            return response()->json([
+                'message' => 'ZQ API configuration is incomplete.',
+            ], 422);
+        }
+
+        try {
+            $response = $this->zqApiService->getImportProductDetail($id);
+
+            return response()->json([
+                'message' => 'ZQ import product detail fetched successfully.',
+                'zq' => $response,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('ZQ import product detail failed', [
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+                'product_id' => $id,
+            ]);
+
+            return response()->json([
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    public function syncZqProducts(Request $request): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'cursor' => 'nullable',
+            'size' => 'nullable|integer|min:1|max:100',
+            'keyword' => 'nullable|string|max:255',
+            'status' => 'nullable|string|max:50',
+            'sourceType' => 'nullable|array',
+            'sourceType.*' => 'string|max:50',
+            'ids' => 'nullable|array',
+            'ids.*' => 'integer',
+        ]);
+
+        if ($validator->fails()) {
+            return $this->validationErrorResponse($validator);
+        }
+
+        if (! $this->zqApiService->isConfigured()) {
+            return response()->json([
+                'message' => 'ZQ API configuration is incomplete.',
+            ], 422);
+        }
+
+        $payload = array_filter([
+            'cursor' => $request->input('cursor'),
+            'size' => $request->input('size', 20),
+            'keyword' => $request->input('keyword'),
+            'status' => $request->input('status'),
+            'sourceType' => $request->input('sourceType'),
+            'ids' => $request->input('ids'),
+        ], static fn ($value) => $value !== null && $value !== '' && $value !== []);
+
+        try {
+            $result = $this->zqProductSyncService->syncImportProducts($payload);
+
+            return response()->json([
+                'message' => 'ZQ products synced successfully.',
+                'summary' => $result['summary'],
+                'hasMore' => $result['hasMore'],
+                'nextCursor' => $result['nextCursor'],
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('ZQ product sync failed', [
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+                'payload' => $payload,
+            ]);
+
+            return response()->json([
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    public function listCachedZqProducts(Request $request): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'page' => 'nullable|integer|min:1',
+            'per_page' => 'nullable|integer|min:1|max:100',
+            'search' => 'nullable|string|max:255',
+            'brand_type' => 'nullable|integer|min:1',
+            'source_type' => 'nullable|string|max:80',
+            'status' => 'nullable|string|max:80',
+            'import_status' => 'nullable|string|max:80',
+        ]);
+
+        if ($validator->fails()) {
+            return $this->validationErrorResponse($validator);
+        }
+
+        $page = max(1, (int) $request->input('page', 1));
+        $perPage = max(1, min(100, (int) $request->input('per_page', 20)));
+        $search = trim((string) $request->input('search', ''));
+
+        $query = ZqProduct::query();
+
+        if ($search !== '') {
+            $query->where(function ($inner) use ($search) {
+                $like = '%' . $search . '%';
+                $inner->where('zqp_subject', 'ilike', $like)
+                    ->orWhere('zqp_external_id', 'ilike', $like)
+                    ->orWhere('zqp_category_name', 'ilike', $like);
+            });
+        }
+
+        if ($request->filled('brand_type')) {
+            $query->where('zqp_brand_type', (int) $request->input('brand_type'));
+        }
+
+        if ($request->filled('source_type')) {
+            $query->where('zqp_source_type', $request->input('source_type'));
+        }
+
+        if ($request->filled('status')) {
+            $query->where('zqp_status', $request->input('status'));
+        }
+
+        if ($request->filled('import_status')) {
+            $query->where('zqp_import_status', $request->input('import_status'));
+        }
+
+        $paginator = $query
+            ->orderByDesc('zqp_published_at')
+            ->orderByDesc('updated_at')
+            ->paginate($perPage, ['*'], 'page', $page);
+
+        return response()->json([
+            'products' => collect($paginator->items())->map(function (ZqProduct $product) {
+                return [
+                    'id' => (int) $product->zqp_id,
+                    'externalId' => (string) $product->zqp_external_id,
+                    'offerId' => $product->zqp_offer_id,
+                    'brandType' => $product->zqp_brand_type ? (int) $product->zqp_brand_type : null,
+                    'subject' => (string) $product->zqp_subject,
+                    'subjectCn' => $product->zqp_subject_cn,
+                    'categoryName' => $product->zqp_category_name,
+                    'primaryImage' => $product->zqp_primary_image,
+                    'images' => $product->zqp_images ?? [],
+                    'sourceType' => $product->zqp_source_type,
+                    'status' => $product->zqp_status,
+                    'importStatus' => $product->zqp_import_status,
+                    'productUrl' => $product->zqp_product_url,
+                    'targetCurrency' => $product->zqp_target_currency,
+                    'shippingTo' => $product->zqp_shipping_to,
+                    'priceMinCents' => $product->zqp_price_min_cents,
+                    'priceMaxCents' => $product->zqp_price_max_cents,
+                    'costMinCents' => $product->zqp_cost_min_cents,
+                    'costMaxCents' => $product->zqp_cost_max_cents,
+                    'totalStock' => (int) ($product->zqp_total_stock ?? 0),
+                    'variantCount' => (int) ($product->zqp_variant_count ?? 0),
+                    'publishedAt' => optional($product->zqp_published_at)?->toIso8601String(),
+                    'sourceCreatedAt' => optional($product->zqp_source_created_at)?->toIso8601String(),
+                    'sourceUpdatedAt' => optional($product->zqp_source_updated_at)?->toIso8601String(),
+                    'syncedAt' => optional($product->updated_at)?->toIso8601String(),
+                ];
+            })->values(),
+            'meta' => [
+                'current_page' => $paginator->currentPage(),
+                'last_page' => $paginator->lastPage(),
+                'per_page' => $paginator->perPage(),
+                'total' => $paginator->total(),
+                'from' => $paginator->firstItem(),
+                'to' => $paginator->lastItem(),
+            ],
+        ]);
+    }
+
+    public function zqProductsSummary(): JsonResponse
+    {
+        $baseQuery = ZqProduct::query();
+
+        $total = (clone $baseQuery)->count();
+        $active = (clone $baseQuery)
+            ->whereRaw("upper(coalesce(zqp_status, '')) = ?", ['PUBLISHED'])
+            ->count();
+        $inactive = max(0, $total - $active);
+        $lowStock = (clone $baseQuery)
+            ->where('zqp_total_stock', '>', 0)
+            ->where('zqp_total_stock', '<=', 5)
+            ->count();
+
+        return response()->json([
+            'total' => $total,
+            'active' => $active,
+            'inactive' => $inactive,
+            'low_stock' => $lowStock,
+        ]);
+    }
+
+    public function importZqProductToLocal(Request $request, string $id): JsonResponse
+    {
+        if (! $this->zqApiService->isConfigured()) {
+            return response()->json(['message' => 'ZQ API configuration is incomplete.'], 422);
+        }
+
+        $admin = $this->resolveAdmin($request);
+        $supplierUser = $this->resolveSupplierUser($request);
+        $supplierId = $this->actorSupplierId($admin, $supplierUser);
+
+        try {
+            $detailResponse = $this->zqApiService->getImportProductDetail($id);
+            $detail = is_array($detailResponse['data'] ?? null) ? $detailResponse['data'] : [];
+
+            if (empty($detail)) {
+                return response()->json(['message' => 'ZQ product detail not found.'], 404);
+            }
+
+            // Also sync to ZQ cache table
+            try {
+                $zqSupplierBrandId = $this->resolveZqSupplierBrandId();
+                $cachePayload = $this->zqProductSyncService->mapDetailToColumnsPublic($detail, [], $zqSupplierBrandId);
+                ZqProduct::query()->updateOrCreate(['zqp_external_id' => $id], $cachePayload);
+            } catch (\Throwable $cacheErr) {
+                Log::warning('ZQ cache sync failed during import', ['external_id' => $id, 'message' => $cacheErr->getMessage()]);
+            }
+
+            $specs = is_array($detail['specs'] ?? null) ? $detail['specs'] : [];
+            $images = $this->extractZqImageUrls($detail['images'] ?? []);
+
+            $salePrices = array_values(array_filter(array_map(
+                fn($s) => is_numeric($s['salesPrice'] ?? null) ? round((float) $s['salesPrice'] / 100, 2) : null,
+                $specs
+            ), fn($v) => $v !== null));
+
+            $costPrices = array_values(array_filter(array_map(
+                fn($s) => is_numeric($s['cost'] ?? null) ? round((float) $s['cost'] / 100, 2) : null,
+                $specs
+            ), fn($v) => $v !== null));
+
+            $totalStock = (int) array_sum(array_filter(array_map(
+                fn($s) => is_numeric($s['amountOnSale'] ?? null) ? (int) $s['amountOnSale'] : null,
+                $specs
+            ), fn($v) => $v !== null));
+
+            $minSrp  = count($salePrices) > 0 ? min($salePrices) : 0;
+            $minCost = count($costPrices) > 0 ? min($costPrices) : 0;
+
+            $brandId = $this->resolveZqSupplierBrandId() ?? 0;
+
+            $mappedVariants = array_map(function (array $spec) {
+                $variantImages = [];
+                $attributes = is_array($spec['attributes'] ?? null) ? $spec['attributes'] : [];
+                foreach ($attributes as $attr) {
+                    $attrRow = is_array($attr) ? $attr : [];
+                    if (isset($attrRow['skuImageUrl']) && is_string($attrRow['skuImageUrl']) && trim($attrRow['skuImageUrl']) !== '') {
+                        $variantImages[] = trim($attrRow['skuImageUrl']);
+                    }
+                }
+                if (isset($spec['image']) && is_string($spec['image']) && trim($spec['image']) !== '' && ! in_array(trim($spec['image']), $variantImages, true)) {
+                    array_unshift($variantImages, trim($spec['image']));
+                }
+
+                return [
+                    'pv_sku'       => isset($spec['skuId']) ? (string) $spec['skuId'] : '',
+                    'pv_name'      => isset($spec['spec']) ? (string) $spec['spec'] : '',
+                    'pv_color'     => '',
+                    'pv_size'      => '',
+                    'pv_style'     => '',
+                    'pv_price_srp' => is_numeric($spec['salesPrice'] ?? null) ? round((float) $spec['salesPrice'] / 100, 2) : null,
+                    'pv_price_dp'  => is_numeric($spec['cost'] ?? null) ? round((float) $spec['cost'] / 100, 2) : null,
+                    'pv_qty'       => is_numeric($spec['amountOnSale'] ?? null) ? (int) $spec['amountOnSale'] : 0,
+                    'pv_status'    => 1,
+                    'pv_images'    => $variantImages,
+                ];
+            }, $specs);
+
+            $now = now();
+
+            $product = DB::transaction(function () use ($detail, $images, $minSrp, $minCost, $totalStock, $mappedVariants, $brandId, $supplierId, $now) {
+                $product = Product::create([
+                    'pd_name'        => (string) ($detail['subject'] ?? 'ZQ Product'),
+                    'pd_catid'       => 0,
+                    'pd_room_type'   => 0,
+                    'pd_brand_type'  => $brandId,
+                    'pd_catsubid'    => 0,
+                    'pd_catsubid2'   => 0,
+                    'pd_shopid'      => 0,
+                    'pd_description' => isset($detail['description']) ? (string) $detail['description'] : '',
+                    'pd_specifications' => null,
+                    'pd_material'    => '',
+                    'pd_warranty'    => '',
+                    'pd_supplier'    => $supplierId,
+                    'pd_price_srp'   => $minSrp,
+                    'pd_price_dp'    => $minCost,
+                    'pd_price_member' => null,
+                    'pd_prodpv'      => 0,
+                    'pd_qty'         => $totalStock,
+                    'pd_weight'      => 0,
+                    'pd_psweight'    => 0,
+                    'pd_pswidth'     => 0,
+                    'pd_pslenght'    => 0,
+                    'pd_psheight'    => 0,
+                    'pd_assembly_required' => 0,
+                    'pd_preorder'    => '',
+                    'pd_preorder_value' => 0,
+                    'pd_parent_sku'  => '',
+                    'pd_type'        => count($mappedVariants) > 0 ? 1 : 0,
+                    'pd_shoptype'    => 0,
+                    'pd_musthave'    => 0,
+                    'pd_bestseller'  => 0,
+                    'pd_salespromo'  => 0,
+                    'pd_manual_checkout_enabled' => 0,
+                    'pd_user'        => 0,
+                    'pd_usertype'    => 0,
+                    'pd_date'        => $now,
+                    'pd_last_update' => $now,
+                    'pd_status'      => 0,
+                    'pd_image'       => $images[0] ?? null,
+                ]);
+
+                foreach ($images as $imageUrl) {
+                    ProductPhoto::create([
+                        'pp_pdid'     => $product->pd_id,
+                        'pp_filename' => $imageUrl,
+                        'pp_varone'   => null,
+                        'pp_date'     => $now,
+                    ]);
+                }
+
+                if (! empty($mappedVariants)) {
+                    $this->syncVariants($product, $mappedVariants, $now);
+                }
+
+                return $product;
+            });
+
+            try {
+                $this->recordProductActivity('created', $product, $admin, $supplierUser);
+            } catch (\Throwable $logErr) {
+                Log::warning('Activity log failed after ZQ import', ['product_id' => $product->pd_id, 'message' => $logErr->getMessage()]);
+            }
+
+            return response()->json([
+                'message' => 'ZQ product imported to local catalog successfully.',
+                'product' => [
+                    'id'     => (int) $product->pd_id,
+                    'name'   => $product->pd_name,
+                    'status' => (int) $product->pd_status,
+                    'sku'    => (string) ($product->pd_parent_sku ?? ''),
+                ],
+            ], 201);
+
+        } catch (\Throwable $e) {
+            Log::error('ZQ import to local failed', [
+                'external_id' => $id,
+                'exception'   => $e::class,
+                'message'     => $e->getMessage(),
+            ]);
+            return response()->json(['message' => 'Failed to import ZQ product to local catalog.'], 500);
+        }
+    }
+
+    private function resolveZqSupplierBrandId(): ?int
+    {
+        $brand = ProductBrand::query()
+            ->select(['pb_id'])
+            ->whereRaw('LOWER(pb_name) = ?', ['zq supplier'])
+            ->first();
+
+        if ($brand) {
+            return (int) $brand->pb_id;
+        }
+
+        $brand = ProductBrand::query()
+            ->select(['pb_id'])
+            ->where('pb_name', 'ilike', '%zq supplier%')
+            ->first();
+
+        return $brand ? (int) $brand->pb_id : null;
+    }
+
+    /**
+     * @param mixed $images
+     * @return array<int, string>
+     */
+    private function extractZqImageUrls(mixed $images): array
+    {
+        if (! is_array($images)) {
+            return [];
+        }
+
+        return collect($images)
+            ->map(function ($image) {
+                if (is_array($image) && isset($image['image']) && is_string($image['image'])) {
+                    return trim($image['image']);
+                }
+                if (is_string($image)) {
+                    return trim($image);
+                }
+                return null;
+            })
+            ->filter(fn ($image) => is_string($image) && $image !== '')
+            ->values()
+            ->all();
     }
 }
