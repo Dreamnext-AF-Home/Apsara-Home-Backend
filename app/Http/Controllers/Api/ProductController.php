@@ -3078,6 +3078,8 @@ class ProductController extends Controller
             'size' => 'nullable|integer|min:1|max:100',
             'keyword' => 'nullable|string|max:255',
             'status' => 'nullable|string|max:50',
+            'resume_from_saved' => 'nullable|boolean',
+            'reset_cursor' => 'nullable|boolean',
             'sourceType' => 'nullable|array',
             'sourceType.*' => 'string|max:50',
             'ids' => 'nullable|array',
@@ -3102,6 +3104,15 @@ class ProductController extends Controller
             'sourceType' => $request->input('sourceType'),
             'ids' => $request->input('ids'),
         ], static fn ($value) => $value !== null && $value !== '' && $value !== []);
+        $resumeFromSaved = $request->boolean('resume_from_saved', true);
+        $resetCursor = $request->boolean('reset_cursor', false);
+        $resolvedCursor = $this->zqProductSyncService->resolveCursor($payload, $resumeFromSaved, $resetCursor);
+
+        if ($resolvedCursor !== null) {
+            $payload['cursor'] = $resolvedCursor;
+        } else {
+            unset($payload['cursor']);
+        }
 
         try {
             $response = $this->zqApiService->getImportProductList($payload);
@@ -3109,6 +3120,11 @@ class ProductController extends Controller
             return response()->json([
                 'message' => 'ZQ import product list fetched successfully.',
                 'request' => $payload,
+                'cursor' => [
+                    'used' => $resolvedCursor,
+                    'saved' => $this->zqProductSyncService->getSavedCursor(),
+                    'resumed' => $resolvedCursor !== null && ! $resetCursor && ! $request->filled('cursor'),
+                ],
                 'zq' => $response,
             ]);
         } catch (\Throwable $e) {
@@ -3159,6 +3175,8 @@ class ProductController extends Controller
             'size' => 'nullable|integer|min:1|max:100',
             'keyword' => 'nullable|string|max:255',
             'status' => 'nullable|string|max:50',
+            'resume_from_saved' => 'nullable|boolean',
+            'reset_cursor' => 'nullable|boolean',
             'sourceType' => 'nullable|array',
             'sourceType.*' => 'string|max:50',
             'ids' => 'nullable|array',
@@ -3183,15 +3201,19 @@ class ProductController extends Controller
             'sourceType' => $request->input('sourceType'),
             'ids' => $request->input('ids'),
         ], static fn ($value) => $value !== null && $value !== '' && $value !== []);
+        $resumeFromSaved = $request->boolean('resume_from_saved', true);
+        $resetCursor = $request->boolean('reset_cursor', false);
 
         try {
-            $result = $this->zqProductSyncService->syncImportProducts($payload);
+            $result = $this->zqProductSyncService->syncImportProducts($payload, $resumeFromSaved, $resetCursor);
 
             return response()->json([
                 'message' => 'ZQ products synced successfully.',
                 'summary' => $result['summary'],
                 'hasMore' => $result['hasMore'],
                 'nextCursor' => $result['nextCursor'],
+                'usedCursor' => $result['usedCursor'] ?? null,
+                'savedCursor' => $result['savedCursor'] ?? null,
             ]);
         } catch (\Throwable $e) {
             Log::warning('ZQ product sync failed', [
@@ -3318,6 +3340,8 @@ class ProductController extends Controller
             'active' => $active,
             'inactive' => $inactive,
             'low_stock' => $lowStock,
+            'saved_cursor' => $this->zqProductSyncService->getSavedCursor(),
+            'has_saved_cursor' => $this->zqProductSyncService->getSavedCursor() !== null,
         ]);
     }
 

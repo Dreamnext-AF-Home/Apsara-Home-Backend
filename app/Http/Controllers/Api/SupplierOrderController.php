@@ -12,6 +12,81 @@ use Illuminate\Support\Facades\DB;
 
 class SupplierOrderController extends Controller
 {
+    public function notifications(Request $request)
+    {
+        $supplierUser = $this->resolveSupplierUser($request);
+        if (! $supplierUser) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        $validated = $request->validate([
+            'limit' => 'nullable|integer|min:1|max:20',
+        ]);
+
+        $limit = (int) ($validated['limit'] ?? 8);
+        $supplierId = (int) $supplierUser->su_supplier;
+        $brandTypeValue = $supplierId > 0 ? $this->resolveSupplierBrandType($supplierId) : 0;
+
+        $rows = $this->supplierOrdersBaseQuery($supplierId, $brandTypeValue)
+            ->orderByDesc('tbl_checkout_history.ch_paid_at')
+            ->orderByDesc('tbl_checkout_history.ch_id')
+            ->limit($limit)
+            ->get();
+
+        $items = $rows->map(function ($row) {
+            $orderId = (int) $row->ch_id;
+            $checkoutId = trim((string) ($row->ch_checkout_id ?? ''));
+            $productName = trim((string) ($row->ch_product_name ?? 'Order Item'));
+            $customerName = trim((string) ($row->ch_customer_name ?? 'Customer'));
+            $quantity = (int) ($row->ch_quantity ?? 0);
+            $amount = (float) ($row->ch_amount ?? 0);
+            $approvalStatus = (string) ($row->ch_approval_status ?? 'pending_approval');
+            $fulfillmentStatus = (string) ($row->ch_fulfillment_status ?? 'pending');
+            $statusLine = $approvalStatus === 'approved'
+                ? 'Ready for supplier fulfillment'
+                : 'Waiting for admin approval';
+
+            if (in_array($fulfillmentStatus, ['processing', 'packed', 'shipped', 'out_for_delivery', 'delivered'], true)) {
+                $statusLine = 'Supplier status: ' . str_replace('_', ' ', $fulfillmentStatus);
+            } elseif (in_array($fulfillmentStatus, ['cancelled', 'returned'], true)) {
+                $statusLine = 'Supplier status: ' . str_replace('_', ' ', $fulfillmentStatus);
+            }
+
+            return [
+                'id' => (string) $orderId,
+                'title' => $productName !== '' ? $productName : 'Order Item',
+                'description' => sprintf(
+                    '%s placed order %s for %d item%s (%s). %s.',
+                    $customerName !== '' ? $customerName : 'Customer',
+                    $checkoutId !== '' ? $checkoutId : '#' . $orderId,
+                    max(1, $quantity),
+                    max(1, $quantity) === 1 ? '' : 's',
+                    'PHP ' . number_format($amount, 2),
+                    ucfirst($statusLine)
+                ),
+                'count' => 1,
+                'href' => '/supplier/orders',
+                'updated_at' => optional($row->ch_paid_at ?? $row->updated_at ?? $row->created_at)->toDateTimeString(),
+                'payload' => [
+                    'order_id' => $orderId,
+                    'checkout_id' => $checkoutId,
+                    'customer_name' => $customerName,
+                    'product_name' => $productName,
+                    'quantity' => $quantity,
+                    'amount' => $amount,
+                    'approval_status' => $approvalStatus,
+                    'fulfillment_status' => $fulfillmentStatus,
+                ],
+            ];
+        })->values()->all();
+
+        return response()->json([
+            'unread_count' => count($items),
+            'items' => $items,
+            'generated_at' => now()->toDateTimeString(),
+        ]);
+    }
+
     public function index(Request $request)
     {
         $supplierUser = $this->resolveSupplierUser($request);

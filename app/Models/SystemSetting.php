@@ -31,6 +31,8 @@ class SystemSetting extends Model
         'admin_alerts',
         'enable_test_payments',
         'enable_manual_checkout_mode',
+        'zq_saved_cursor',
+        'zq_last_synced_at',
     ];
 
     protected $casts = [
@@ -40,5 +42,6 @@ class SystemSetting extends Model
         'admin_alerts' => 'boolean',
         'enable_test_payments' => 'boolean',
         'enable_manual_checkout_mode' => 'boolean',
+        'zq_last_synced_at' => 'datetime',
     ];
 }
