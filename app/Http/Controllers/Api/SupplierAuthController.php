@@ -44,10 +44,15 @@ class SupplierAuthController extends Controller
         $attemptIdentifier = mb_strtolower($login, 'UTF-8') . '|' . (string) $request->ip();
         $this->assertLoginNotLocked($attemptIdentifier);
 
+        $normalizedLogin = mb_strtolower($login, 'UTF-8');
+
         $supplierUser = SupplierUser::query()
             ->with('supplier')
-            ->where('su_username', $login)
-            ->orWhere('su_email', $login)
+            ->where(function ($query) use ($normalizedLogin) {
+                $query
+                    ->whereRaw('LOWER(COALESCE(su_username, \'\')) = ?', [$normalizedLogin])
+                    ->orWhereRaw('LOWER(COALESCE(su_email, \'\')) = ?', [$normalizedLogin]);
+            })
             ->first();
 
         if (! $supplierUser) {
