@@ -266,6 +266,20 @@ class AiSupportController extends Controller
                 ]);
             }
 
+            $specificProductMatches = $this->searchSpecificProductNameMatches($question, $searchQuestion, $detectedBrandId, 6);
+            if (!empty($specificProductMatches)) {
+                return response()->json([
+                    'status' => 'ok',
+                    'reply' => 'Here is the product I found for "' . $question . '".',
+                    'quick_replies' => ['Show lowest price', 'Best product', 'Track my order'],
+                    'product_cards' => $specificProductMatches,
+                    'brand_cards' => $brandCards,
+                    'category_cards' => $categoryCards,
+                    'brand_view_all_url' => $brandViewAllUrl,
+                    'step_images' => $stepImages,
+                ]);
+            }
+
             if ($isStrictNameQuery && $nameQuery !== '') {
                 $strictKeywords = $this->getStrictNameKeywords($nameQuery);
                 $merged = [];
@@ -1709,6 +1723,13 @@ class AiSupportController extends Controller
 
     private function hasBudgetIntent(string $qLower): bool
     {
+        if ($this->looksLikeSpecificProductName($qLower, $qLower)
+            && !preg_match('/\b(budget|price range|price|cost|under|below|less than|up to|upto|php|peso|pesos)\b/i', $qLower)
+            && preg_match('/\d/', $qLower)
+        ) {
+            return false;
+        }
+
         if (preg_match('/\b(budget|price range|price|cost|under|below|less than|up to|upto)\b/i', $qLower)) {
             return true;
         }
@@ -1716,6 +1737,13 @@ class AiSupportController extends Controller
             return true;
         }
         if (preg_match('/(?:php|₱)?\s*[0-9][0-9,\.]*\b/i', $qLower)) {
+            return true;
+        }
+
+        if (preg_match('/\b[0-9]{4,}\b/', $qLower)) {
+            return true;
+        }
+        if (preg_match('/\b[0-9][0-9,\.]*\s*-\s*[0-9][0-9,\.]*\b/', $qLower)) {
             return true;
         }
 
@@ -2599,6 +2627,117 @@ class AiSupportController extends Controller
             ->get();
 
         return $this->mapProductCards($rows);
+    }
+
+    private function searchSpecificProductNameMatches(string $question, string $searchQuestion, int $brandId, int $limit): array
+    {
+        if (!$this->looksLikeSpecificProductName($question, $searchQuestion)) {
+            return [];
+        }
+
+        $candidates = array_values(array_unique(array_filter([
+            $this->normalizeProductSearchPhrase($question),
+            $this->normalizeProductSearchPhrase($searchQuestion),
+        ])));
+
+        $merged = [];
+        foreach ($candidates as $candidate) {
+            if (strlen($candidate) < 5) {
+                continue;
+            }
+
+            $merged = $this->mergeCardLists($merged, $this->searchProductsByNormalizedName($candidate, $brandId, $limit));
+            if (empty($merged)) {
+                $merged = $this->mergeCardLists($merged, $this->searchProductsByNormalizedNameTokens($candidate, $brandId, $limit));
+            }
+            if (!empty($merged)) {
+                break;
+            }
+        }
+
+        return $merged;
+    }
+
+    private function looksLikeSpecificProductName(string $question, string $searchQuestion): bool
+    {
+        $normalizedQuestion = $this->normalizeProductSearchPhrase($question);
+        $normalizedSearchQuestion = $this->normalizeProductSearchPhrase($searchQuestion);
+        $candidate = $normalizedQuestion !== '' ? $normalizedQuestion : $normalizedSearchQuestion;
+
+        if ($candidate === '' || strlen($candidate) < 5) {
+            return false;
+        }
+
+        $tokenCount = count(array_filter(explode(' ', $candidate)));
+        if ($tokenCount >= 3) {
+            return true;
+        }
+
+        return preg_match('/\d/', $candidate) === 1;
+    }
+
+    private function normalizeProductSearchPhrase(string $value): string
+    {
+        $value = strtolower(trim($value));
+        $value = preg_replace('/[^a-z0-9]+/i', ' ', $value) ?? '';
+        $value = preg_replace('/\s+/', ' ', $value) ?? '';
+        return trim($value);
+    }
+
+    private function searchProductsByNormalizedName(string $keywords, int $brandId, int $limit): array
+    {
+        $normalizedKeywords = $this->normalizeProductSearchPhrase($keywords);
+        if ($normalizedKeywords === '') {
+            return [];
+        }
+
+        $query = $this->selectProductFields($this->productBaseQuery($brandId), $this->isMember);
+        $normalizedNameSql = $this->normalizedProductNameSql();
+        $like = '%' . $normalizedKeywords . '%';
+
+        $rows = $query
+            ->whereRaw("{$normalizedNameSql} LIKE ?", [$like])
+            ->orderByRaw("{$normalizedNameSql} = ? DESC", [$normalizedKeywords])
+            ->orderByRaw('LOWER(p.pd_name) = LOWER(?) DESC', [$keywords])
+            ->orderByDesc('p.pd_sales')
+            ->orderBy('min_price')
+            ->limit($limit > 0 ? $limit : 5)
+            ->get();
+
+        return $this->mapProductCards($rows);
+    }
+
+    private function searchProductsByNormalizedNameTokens(string $keywords, int $brandId, int $limit): array
+    {
+        $tokens = array_values(array_filter(explode(' ', $this->normalizeProductSearchPhrase($keywords)), static function ($token) {
+            return strlen($token) >= 2;
+        }));
+
+        if (count($tokens) < 2) {
+            return [];
+        }
+
+        $query = $this->selectProductFields($this->productBaseQuery($brandId), $this->isMember);
+        $normalizedNameSql = $this->normalizedProductNameSql();
+
+        $query->where(function ($builder) use ($tokens, $normalizedNameSql) {
+            foreach ($tokens as $token) {
+                $builder->whereRaw("{$normalizedNameSql} LIKE ?", ['%' . $token . '%']);
+            }
+        });
+
+        $rows = $query
+            ->orderByDesc('p.pd_sales')
+            ->orderBy('min_price')
+            ->limit($limit > 0 ? $limit : 5)
+            ->get();
+
+        return $this->mapProductCards($rows);
+    }
+
+    private function normalizedProductNameSql(): string
+    {
+        return "LOWER(REGEXP_REPLACE(COALESCE(p.pd_name, ''), '[^a-z0-9]+', ' ', 'g'))";
     }
 
     private function searchProductsByKeywords(string $keywords, int $brandId, int $limit): array
