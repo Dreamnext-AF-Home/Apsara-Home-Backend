@@ -3,12 +3,14 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Mail\Checkout\PartnerStorefrontGuestOrderMail;
 use App\Models\AdminNotification;
 use App\Mail\Checkout\CheckoutCompletedMail;
 use App\Models\CheckoutHistory;
 use App\Models\ProductReview;
 use App\Models\Product;
 use App\Models\SystemSetting;
+use App\Models\WebPageContent;
 use App\Support\DirectReferralCommission;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -17,6 +19,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 use Pusher\Pusher;
 
 
@@ -600,31 +603,17 @@ class PaymentController extends Controller
                 ];
             }
 
-              Mail::mailer('resend')->to($recipient)->send(new CheckoutCompletedMail([
-                  'checkout_id' => $checkoutId,
-                  'customer_name' => $customer['name'] ?? ($order?->ch_customer_name ?? 'Customer'),
-                  'description' => $customer['description'] ?? ($order?->ch_description ?? 'Order'),
-                  'amount' => $customer['amount'] ?? ($order?->ch_amount ?? 0),
-                  'payment_method' => $customer['payment_method'] ?? ($order?->ch_payment_method ?? null),
-                  'status' => $attrs['status'] ?? 'paid',
-                  'order_status_label' => 'pending approval',
-                  'payment_intent_id' => $attrs['payment_intent']['id'] ?? null,
-                  'shipping_address' => $customer['address'] ?? ($order?->ch_customer_address ?? null),
-                  'order' => [
-                      'product_name' => $orderDetails['product_name'] ?? null,
-                      'product_sku' => $orderDetails['product_sku'] ?? null,
-                    'quantity' => $orderDetails['quantity'] ?? 1,
-                    'selected_color' => $orderDetails['selected_color'] ?? null,
-                    'selected_size' => $orderDetails['selected_size'] ?? null,
-                    'selected_type' => $orderDetails['selected_type'] ?? null,
-                ],
-            ]));
+            $mailPayload = $this->buildCheckoutCompletedMailPayload($checkoutId, $attrs, is_array($customer) ? $customer : [], $order, $orderDetails);
+
+            Mail::mailer('resend')->to($recipient)->send(new CheckoutCompletedMail($mailPayload));
 
             Log::info('Checkout email sent', [
                 'checkout_id' => $checkoutId,
                 'recipient' => $recipient,
                 'mailer' => 'resend',
             ]);
+
+            $this->sendPartnerStorefrontOrderEmailIfNeeded($checkoutId, $mailPayload, is_array($customer) ? $customer : [], $order);
         } catch (\Throwable $e) {
             Cache::forget($notifiedKey);
             Log::error('Checkout email send failed', [
@@ -634,6 +623,186 @@ class PaymentController extends Controller
             ]);
             report($e);
         }
+    }
+
+    private function buildCheckoutCompletedMailPayload(
+        string $checkoutId,
+        array $attrs,
+        array $customer,
+        ?CheckoutHistory $order,
+        array $orderDetails
+    ): array {
+        $voucher = is_array($customer['voucher'] ?? null) ? $customer['voucher'] : [];
+
+        return [
+            'checkout_id' => $checkoutId,
+            'customer_name' => $customer['name'] ?? ($order?->ch_customer_name ?? 'Customer'),
+            'customer_email' => $customer['email'] ?? ($order?->ch_customer_email ?? null),
+            'customer_phone' => $customer['phone'] ?? ($order?->ch_customer_phone ?? null),
+            'description' => $customer['description'] ?? ($order?->ch_description ?? 'Order'),
+            'amount' => $customer['amount'] ?? ($order?->ch_amount ?? 0),
+            'payment_method' => $customer['payment_method'] ?? ($order?->ch_payment_method ?? null),
+            'status' => $attrs['status'] ?? 'paid',
+            'order_status_label' => 'pending approval',
+            'payment_intent_id' => $attrs['payment_intent']['id'] ?? null,
+            'shipping_address' => $customer['address'] ?? ($order?->ch_customer_address ?? null),
+            'referred_by' => $customer['referred_by'] ?? null,
+            'source_label' => $customer['source_label'] ?? ($order?->ch_source_label ?? null),
+            'source_slug' => $customer['source_slug'] ?? ($order?->ch_source_slug ?? null),
+            'source_url' => $customer['source_url'] ?? null,
+            'voucher' => [
+                'code' => $voucher['code'] ?? null,
+                'discount' => (float) ($voucher['discount'] ?? 0),
+            ],
+            'order' => [
+                'product_name' => $orderDetails['product_name'] ?? null,
+                'product_sku' => $orderDetails['product_sku'] ?? null,
+                'quantity' => $orderDetails['quantity'] ?? 1,
+                'selected_color' => $orderDetails['selected_color'] ?? null,
+                'selected_size' => $orderDetails['selected_size'] ?? null,
+                'selected_type' => $orderDetails['selected_type'] ?? null,
+            ],
+        ];
+    }
+
+    private function sendPartnerStorefrontOrderEmailIfNeeded(
+        string $checkoutId,
+        array $mailPayload,
+        array $customer,
+        ?CheckoutHistory $order
+    ): void {
+        $customerId = (int) ($customer['customer_id'] ?? ($order?->ch_customer_id ?? 0));
+        if ($customerId > 0) {
+            Log::info('Partner storefront order email skipped: checkout belongs to a member', [
+                'checkout_id' => $checkoutId,
+                'customer_id' => $customerId,
+            ]);
+            return;
+        }
+
+        $sourceSlug = $this->resolvePartnerStorefrontSlugFromMailPayload($mailPayload);
+        if ($sourceSlug === '') {
+            Log::info('Partner storefront order email skipped: missing storefront source slug', [
+                'checkout_id' => $checkoutId,
+                'source_label' => $mailPayload['source_label'] ?? null,
+                'source_url' => $mailPayload['source_url'] ?? null,
+            ]);
+            return;
+        }
+
+        $storefront = $this->findPartnerStorefrontBySlug($sourceSlug);
+        if (!$storefront) {
+            Log::info('Partner storefront order email skipped: storefront not found', [
+                'checkout_id' => $checkoutId,
+                'source_slug' => $sourceSlug,
+            ]);
+            return;
+        }
+
+        $notificationEmail = $this->extractPartnerStorefrontNotificationEmail($storefront);
+        if ($notificationEmail === '') {
+            Log::info('Partner storefront order email skipped: missing notification email', [
+                'checkout_id' => $checkoutId,
+                'source_slug' => $sourceSlug,
+            ]);
+            return;
+        }
+
+        $recipient = env('MAIL_TEST_TO') ?: $notificationEmail;
+        $notifiedKey = "checkout_partner_email_sent:{$checkoutId}";
+        if (!Cache::add($notifiedKey, true, now()->addDays(7))) {
+            Log::info('Partner storefront order email skipped: already sent', ['checkout_id' => $checkoutId]);
+            return;
+        }
+
+        try {
+            Mail::mailer('resend')->to($recipient)->send(new PartnerStorefrontGuestOrderMail([
+                ...$mailPayload,
+                'storefront_display_name' => $this->extractPartnerStorefrontDisplayName($storefront),
+                'storefront_notification_email' => $notificationEmail,
+            ]));
+
+            Log::info('Partner storefront order email sent', [
+                'checkout_id' => $checkoutId,
+                'recipient' => $recipient,
+                'source_slug' => $sourceSlug,
+                'mailer' => 'resend',
+            ]);
+        } catch (\Throwable $e) {
+            Cache::forget($notifiedKey);
+            Log::error('Partner storefront order email send failed', [
+                'checkout_id' => $checkoutId,
+                'recipient' => $recipient,
+                'source_slug' => $sourceSlug,
+                'error' => $e->getMessage(),
+            ]);
+            report($e);
+        }
+    }
+
+    private function findPartnerStorefrontBySlug(string $slug): ?WebPageContent
+    {
+        $normalizedSlug = strtolower(trim($slug));
+        if ($normalizedSlug === '') {
+            return null;
+        }
+
+        $storefronts = WebPageContent::query()
+            ->where('wpc_type', 'partner-storefront')
+            ->orderByDesc('wpc_status')
+            ->get();
+
+        $matched = $storefronts->first(function (WebPageContent $storefront) use ($normalizedSlug) {
+            $key = strtolower(trim((string) ($storefront->wpc_key ?? '')));
+            $payloadSlug = strtolower(trim((string) data_get($storefront->wpc_payload, 'fields.slug', '')));
+            return $key === $normalizedSlug || $payloadSlug === $normalizedSlug;
+        });
+
+        return $matched instanceof WebPageContent ? $matched : null;
+    }
+
+    private function extractPartnerStorefrontNotificationEmail(WebPageContent $storefront): string
+    {
+        return trim((string) data_get($storefront->wpc_payload, 'fields.notification_email', ''));
+    }
+
+    private function extractPartnerStorefrontDisplayName(WebPageContent $storefront): string
+    {
+        return trim((string) (
+            data_get($storefront->wpc_payload, 'fields.display_name', '')
+            ?: $storefront->wpc_title
+            ?: $storefront->wpc_key
+            ?: 'Partner Storefront'
+        ));
+    }
+
+    private function resolvePartnerStorefrontSlugFromMailPayload(array $mailPayload): string
+    {
+        $sourceSlug = strtolower(trim((string) ($mailPayload['source_slug'] ?? '')));
+        if ($sourceSlug !== '') {
+            return $sourceSlug;
+        }
+
+        $sourceUrl = trim((string) ($mailPayload['source_url'] ?? ''));
+        if ($sourceUrl !== '') {
+            $path = trim((string) parse_url($sourceUrl, PHP_URL_PATH));
+            if ($path !== '') {
+                if (preg_match('#^/shop/([^/?#]+)#i', $path, $matches)) {
+                    return strtolower(trim((string) ($matches[1] ?? '')));
+                }
+
+                if (preg_match('#^/([^/?#]+)/(product|category|checkout|track-order)(?:/|$)#i', $path, $matches)) {
+                    return strtolower(trim((string) ($matches[1] ?? '')));
+                }
+            }
+        }
+
+        $sourceLabel = trim((string) ($mailPayload['source_label'] ?? ''));
+        if ($sourceLabel !== '') {
+            return Str::slug($sourceLabel);
+        }
+
+        return '';
     }
 
     public function checkoutHistory(Request $request)
