@@ -687,6 +687,142 @@ class ProductController extends Controller
         $this->createProductActivity('' !== $action ? $action : 'updated', 'success', $admin, $supplierUser, $product, $productName, $productSku, $changes);
     }
 
+    private function groupImportRows(array $rawRows): array
+    {
+        $grouped = [];
+        $lastProductKey  = null;
+        $lastProductName = '';
+        $lastProductSku  = '';
+
+        foreach ($rawRows as $raw) {
+            $row = $this->normalizeImportRow($raw);
+
+            $name = trim((string) ($row['pd_name'] ?? ''));
+            $sku  = trim((string) ($row['pd_parent_sku'] ?? ''));
+
+            // Blank row — inherit name and SKU from the last known product
+            if ($name === '' && $sku === '' && $lastProductKey !== null) {
+                $row['pd_name']       = $lastProductName;
+                $row['pd_parent_sku'] = $lastProductSku;
+                $name = $lastProductName;
+                $sku  = $lastProductSku;
+            }
+
+            // Collect all variants from this row (JSON format may have multiple)
+            $rowVariants = !empty($row['pd_variants']) && is_array($row['pd_variants'])
+                ? array_values(array_filter($row['pd_variants'], fn ($v) => $v !== null))
+                : [];
+            // Flat-spreadsheet format: a single variant squeezed into a non-array scalar
+            if (empty($rowVariants) && isset($row['pd_variants']) && !is_array($row['pd_variants'])) {
+                $rowVariants = [$row['pd_variants']];
+            }
+
+            if ($name === '' && $sku === '') {
+                continue;
+            }
+
+            $key = $sku !== '' ? $sku : $name;
+
+            if (!isset($grouped[$key])) {
+                $grouped[$key] = $row;
+                $grouped[$key]['pd_variants'] = [];
+                $lastProductKey  = $key;
+                $lastProductName = $name;
+                $lastProductSku  = $sku;
+            }
+
+            foreach ($rowVariants as $v) {
+                $grouped[$key]['pd_variants'][] = $v;
+            }
+        }
+
+        return array_values($grouped);
+    }
+
+    private function normalizeImportRow(array $row): array
+    {
+        $map = [
+            'Product Name'                  => 'pd_name',
+            'Parent SKU'                    => 'pd_parent_sku',
+            'Product SKU'                   => 'pd_parent_sku',
+            'Category'                      => 'pd_catid',
+            'Room Type'                     => 'pd_room_type',
+            'Brand'                         => 'pd_brand_type',
+            'Price SRP'                     => 'pd_price_srp',
+            'Price DP'                      => 'pd_price_dp',
+            'Price Member'                  => 'pd_price_member',
+            'Product PV (AUTO)'             => 'pd_prodpv',
+            'Quantity'                      => 'pd_qty',
+            'Weight'                        => 'pd_weight',
+            'Package Weight'                => 'pd_psweight',
+            'Package Width'                 => 'pd_pswidth',
+            'Pacakge Width'                 => 'pd_pswidth',
+            'Package Length'                => 'pd_pslenght',
+            'Package Height'                => 'pd_psheight',
+            'Description'                   => 'pd_description',
+            'Specifications'                => 'pd_specifications',
+            'Material'                      => 'pd_material',
+            'Warranty'                      => 'pd_warranty',
+            'Images'                        => 'pd_images',
+            'Product Type'                  => 'pd_type',
+            'Status'                        => 'pd_status',
+            'Must Have'                     => 'pd_musthave',
+            'Best Seller'                   => 'pd_bestseller',
+            'Sales Promo'                   => 'pd_salespromo',
+            'Assembly Required'             => 'pd_assembly_required',
+        ];
+
+        $variantMap = [
+            'Variant SKU'                   => 'pv_sku',
+            'Variant Name'                  => 'pv_name',
+            'Color Name'                    => 'pv_color',
+            'Color Hex'                     => 'pv_color_hex',
+            'Variant Size'                  => 'pv_size',
+            'Variant Style'                 => 'pv_style',
+            'Variant Width'                 => 'pv_width',
+            'Variant Dimension'             => 'pv_dimension',
+            'Variant Height'                => 'pv_height',
+            'Variant Price SRP'             => 'pv_price_srp',
+            'Variant Price DP'              => 'pv_price_dp',
+            'Variant Price Member'          => 'pv_price_member',
+            'Variant PV (AUTO)'             => 'pv_prodpv',
+            'Variant Qty'                   => 'pv_qty',
+            'Variant Status'                => 'pv_status',
+            'Variant Images'                => 'pv_images',
+        ];
+
+        $normalized = [];
+        $variantData = [];
+
+        foreach ($row as $key => $value) {
+            if (isset($map[$key])) {
+                $normalized[$map[$key]] = $value;
+            } elseif (isset($variantMap[$key])) {
+                $variantData[$variantMap[$key]] = $value;
+            } else {
+                $normalized[$key] = $value;
+            }
+        }
+
+        // If flat variant fields exist and no pd_variants array, wrap them
+        if (!empty($variantData) && empty($normalized['pd_variants'])) {
+            $normalized['pd_variants'] = [$variantData];
+        }
+
+        // Normalize pd_type: text values → 0 or 1
+        if (isset($normalized['pd_type'])) {
+            $typeVal = strtolower(trim((string) $normalized['pd_type']));
+            $normalized['pd_type'] = in_array($typeVal, ['1', 'yes', 'true', 'with variants', 'variable', 'has variants', 'variant'], true) ? 1 : 0;
+        }
+
+        // Auto-set pd_type to 1 if variants are present
+        if (!empty($normalized['pd_variants'])) {
+            $normalized['pd_type'] = 1;
+        }
+
+        return $normalized;
+    }
+
     private function normalizeImportBoolean(mixed $value): bool
     {
         if (is_bool($value)) {
@@ -725,53 +861,117 @@ class ProductController extends Controller
             ->all();
     }
 
-    private function fillProductFromImportRow(Product $product, array $row, int $supplierId, $now): Product
+    private function fillProductFromImportRow(Product $product, array $row, int $supplierId, $now, bool $partialUpdate = false): Product
     {
-        $images = $this->normalizeImportImageList($row['pd_images'] ?? []);
+        $images       = $this->normalizeImportImageList($row['pd_images'] ?? []);
         $primaryImage = trim((string) ($row['pd_image'] ?? ''));
 
         if ($primaryImage !== '' && empty($images)) {
             $images = [$primaryImage];
         }
 
-        $product->fill([
-            'pd_name' => trim((string) ($row['pd_name'] ?? '')),
-            'pd_catid' => (int) ($row['pd_catid'] ?? 0),
-            'pd_room_type' => (int) ($row['pd_room_type'] ?? 0),
-            'pd_brand_type' => (int) ($row['pd_brand_type'] ?? 0),
-            'pd_catsubid' => (int) ($row['pd_catsubid'] ?? 0),
-            'pd_catsubid2' => 0,
-            'pd_shopid' => 0,
-            'pd_description' => (string) ($row['pd_description'] ?? ''),
-            'pd_specifications' => ($row['pd_specifications'] ?? null) !== null ? (string) $row['pd_specifications'] : null,
-            'pd_material' => trim((string) ($row['pd_material'] ?? '')),
-            'pd_warranty' => trim((string) ($row['pd_warranty'] ?? '')),
-            'pd_supplier' => $supplierId,
-            'pd_price_srp' => $this->toNumber($row['pd_price_srp'] ?? 0),
-            'pd_price_dp' => $this->toNumber($row['pd_price_dp'] ?? 0),
-            'pd_price_member' => array_key_exists('pd_price_member', $row) ? $this->toOptionalNumber($row['pd_price_member']) : null,
-            'pd_prodpv' => $this->toNumber($row['pd_prodpv'] ?? 0),
-            'pd_qty' => $this->toNumber($row['pd_qty'] ?? 0),
-            'pd_weight' => $this->toNumber($row['pd_weight'] ?? 0),
-            'pd_psweight' => $this->toNumber($row['pd_psweight'] ?? 0),
-            'pd_pswidth' => $this->toNumber($row['pd_pswidth'] ?? 0),
-            'pd_pslenght' => $this->toNumber($row['pd_pslenght'] ?? 0),
-            'pd_psheight' => $this->toNumber($row['pd_psheight'] ?? 0),
-            'pd_assembly_required' => $this->normalizeImportBoolean($row['pd_assembly_required'] ?? false) ? 1 : 0,
-            'pd_preorder' => '',
-            'pd_preorder_value' => 0,
-            'pd_parent_sku' => trim((string) ($row['pd_parent_sku'] ?? '')),
-            'pd_type' => (int) ($row['pd_type'] ?? 0),
-            'pd_shoptype' => 0,
-            'pd_musthave' => $this->normalizeImportBoolean($row['pd_musthave'] ?? false) ? 1 : 0,
-            'pd_bestseller' => $this->normalizeImportBoolean($row['pd_bestseller'] ?? false) ? 1 : 0,
-            'pd_salespromo' => $this->normalizeImportBoolean($row['pd_salespromo'] ?? false) ? 1 : 0,
-            'pd_user' => 0,
-            'pd_usertype' => 0,
-            'pd_last_update' => $now,
-            'pd_status' => (int) ($row['pd_status'] ?? 1),
-            'pd_image' => $images[0] ?? ($primaryImage !== '' ? $primaryImage : null),
-        ]);
+        // Only treat images as "provided" when there are actual URLs — not when the key is null/empty
+        $hasImages = !empty($images);
+
+        // When doing a partial update, only include fields that are present and non-null in the row.
+        // For a fresh create, always fill every field with its default.
+        $has = fn (string $key): bool => array_key_exists($key, $row) && $row[$key] !== null;
+
+        $fields = [];
+
+        if (!$partialUpdate || $has('pd_name')) {
+            $fields['pd_name'] = trim((string) ($row['pd_name'] ?? ''));
+        }
+        if (!$partialUpdate || $has('pd_catid')) {
+            $fields['pd_catid'] = (int) ($row['pd_catid'] ?? 0);
+        }
+        if (!$partialUpdate || $has('pd_room_type')) {
+            $fields['pd_room_type'] = (int) ($row['pd_room_type'] ?? 0);
+        }
+        if (!$partialUpdate || $has('pd_brand_type')) {
+            $fields['pd_brand_type'] = (int) ($row['pd_brand_type'] ?? 0);
+        }
+        if (!$partialUpdate || $has('pd_catsubid')) {
+            $fields['pd_catsubid'] = (int) ($row['pd_catsubid'] ?? 0);
+        }
+        if (!$partialUpdate || $has('pd_description')) {
+            $fields['pd_description'] = (string) ($row['pd_description'] ?? '');
+        }
+        if (!$partialUpdate || $has('pd_specifications')) {
+            $fields['pd_specifications'] = ($row['pd_specifications'] ?? null) !== null ? (string) $row['pd_specifications'] : null;
+        }
+        if (!$partialUpdate || $has('pd_material')) {
+            $fields['pd_material'] = trim((string) ($row['pd_material'] ?? ''));
+        }
+        if (!$partialUpdate || $has('pd_warranty')) {
+            $fields['pd_warranty'] = trim((string) ($row['pd_warranty'] ?? ''));
+        }
+        if (!$partialUpdate || $has('pd_price_srp')) {
+            $fields['pd_price_srp'] = $this->toNumber($row['pd_price_srp'] ?? 0);
+        }
+        if (!$partialUpdate || $has('pd_price_dp')) {
+            $fields['pd_price_dp'] = $this->toNumber($row['pd_price_dp'] ?? 0);
+        }
+        if (!$partialUpdate || $has('pd_price_member')) {
+            $fields['pd_price_member'] = $has('pd_price_member') ? $this->toOptionalNumber($row['pd_price_member']) : null;
+        }
+        if (!$partialUpdate || $has('pd_prodpv')) {
+            $fields['pd_prodpv'] = $this->toNumber($row['pd_prodpv'] ?? 0);
+        }
+        if (!$partialUpdate || $has('pd_qty')) {
+            $fields['pd_qty'] = $this->toNumber($row['pd_qty'] ?? 0);
+        }
+        if (!$partialUpdate || $has('pd_weight')) {
+            $fields['pd_weight'] = $this->toNumber($row['pd_weight'] ?? 0);
+        }
+        if (!$partialUpdate || $has('pd_psweight')) {
+            $fields['pd_psweight'] = $this->toNumber($row['pd_psweight'] ?? 0);
+        }
+        if (!$partialUpdate || $has('pd_pswidth')) {
+            $fields['pd_pswidth'] = $this->toNumber($row['pd_pswidth'] ?? 0);
+        }
+        if (!$partialUpdate || $has('pd_pslenght')) {
+            $fields['pd_pslenght'] = $this->toNumber($row['pd_pslenght'] ?? 0);
+        }
+        if (!$partialUpdate || $has('pd_psheight')) {
+            $fields['pd_psheight'] = $this->toNumber($row['pd_psheight'] ?? 0);
+        }
+        if (!$partialUpdate || $has('pd_assembly_required')) {
+            $fields['pd_assembly_required'] = $this->normalizeImportBoolean($row['pd_assembly_required'] ?? false) ? 1 : 0;
+        }
+        if (!$partialUpdate || $has('pd_parent_sku')) {
+            $fields['pd_parent_sku'] = trim((string) ($row['pd_parent_sku'] ?? ''));
+        }
+        if (!$partialUpdate || $has('pd_type')) {
+            $fields['pd_type'] = (int) ($row['pd_type'] ?? 0);
+        }
+        if (!$partialUpdate || $has('pd_musthave')) {
+            $fields['pd_musthave'] = $this->normalizeImportBoolean($row['pd_musthave'] ?? false) ? 1 : 0;
+        }
+        if (!$partialUpdate || $has('pd_bestseller')) {
+            $fields['pd_bestseller'] = $this->normalizeImportBoolean($row['pd_bestseller'] ?? false) ? 1 : 0;
+        }
+        if (!$partialUpdate || $has('pd_salespromo')) {
+            $fields['pd_salespromo'] = $this->normalizeImportBoolean($row['pd_salespromo'] ?? false) ? 1 : 0;
+        }
+        if (!$partialUpdate || $has('pd_status')) {
+            $fields['pd_status'] = (int) ($row['pd_status'] ?? 1);
+        }
+        if (!$partialUpdate || $hasImages) {
+            $fields['pd_image'] = $images[0] ?? ($primaryImage !== '' ? $primaryImage : null);
+        }
+
+        $fields['pd_catsubid2']    = 0;
+        $fields['pd_shopid']       = 0;
+        $fields['pd_supplier']     = $supplierId;
+        $fields['pd_preorder']     = '';
+        $fields['pd_preorder_value'] = 0;
+        $fields['pd_shoptype']     = 0;
+        $fields['pd_user']         = 0;
+        $fields['pd_usertype']     = 0;
+        $fields['pd_last_update']  = $now;
+
+        $product->fill($fields);
 
         if (!$product->exists) {
             $product->pd_date = $now;
@@ -779,14 +979,17 @@ class ProductController extends Controller
 
         $product->save();
 
-        ProductPhoto::query()->where('pp_pdid', $product->pd_id)->delete();
-        foreach ($images as $url) {
-            ProductPhoto::create([
-                'pp_pdid' => $product->pd_id,
-                'pp_filename' => $url,
-                'pp_varone' => null,
-                'pp_date' => $now,
-            ]);
+        // Only replace photos when image data is explicitly provided
+        if (!$partialUpdate || $hasImages) {
+            ProductPhoto::query()->where('pp_pdid', $product->pd_id)->delete();
+            foreach ($images as $url) {
+                ProductPhoto::create([
+                    'pp_pdid'    => $product->pd_id,
+                    'pp_filename' => $url,
+                    'pp_varone'  => null,
+                    'pp_date'    => $now,
+                ]);
+            }
         }
 
         return $product->fresh(['photos']) ?? $product;
@@ -933,33 +1136,27 @@ class ProductController extends Controller
 
     private function syncVariants(Product $product, array $variants, \DateTimeInterface $now): void
     {
-        $existingVariantIds = ProductVariant::query()
+        // Pre-load existing variants keyed by pv_sku for fast lookup
+        $existingBySku = ProductVariant::query()
             ->where('pv_pdid', $product->pd_id)
-            ->pluck('pv_id')
-            ->all();
+            ->whereNotNull('pv_sku')
+            ->get()
+            ->keyBy('pv_sku');
 
-        if (!empty($existingVariantIds)) {
-            ProductVariantPhoto::query()
-                ->whereIn('pvp_pvid', $existingVariantIds)
-                ->delete();
-        }
-
-        ProductVariant::query()->where('pv_pdid', $product->pd_id)->delete();
-
-        foreach ($variants as $index => $variant) {
+        foreach ($variants as $variant) {
             if (!is_array($variant)) {
                 continue;
             }
 
-            $sku = isset($variant['pv_sku']) ? trim((string) $variant['pv_sku']) : '';
-            $name = isset($variant['pv_name']) ? trim((string) $variant['pv_name']) : '';
-            $color = isset($variant['pv_color']) ? trim((string) $variant['pv_color']) : '';
-            $size = isset($variant['pv_size']) ? trim((string) $variant['pv_size']) : '';
-            $style = isset($variant['pv_style']) ? trim((string) $variant['pv_style']) : '';
-            $width = isset($variant['pv_width']) && $variant['pv_width'] !== '' ? $variant['pv_width'] : null;
+            $sku       = isset($variant['pv_sku']) ? trim((string) $variant['pv_sku']) : '';
+            $name      = isset($variant['pv_name']) ? trim((string) $variant['pv_name']) : '';
+            $color     = isset($variant['pv_color']) ? trim((string) $variant['pv_color']) : '';
+            $size      = isset($variant['pv_size']) ? trim((string) $variant['pv_size']) : '';
+            $style     = isset($variant['pv_style']) ? trim((string) $variant['pv_style']) : '';
+            $width     = isset($variant['pv_width']) && $variant['pv_width'] !== '' ? $variant['pv_width'] : null;
             $dimension = isset($variant['pv_dimension']) && $variant['pv_dimension'] !== '' ? $variant['pv_dimension'] : null;
-            $height = isset($variant['pv_height']) && $variant['pv_height'] !== '' ? $variant['pv_height'] : null;
-            $images = collect($variant['pv_images'] ?? [])
+            $height    = isset($variant['pv_height']) && $variant['pv_height'] !== '' ? $variant['pv_height'] : null;
+            $images    = collect($variant['pv_images'] ?? [])
                 ->filter(fn ($url) => is_string($url) && trim($url) !== '')
                 ->values()
                 ->all();
@@ -968,33 +1165,49 @@ class ProductController extends Controller
                 continue;
             }
 
-            $row = ProductVariant::create([
-                'pv_pdid'      => $product->pd_id,
-                'pv_sku'       => $sku !== '' ? $sku : null,
-                'pv_name'      => $name !== '' ? $name : null,
-                'pv_color'     => $color !== '' ? $color : null,
-                'pv_color_hex' => isset($variant['pv_color_hex']) ? trim((string) $variant['pv_color_hex']) : null,
-                'pv_size'      => $size !== '' ? $size : null,
-                'pv_style'     => $style !== '' ? $style : null,
-                'pv_width'     => $width,
-                'pv_dimension' => $dimension,
-                'pv_height'    => $height,
-                'pv_price_srp' => isset($variant['pv_price_srp']) && $variant['pv_price_srp'] !== '' ? $variant['pv_price_srp'] : null,
-                'pv_price_dp'  => isset($variant['pv_price_dp']) && $variant['pv_price_dp'] !== '' ? $variant['pv_price_dp'] : null,
+            $fields = [
+                'pv_name'         => $name !== '' ? $name : null,
+                'pv_color'        => $color !== '' ? $color : null,
+                'pv_color_hex'    => isset($variant['pv_color_hex']) ? trim((string) $variant['pv_color_hex']) : null,
+                'pv_size'         => $size !== '' ? $size : null,
+                'pv_style'        => $style !== '' ? $style : null,
+                'pv_width'        => $width,
+                'pv_dimension'    => $dimension,
+                'pv_height'       => $height,
+                'pv_price_srp'    => isset($variant['pv_price_srp']) && $variant['pv_price_srp'] !== '' ? $variant['pv_price_srp'] : null,
+                'pv_price_dp'     => isset($variant['pv_price_dp']) && $variant['pv_price_dp'] !== '' ? $variant['pv_price_dp'] : null,
                 'pv_price_member' => isset($variant['pv_price_member']) && $variant['pv_price_member'] !== '' ? $variant['pv_price_member'] : null,
-                'pv_prodpv'    => isset($variant['pv_prodpv']) && $variant['pv_prodpv'] !== '' ? $variant['pv_prodpv'] : null,
-                'pv_qty'       => isset($variant['pv_qty']) && $variant['pv_qty'] !== '' ? $variant['pv_qty'] : null,
-                'pv_status'    => isset($variant['pv_status']) ? (int) $variant['pv_status'] : 1,
-                'pv_date'      => $now,
-            ]);
+                'pv_prodpv'       => isset($variant['pv_prodpv']) && $variant['pv_prodpv'] !== '' ? $variant['pv_prodpv'] : null,
+                'pv_qty'          => isset($variant['pv_qty']) && $variant['pv_qty'] !== '' ? $variant['pv_qty'] : null,
+                'pv_status'       => isset($variant['pv_status']) ? (int) $variant['pv_status'] : 1,
+            ];
 
-            foreach ($images as $imgIndex => $url) {
-                ProductVariantPhoto::create([
-                    'pvp_pvid'     => $row->pv_id,
-                    'pvp_filename' => $url,
-                    'pvp_sort'     => $imgIndex,
-                    'pvp_date'     => $now,
-                ]);
+            $existing = $sku !== '' ? ($existingBySku[$sku] ?? null) : null;
+
+            if ($existing) {
+                // Update existing variant matched by SKU
+                $existing->update($fields);
+                $variantRow = $existing;
+            } else {
+                // Insert new variant
+                $variantRow = ProductVariant::create(array_merge($fields, [
+                    'pv_pdid' => $product->pd_id,
+                    'pv_sku'  => $sku !== '' ? $sku : null,
+                    'pv_date' => $now,
+                ]));
+            }
+
+            // Replace photos only when new images are provided
+            if (!empty($images)) {
+                ProductVariantPhoto::query()->where('pvp_pvid', $variantRow->pv_id)->delete();
+                foreach ($images as $imgIndex => $url) {
+                    ProductVariantPhoto::create([
+                        'pvp_pvid'     => $variantRow->pv_id,
+                        'pvp_filename' => $url,
+                        'pvp_sort'     => $imgIndex,
+                        'pvp_date'     => $now,
+                    ]);
+                }
             }
         }
     }
@@ -1407,18 +1620,85 @@ class ProductController extends Controller
         }
 
         $validated = $request->validate([
-            'mode' => 'nullable|in:create_only,create_or_update',
-            'rows' => 'required|array|min:1|max:500',
-            'rows.*' => 'required|array',
+            'mode'                               => 'nullable|in:create_only,create_or_update',
+            'rows'                               => 'required|array|min:1|max:500',
+            'rows.*'                             => 'required|array',
+            'rows.*.pd_name'                     => 'nullable|string|max:255',
+            'rows.*.pd_parent_sku'               => 'nullable|string|max:80',
+            'rows.*.pd_catid'                    => 'nullable|integer|min:1',
+            'rows.*.pd_room_type'                => 'nullable|integer|min:0',
+            'rows.*.pd_brand_type'               => 'nullable|integer|min:0',
+            'rows.*.pd_price_srp'                => 'nullable|numeric|min:0',
+            'rows.*.pd_price_dp'                 => 'nullable|numeric|min:0',
+            'rows.*.pd_price_member'             => 'nullable|numeric|min:0',
+            'rows.*.pd_prodpv'                   => 'nullable|numeric|min:0',
+            'rows.*.pd_pricing_tier'             => 'nullable|string|max:50',
+            'rows.*.pd_reversed_pv_multiplier'   => 'nullable|string|max:20',
+            'rows.*.pd_qty'                      => 'nullable|numeric|min:0',
+            'rows.*.pd_weight'                   => 'nullable|numeric|min:0',
+            'rows.*.pd_psweight'                 => 'nullable|numeric|min:0',
+            'rows.*.pd_pswidth'                  => 'nullable|numeric|min:0',
+            'rows.*.pd_pslenght'                 => 'nullable|numeric|min:0',
+            'rows.*.pd_psheight'                 => 'nullable|numeric|min:0',
+            'rows.*.pd_description'              => 'nullable|string',
+            'rows.*.pd_specifications'           => 'nullable|string',
+            'rows.*.pd_material'                 => 'nullable|string|max:255',
+            'rows.*.pd_warranty'                 => 'nullable|string|max:255',
+            'rows.*.pd_image'                    => 'nullable|string|max:500',
+            'rows.*.pd_images'                   => 'nullable|array',
+            'rows.*.pd_images.*'                 => 'nullable|string|max:1000',
+            'rows.*.pd_type'                     => 'nullable|integer|in:0,1',
+            'rows.*.pd_status'                   => 'nullable|integer|in:0,1,2',
+            'rows.*.pd_musthave'                 => 'nullable|integer|in:0,1',
+            'rows.*.pd_bestseller'               => 'nullable|integer|in:0,1',
+            'rows.*.pd_salespromo'               => 'nullable|integer|in:0,1',
+            'rows.*.pd_assembly_required'        => 'nullable|integer|in:0,1',
+            'rows.*.pd_verified'                 => 'nullable|integer|in:0,1',
+            'rows.*.pd_variants'                 => 'nullable|array',
+            'rows.*.pd_variants.*.pv_sku'        => 'nullable|string|max:80',
+            'rows.*.pd_variants.*.pv_name'       => 'nullable|string|max:120',
+            'rows.*.pd_variants.*.pv_color'      => 'nullable|string|max:80',
+            'rows.*.pd_variants.*.pv_color_hex'  => 'nullable|string|max:16',
+            'rows.*.pd_variants.*.pv_size'       => 'nullable|string|max:40',
+            'rows.*.pd_variants.*.pv_style'      => 'nullable|string|max:80',
+            'rows.*.pd_variants.*.pv_width'      => 'nullable|numeric|min:0',
+            'rows.*.pd_variants.*.pv_dimension'  => 'nullable|numeric|min:0',
+            'rows.*.pd_variants.*.pv_height'     => 'nullable|numeric|min:0',
+            'rows.*.pd_variants.*.pv_price_srp'  => 'nullable|numeric|min:0',
+            'rows.*.pd_variants.*.pv_price_dp'   => 'nullable|numeric|min:0',
+            'rows.*.pd_variants.*.pv_price_member' => 'nullable|numeric|min:0',
+            'rows.*.pd_variants.*.pv_prodpv'     => 'nullable|numeric|min:0',
+            'rows.*.pd_variants.*.pv_qty'        => 'nullable|numeric|min:0',
+            'rows.*.pd_variants.*.pv_status'     => 'nullable|integer|in:0,1',
+            'rows.*.pd_variants.*.pv_images'     => 'nullable|array',
+            'rows.*.pd_variants.*.pv_images.*'   => 'nullable|string|max:1000',
         ]);
 
         $mode = (string) ($validated['mode'] ?? 'create_or_update');
-        $rows = $validated['rows'];
+        $rawRows = $validated['rows'];
+
+        if (!is_array($rawRows) || count($rawRows) === 0) {
+            return response()->json([
+                'message' => 'No rows were processed.',
+                'errors' => [
+                    'rows' => ['The import payload did not contain any usable rows.'],
+                ],
+                'debug' => [
+                    'received_keys' => array_keys($validated),
+                    'rows_type' => gettype($rawRows),
+                    'rows_count' => is_array($rawRows) ? count($rawRows) : null,
+                ],
+            ], 422);
+        }
+
         $now = now();
         $results = [];
         $created = 0;
         $updated = 0;
         $failed = 0;
+
+        // Normalize and group flat spreadsheet rows into products with variants
+        $rows = $this->groupImportRows($rawRows);
 
         foreach ($rows as $index => $row) {
             $rowNumber = $index + 1;
@@ -1430,25 +1710,7 @@ class ProductController extends Controller
                     throw new \RuntimeException('Product name is required.');
                 }
 
-                $categoryId = (int) ($row['pd_catid'] ?? 0);
-                if ($categoryId <= 0) {
-                    throw new \RuntimeException('Category ID is required.');
-                }
-
-                if ($actorSupplierId > 0 && !$this->supplierCanUseCategory($actorSupplierId, $categoryId)) {
-                    throw new \RuntimeException('This supplier is not allowed to use the selected category.');
-                }
-
-                $brandType = (int) ($row['pd_brand_type'] ?? 0);
-                if ($brandType > 0 && !ProductBrand::query()->where('pb_id', $brandType)->exists()) {
-                    throw new \RuntimeException('The selected brand does not exist.');
-                }
-
-                $priceSrp = $this->toNumber($row['pd_price_srp'] ?? null);
-                if ($priceSrp < 0.01) {
-                    throw new \RuntimeException('SRP must be greater than zero.');
-                }
-
+                // Resolve whether the product already exists before running create-only checks
                 $product = null;
                 $beforeProduct = null;
                 $status = 'created';
@@ -1472,9 +1734,37 @@ class ProductController extends Controller
                     $product = new Product();
                 }
 
-                $product = DB::transaction(function () use ($product, $row, $actorSupplierId, $now) {
-                    return $this->fillProductFromImportRow($product, $row, $actorSupplierId, $now);
+                $isNew = $status === 'created';
+
+                // These checks are only required when creating a new product
+                if ($isNew) {
+                    $categoryId = (int) ($row['pd_catid'] ?? 0);
+                    if ($categoryId <= 0) {
+                        throw new \RuntimeException('Category ID is required.');
+                    }
+
+                    if ($actorSupplierId > 0 && !$this->supplierCanUseCategory($actorSupplierId, $categoryId)) {
+                        throw new \RuntimeException('This supplier is not allowed to use the selected category.');
+                    }
+
+                    $priceSrp = $this->toNumber($row['pd_price_srp'] ?? null);
+                    if ($priceSrp < 0.01) {
+                        throw new \RuntimeException('SRP must be greater than zero.');
+                    }
+                }
+
+                $brandType = (int) ($row['pd_brand_type'] ?? 0);
+                if ($brandType > 0 && !ProductBrand::query()->where('pb_id', $brandType)->exists()) {
+                    throw new \RuntimeException('The selected brand does not exist.');
+                }
+
+                $product = DB::transaction(function () use ($product, $row, $actorSupplierId, $now, $isNew) {
+                    return $this->fillProductFromImportRow($product, $row, $actorSupplierId, $now, !$isNew);
                 });
+
+                if (!empty($row['pd_variants'])) {
+                    $this->syncVariants($product, $row['pd_variants'], $now);
+                }
 
                 if ($status === 'updated') {
                     $updated++;
@@ -2916,159 +3206,6 @@ class ProductController extends Controller
         }
 
         return response()->json(['message' => 'Product deleted successfully.']);
-    }
-
-    public function importWithVariants(Request $request): JsonResponse
-    {
-        $admin = $this->resolveAdmin($request);
-        $supplierUser = $this->resolveSupplierUser($request);
-        $actorSupplierId = $this->actorSupplierId($admin, $supplierUser);
-
-        if ($admin && $this->roleFromLevel((int) $admin->user_level_id) === 'supplier_admin' && !$admin->supplier_id) {
-            return response()->json([
-                'message' => 'Supplier Admin account is not linked to a supplier company.',
-            ], 422);
-        }
-
-        $validated = $request->validate([
-            'mode'                           => 'nullable|in:create_only,create_or_update',
-            'rows'                           => 'required|array|min:1|max:500',
-            'rows.*'                         => 'required|array',
-            'rows.*.pd_name'                 => 'required|string|max:255',
-            'rows.*.pd_parent_sku'           => 'required|string|max:50',
-            'rows.*.pd_catid'                => 'required|integer|min:1',
-            'rows.*.pd_price_srp'            => 'required|numeric|min:0.01',
-            'rows.*.pd_price_dp'             => 'nullable|numeric|min:0',
-            'rows.*.pd_price_member'         => 'nullable|numeric|min:0',
-            'rows.*.pd_prodpv'               => 'nullable|numeric|min:0',
-            'rows.*.pd_qty'                  => 'nullable|numeric|min:0',
-            'rows.*.pd_weight'               => 'nullable|numeric|min:0',
-            'rows.*.pd_psweight'             => 'nullable|numeric|min:0',
-            'rows.*.pd_pswidth'              => 'nullable|numeric|min:0',
-            'rows.*.pd_pslenght'             => 'nullable|numeric|min:0',
-            'rows.*.pd_psheight'             => 'nullable|numeric|min:0',
-            'rows.*.pd_description'          => 'nullable|string',
-            'rows.*.pd_specifications'       => 'nullable|string',
-            'rows.*.pd_material'             => 'nullable|string|max:255',
-            'rows.*.pd_warranty'             => 'nullable|string|max:255',
-            'rows.*.pd_brand_type'           => 'nullable|integer|min:0',
-            'rows.*.pd_room_type'            => 'nullable|integer|min:0|max:8',
-            'rows.*.pd_image'                => 'nullable|string|max:500',
-            'rows.*.pd_images'               => 'nullable|array',
-            'rows.*.pd_images.*'             => 'nullable|string|max:1000',
-            'rows.*.pd_status'               => 'nullable|integer|in:0,1,2',
-            'rows.*.pd_variants'             => 'required|array|min:1',
-            'rows.*.pd_variants.*.pv_sku'    => 'nullable|string|max:80',
-            'rows.*.pd_variants.*.pv_name'   => 'nullable|string|max:120',
-            'rows.*.pd_variants.*.pv_color'  => 'nullable|string|max:80',
-            'rows.*.pd_variants.*.pv_color_hex' => 'nullable|string|max:16',
-            'rows.*.pd_variants.*.pv_size'   => 'nullable|string|max:40',
-            'rows.*.pd_variants.*.pv_style'  => 'nullable|string|max:80',
-            'rows.*.pd_variants.*.pv_width'  => 'nullable|numeric|min:0',
-            'rows.*.pd_variants.*.pv_dimension' => 'nullable|numeric|min:0',
-            'rows.*.pd_variants.*.pv_height' => 'nullable|numeric|min:0',
-            'rows.*.pd_variants.*.pv_price_srp'    => 'nullable|numeric|min:0',
-            'rows.*.pd_variants.*.pv_price_dp'     => 'nullable|numeric|min:0',
-            'rows.*.pd_variants.*.pv_price_member' => 'nullable|numeric|min:0',
-            'rows.*.pd_variants.*.pv_prodpv'       => 'nullable|numeric|min:0',
-            'rows.*.pd_variants.*.pv_qty'          => 'nullable|numeric|min:0',
-            'rows.*.pd_variants.*.pv_status'       => 'nullable|integer|in:0,1',
-            'rows.*.pd_variants.*.pv_images'       => 'nullable|array',
-            'rows.*.pd_variants.*.pv_images.*'     => 'nullable|string|max:1000',
-        ]);
-
-        $mode    = (string) ($validated['mode'] ?? 'create_or_update');
-        $rows    = $validated['rows'];
-        $now     = now();
-        $results = [];
-        $created = 0;
-        $updated = 0;
-        $failed  = 0;
-
-        foreach ($rows as $index => $row) {
-            $rowNumber = $index + 1;
-            $name      = trim((string) ($row['pd_name'] ?? ''));
-            $sku       = trim((string) ($row['pd_parent_sku'] ?? ''));
-
-            try {
-                $categoryId = (int) ($row['pd_catid'] ?? 0);
-                if ($actorSupplierId > 0 && !$this->supplierCanUseCategory($actorSupplierId, $categoryId)) {
-                    throw new \RuntimeException('This supplier is not allowed to use the selected category.');
-                }
-
-                $brandType = (int) ($row['pd_brand_type'] ?? 0);
-                if ($brandType > 0 && !ProductBrand::query()->where('pb_id', $brandType)->exists()) {
-                    throw new \RuntimeException('The selected brand does not exist.');
-                }
-
-                // Match by both SKU and name
-                $productQuery = Product::query()
-                    ->where('pd_parent_sku', $sku)
-                    ->where('pd_name', $name);
-                $this->scopeQueryToActor($productQuery, $admin, $supplierUser);
-                $existing = $productQuery->first();
-
-                if ($existing && $mode === 'create_only') {
-                    throw new \RuntimeException('Product with this SKU and name already exists. Use create_or_update mode to update it.');
-                }
-
-                $product      = $existing ?? new Product();
-                $beforeProduct = $existing ? clone $existing : null;
-                $status       = $existing ? 'updated' : 'created';
-
-                $row['pd_type'] = 1;
-
-                $product = DB::transaction(function () use ($product, $row, $actorSupplierId, $now) {
-                    return $this->fillProductFromImportRow($product, $row, $actorSupplierId, $now);
-                });
-
-                $this->syncVariants($product, $row['pd_variants'] ?? [], $now);
-
-                $changes = $status === 'updated' && $beforeProduct instanceof Product
-                    ? $this->buildProductChangeLog($beforeProduct, $product)
-                    : null;
-
-                $this->recordProductActivity($status, $product, $admin, $supplierUser, $name, $sku, $changes);
-
-                $status === 'updated' ? $updated++ : $created++;
-
-                $results[] = [
-                    'row'        => $rowNumber,
-                    'status'     => $status,
-                    'product_id' => (int) $product->pd_id,
-                    'name'       => $product->pd_name,
-                    'sku'        => $product->pd_parent_sku ?: null,
-                    'variants'   => count($row['pd_variants'] ?? []),
-                    'message'    => $status === 'updated' ? 'Existing product updated.' : 'Product created successfully.',
-                ];
-            } catch (\Throwable $e) {
-                $failed++;
-                $this->recordFailedProductActivity('created', $admin, $supplierUser, null, $name, $sku);
-
-                $results[] = [
-                    'row'        => $rowNumber,
-                    'status'     => 'failed',
-                    'product_id' => null,
-                    'name'       => $name !== '' ? $name : null,
-                    'sku'        => $sku !== '' ? $sku : null,
-                    'variants'   => null,
-                    'message'    => $e->getMessage(),
-                ];
-            }
-        }
-
-        return response()->json([
-            'message' => $failed > 0
-                ? 'Import finished with some row errors.'
-                : 'Import completed successfully.',
-            'summary' => [
-                'total'   => count($rows),
-                'created' => $created,
-                'updated' => $updated,
-                'failed'  => $failed,
-            ],
-            'results' => $results,
-        ]);
     }
 
     public function fetchZqImportPreview(Request $request): JsonResponse
