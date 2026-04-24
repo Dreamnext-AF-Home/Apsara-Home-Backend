@@ -1395,7 +1395,7 @@ class AdminOrderController extends Controller
             return;
         }
 
-        $customer = Customer::query()->where('c_userid', (int) $order->ch_customer_id)->lockForUpdate()->first();
+        $customer = $this->resolvePvRecipient($order);
         if (!$customer) {
             return;
         }
@@ -1411,7 +1411,7 @@ class AdminOrderController extends Controller
             'wl_source_type' => 'order',
             'wl_source_id' => (int) $order->ch_id,
             'wl_reference_no' => $order->ch_checkout_id,
-            'wl_notes' => 'PV credit posted on order approval.',
+            'wl_notes' => $this->buildPvPostingNote($order),
             'wl_created_by' => (int) $admin->id,
         ]);
 
@@ -1420,6 +1420,38 @@ class AdminOrderController extends Controller
 
         DirectAffiliatePerformanceBonus::awardEligibleMilestonesForBuyer($customer, $order, (int) $admin->id);
         GroupPurchaseBonus::awardForBuyer($customer, $order, (int) $admin->id);
+    }
+
+    private function resolvePvRecipient(CheckoutHistory $order): ?Customer
+    {
+        $sourceSlug = trim((string) ($order->ch_source_slug ?? ''));
+        $referrerCustomerId = (int) ($order->ch_referrer_customer_id ?? 0);
+
+        if ($sourceSlug !== '' && $referrerCustomerId > 0) {
+            $referrer = Customer::query()->where('c_userid', $referrerCustomerId)->lockForUpdate()->first();
+            if ($referrer) {
+                return $referrer;
+            }
+        }
+
+        $buyerCustomerId = (int) ($order->ch_customer_id ?? 0);
+        if ($buyerCustomerId <= 0) {
+            return null;
+        }
+
+        return Customer::query()->where('c_userid', $buyerCustomerId)->lockForUpdate()->first();
+    }
+
+    private function buildPvPostingNote(CheckoutHistory $order): string
+    {
+        $sourceSlug = trim((string) ($order->ch_source_slug ?? ''));
+        $referrerCustomerId = (int) ($order->ch_referrer_customer_id ?? 0);
+
+        if ($sourceSlug !== '' && $referrerCustomerId > 0) {
+            return 'PV credit posted on order approval to the partner storefront referral account.';
+        }
+
+        return 'PV credit posted on order approval.';
     }
 
     private function sendCustomerOrderStatusEmail(CheckoutHistory $order, string $eventType): void
