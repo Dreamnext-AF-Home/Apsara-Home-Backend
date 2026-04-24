@@ -3,6 +3,7 @@
 namespace App\Services\Zq;
 
 use App\Models\ProductBrand;
+use App\Models\SystemSetting;
 use App\Models\ZqProduct;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
@@ -14,14 +15,50 @@ class ZqProductSyncService
     ) {
     }
 
-    public function syncImportProducts(array $filters = []): array
+    public function syncImportProducts(
+        array $filters = [],
+        bool $resumeFromSaved = true,
+        bool $resetCursor = false
+    ): array
     {
         $zqSupplierBrandId = $this->resolveZqSupplierBrandId();
-        $response = $this->zqApiService->getImportProductList($filters);
+        $resolvedCursor = $this->resolveCursor($filters, $resumeFromSaved, $resetCursor);
+        $requestFilters = $filters;
+
+        if ($resolvedCursor !== null) {
+            $requestFilters['cursor'] = $resolvedCursor;
+        } else {
+            unset($requestFilters['cursor']);
+        }
+
+        $response = $this->zqApiService->getImportProductList($requestFilters);
         $data = is_array($response['data'] ?? null) ? $response['data'] : [];
         $records = is_array($data['records'] ?? null) ? $data['records'] : [];
+        $externalIds = collect($records)
+            ->map(function ($record) {
+                $row = is_array($record) ? $record : [];
+                $externalId = $row['id'] ?? null;
+
+                if ($externalId === null || $externalId === '') {
+                    return null;
+                }
+
+                return (string) $externalId;
+            })
+            ->filter()
+            ->values()
+            ->all();
+        $existingExternalIds = $externalIds === []
+            ? []
+            : ZqProduct::query()
+                ->whereIn('zqp_external_id', $externalIds)
+                ->pluck('zqp_external_id')
+                ->map(fn ($value) => (string) $value)
+                ->all();
+        $existingExternalIdLookup = array_fill_keys($existingExternalIds, true);
 
         $synced = 0;
+        $skipped = 0;
         $failed = 0;
         $syncedIds = [];
 
@@ -31,6 +68,11 @@ class ZqProductSyncService
 
             if ($externalId === null || $externalId === '') {
                 $failed++;
+                continue;
+            }
+
+            if (isset($existingExternalIdLookup[(string) $externalId])) {
+                $skipped++;
                 continue;
             }
 
@@ -56,17 +98,53 @@ class ZqProductSyncService
             }
         }
 
+        $hasMore = (bool) ($data['hasMore'] ?? false);
+        $nextCursor = isset($data['nextCursor']) ? (string) $data['nextCursor'] : null;
+        $this->persistCursorState($hasMore ? $nextCursor : null);
+
         return [
             'response' => $response,
             'summary' => [
                 'requested' => count($records),
                 'synced' => $synced,
+                'skipped' => $skipped,
                 'failed' => $failed,
             ],
             'synced_ids' => $syncedIds,
-            'hasMore' => (bool) ($data['hasMore'] ?? false),
-            'nextCursor' => isset($data['nextCursor']) ? (string) $data['nextCursor'] : null,
+            'hasMore' => $hasMore,
+            'nextCursor' => $nextCursor,
+            'usedCursor' => $resolvedCursor,
+            'savedCursor' => $hasMore ? $nextCursor : null,
         ];
+    }
+
+    public function resolveCursor(
+        array $filters = [],
+        bool $resumeFromSaved = true,
+        bool $resetCursor = false
+    ): ?string
+    {
+        if ($resetCursor) {
+            return null;
+        }
+
+        if (array_key_exists('cursor', $filters) && $filters['cursor'] !== null && $filters['cursor'] !== '') {
+            return (string) $filters['cursor'];
+        }
+
+        if (! $resumeFromSaved) {
+            return null;
+        }
+
+        return $this->getSavedCursor();
+    }
+
+    public function getSavedCursor(): ?string
+    {
+        $settings = SystemSetting::query()->first();
+        $cursor = $settings?->zq_saved_cursor;
+
+        return is_string($cursor) && trim($cursor) !== '' ? trim($cursor) : null;
     }
 
     /**
@@ -169,6 +247,19 @@ class ZqProductSyncService
             ->first();
 
         return $brand ? (int) $brand->pb_id : null;
+    }
+
+    private function persistCursorState(?string $cursor): void
+    {
+        $settings = SystemSetting::query()->first();
+
+        if (! $settings) {
+            $settings = new SystemSetting();
+        }
+
+        $settings->zq_saved_cursor = $this->stringOrNull($cursor);
+        $settings->zq_last_synced_at = now();
+        $settings->save();
     }
 
     /**
