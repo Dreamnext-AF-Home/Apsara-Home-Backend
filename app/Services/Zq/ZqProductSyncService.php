@@ -23,89 +23,125 @@ class ZqProductSyncService
     {
         $zqSupplierBrandId = $this->resolveZqSupplierBrandId();
         $resolvedCursor = $this->resolveCursor($filters, $resumeFromSaved, $resetCursor);
-        $requestFilters = $filters;
-
-        if ($resolvedCursor !== null) {
-            $requestFilters['cursor'] = $resolvedCursor;
-        } else {
-            unset($requestFilters['cursor']);
-        }
-
-        $response = $this->zqApiService->getImportProductList($requestFilters);
-        $data = is_array($response['data'] ?? null) ? $response['data'] : [];
-        $records = is_array($data['records'] ?? null) ? $data['records'] : [];
-        $externalIds = collect($records)
-            ->map(function ($record) {
-                $row = is_array($record) ? $record : [];
-                $externalId = $row['id'] ?? null;
-
-                if ($externalId === null || $externalId === '') {
-                    return null;
-                }
-
-                return (string) $externalId;
-            })
-            ->filter()
-            ->values()
-            ->all();
-        $existingExternalIds = $externalIds === []
-            ? []
-            : ZqProduct::query()
-                ->whereIn('zqp_external_id', $externalIds)
-                ->pluck('zqp_external_id')
-                ->map(fn ($value) => (string) $value)
-                ->all();
-        $existingExternalIdLookup = array_fill_keys($existingExternalIds, true);
-
+        $cursor = $resolvedCursor;
+        $response = null;
+        $hasMore = false;
+        $nextCursor = null;
+        $requested = 0;
         $synced = 0;
         $skipped = 0;
         $failed = 0;
         $syncedIds = [];
+        $maxAutoAdvancePages = 25;
+        $autoAdvancedPages = 0;
 
-        foreach ($records as $record) {
-            $row = is_array($record) ? $record : [];
-            $externalId = $row['id'] ?? null;
-
-            if ($externalId === null || $externalId === '') {
-                $failed++;
-                continue;
+        do {
+            $requestFilters = $filters;
+            if ($cursor !== null) {
+                $requestFilters['cursor'] = $cursor;
+            } else {
+                unset($requestFilters['cursor']);
             }
 
-            if (isset($existingExternalIdLookup[(string) $externalId])) {
-                $skipped++;
-                continue;
+            $response = $this->zqApiService->getImportProductList($requestFilters);
+            $data = is_array($response['data'] ?? null) ? $response['data'] : [];
+            $records = is_array($data['records'] ?? null) ? $data['records'] : [];
+            $requested += count($records);
+
+            $externalIds = collect($records)
+                ->map(function ($record) {
+                    $row = is_array($record) ? $record : [];
+                    $externalId = $row['id'] ?? null;
+
+                    if ($externalId === null || $externalId === '') {
+                        return null;
+                    }
+
+                    return (string) $externalId;
+                })
+                ->filter()
+                ->values()
+                ->all();
+            $existingExternalIds = $externalIds === []
+                ? []
+                : ZqProduct::query()
+                    ->whereIn('zqp_external_id', $externalIds)
+                    ->pluck('zqp_external_id')
+                    ->map(fn ($value) => (string) $value)
+                    ->all();
+            $existingExternalIdLookup = array_fill_keys($existingExternalIds, true);
+
+            $pageSynced = 0;
+            $pageSkipped = 0;
+            $pageFailed = 0;
+
+            foreach ($records as $record) {
+                $row = is_array($record) ? $record : [];
+                $externalId = $row['id'] ?? null;
+
+                if ($externalId === null || $externalId === '') {
+                    $pageFailed++;
+                    continue;
+                }
+
+                if (isset($existingExternalIdLookup[(string) $externalId])) {
+                    $pageSkipped++;
+                    continue;
+                }
+
+                try {
+                    $detailResponse = $this->zqApiService->getImportProductDetail((string) $externalId);
+                    $detail = is_array($detailResponse['data'] ?? null) ? $detailResponse['data'] : [];
+                    $payload = $this->mapDetailToColumns($detail, $row, $zqSupplierBrandId);
+
+                    $product = ZqProduct::query()->updateOrCreate(
+                        ['zqp_external_id' => (string) $externalId],
+                        $payload,
+                    );
+
+                    $pageSynced++;
+                    $syncedIds[] = $product->zqp_id;
+                } catch (\Throwable $e) {
+                    $pageFailed++;
+                    Log::warning('ZQ product sync failed', [
+                        'external_id' => $externalId,
+                        'exception' => $e::class,
+                        'message' => $e->getMessage(),
+                    ]);
+                }
             }
 
-            try {
-                $detailResponse = $this->zqApiService->getImportProductDetail((string) $externalId);
-                $detail = is_array($detailResponse['data'] ?? null) ? $detailResponse['data'] : [];
-                $payload = $this->mapDetailToColumns($detail, $row, $zqSupplierBrandId);
+            $synced += $pageSynced;
+            $skipped += $pageSkipped;
+            $failed += $pageFailed;
 
-                $product = ZqProduct::query()->updateOrCreate(
-                    ['zqp_external_id' => (string) $externalId],
-                    $payload,
-                );
+            $hasMore = (bool) ($data['hasMore'] ?? false);
+            $nextCursor = isset($data['nextCursor']) ? (string) $data['nextCursor'] : null;
+            $this->persistCursorState($hasMore ? $nextCursor : null);
 
-                $synced++;
-                $syncedIds[] = $product->zqp_id;
-            } catch (\Throwable $e) {
-                $failed++;
-                Log::warning('ZQ product sync failed', [
-                    'external_id' => $externalId,
-                    'exception' => $e::class,
-                    'message' => $e->getMessage(),
-                ]);
+            $shouldAutoAdvance =
+                $resumeFromSaved &&
+                ! $resetCursor &&
+                $pageSynced === 0 &&
+                $pageFailed === 0 &&
+                count($records) > 0 &&
+                $pageSkipped === count($records) &&
+                $hasMore &&
+                $nextCursor !== null &&
+                $autoAdvancedPages < $maxAutoAdvancePages;
+
+            if (! $shouldAutoAdvance) {
+                break;
             }
-        }
 
-        $hasMore = (bool) ($data['hasMore'] ?? false);
-        $nextCursor = isset($data['nextCursor']) ? (string) $data['nextCursor'] : null;
-        $this->persistCursorState($hasMore ? $nextCursor : null);
+            $cursor = $nextCursor;
+            $autoAdvancedPages++;
+        } while (true);
 
         return [
             'response' => $response,
             'summary' => [
-                'requested' => count($records),
+                'requested' => $requested,
                 'synced' => $synced,
                 'skipped' => $skipped,
                 'failed' => $failed,
