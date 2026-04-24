@@ -24,6 +24,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -313,50 +314,61 @@ class AdminOrderController extends Controller
         $search = trim((string) ($validated['q'] ?? ''));
         $perPage = (int) ($validated['per_page'] ?? 20);
 
+        $selectColumns = [
+            'ch_id',
+            'ch_customer_id',
+            'ch_checkout_id',
+            'ch_status',
+            'ch_approval_status',
+            'ch_approval_notes',
+            'ch_approved_by',
+            'ch_approved_at',
+            'ch_fulfillment_status',
+            'ch_courier',
+            'ch_tracking_no',
+            'ch_shipment_status',
+            'ch_shipment_payload',
+            'ch_shipped_at',
+            'ch_zq_platform_order_id',
+            'ch_zq_order_id',
+            'ch_zq_status',
+            'ch_zq_payload',
+            'ch_zq_response',
+            'ch_zq_synced_at',
+            'ch_product_name',
+            'ch_product_id',
+            'ch_product_sku',
+            'ch_product_pv',
+            'ch_earned_pv',
+            'ch_pv_posted_at',
+            'ch_product_image',
+            'ch_quantity',
+            'ch_amount',
+            'ch_payment_method',
+            'ch_customer_name',
+            'ch_customer_email',
+            'ch_customer_phone',
+            'ch_customer_address',
+            'ch_paid_at',
+            'created_at',
+            'updated_at',
+        ];
+
+        $optionalSourceColumns = [
+            'ch_source_label',
+            'ch_source_slug',
+            'ch_source_host',
+            'ch_source_url',
+        ];
+
+        foreach ($optionalSourceColumns as $column) {
+            if (Schema::hasColumn('tbl_checkout_history', $column)) {
+                $selectColumns[] = $column;
+            }
+        }
+
         $query = CheckoutHistory::query()
-            ->select([
-                'ch_id',
-                'ch_customer_id',
-                'ch_checkout_id',
-                'ch_status',
-                'ch_approval_status',
-                'ch_approval_notes',
-                'ch_approved_by',
-                'ch_approved_at',
-                'ch_fulfillment_status',
-                'ch_courier',
-                'ch_tracking_no',
-                'ch_shipment_status',
-                'ch_shipment_payload',
-                'ch_shipped_at',
-                'ch_zq_platform_order_id',
-                'ch_zq_order_id',
-                'ch_zq_status',
-                'ch_zq_payload',
-                'ch_zq_response',
-                'ch_zq_synced_at',
-                'ch_product_name',
-                'ch_product_id',
-                'ch_product_sku',
-                'ch_product_pv',
-                'ch_earned_pv',
-                'ch_pv_posted_at',
-                'ch_product_image',
-                'ch_quantity',
-                'ch_amount',
-                'ch_payment_method',
-                'ch_customer_name',
-                'ch_customer_email',
-                'ch_customer_phone',
-                'ch_customer_address',
-                'ch_source_label',
-                'ch_source_slug',
-                'ch_source_host',
-                'ch_source_url',
-                'ch_paid_at',
-                'created_at',
-                'updated_at',
-            ])
+            ->select($selectColumns)
             ->when($search !== '', function ($builder) use ($search) {
                 $builder->where(function ($q) use ($search) {
                     $q->where('ch_checkout_id', 'like', "%{$search}%")
