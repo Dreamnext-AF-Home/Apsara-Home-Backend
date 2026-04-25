@@ -895,7 +895,7 @@ class ProductController extends Controller
             $fields['pd_catsubid'] = (int) ($row['pd_catsubid'] ?? 0);
         }
         if (!$partialUpdate || $has('pd_description')) {
-            $fields['pd_description'] = (string) ($row['pd_description'] ?? '');
+            $fields['pd_description'] = isset($row['pd_description']) ? (string) $row['pd_description'] : null;
         }
         if (!$partialUpdate || $has('pd_specifications')) {
             $fields['pd_specifications'] = ($row['pd_specifications'] ?? null) !== null ? (string) $row['pd_specifications'] : null;
