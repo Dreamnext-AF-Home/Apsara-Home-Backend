@@ -43,48 +43,68 @@ use App\Http\Controllers\Api\LeadController;
 
 // Public auth routes
 Route::prefix('auth')->group(function () {
-    Route::post('/register', [AuthController::class, 'register']);
+    // Brute-force targets: 10 requests/min per IP
+    Route::middleware('throttle:auth')->group(function () {
+        Route::post('/register', [AuthController::class, 'register']);
+        Route::post('/login', [AuthController::class, 'login']);
+        Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
+        Route::post('/reset-password', [AuthController::class, 'resetPassword']);
+        Route::post('/login/mfa/respond', [AuthController::class, 'respondLoginMfa']);
+    });
+    // OTP resend: 5 requests/min per IP to prevent flooding
+    Route::middleware('throttle:otp')->group(function () {
+        Route::post('/register/resend-otp', [AuthController::class, 'resendRegistrationOtp']);
+        Route::post('/login/2fa/resend', [AuthController::class, 'resendLoginOtp']);
+        Route::post('/login/mfa/resend', [AuthController::class, 'resendLoginOtp']);
+    });
+    // Low-risk read/check endpoints
     Route::get('/register/check-email', [AuthController::class, 'checkEmailAvailability']);
     Route::get('/register/check-username', [AuthController::class, 'checkUsernameAvailability']);
     Route::get('/register/check-referral', [AuthController::class, 'checkReferralAvailability']);
     Route::post('/register/verify-otp', [AuthController::class, 'verifyRegistrationOtp']);
-    Route::post('/register/resend-otp', [AuthController::class, 'resendRegistrationOtp']);
-    Route::post('/login',    [AuthController::class, 'login']);
-    Route::post('/login/2fa/resend', [AuthController::class, 'resendLoginOtp']);
-    Route::post('/login/mfa/resend', [AuthController::class, 'resendLoginOtp']);
     Route::post('/login/mfa/status', [AuthController::class, 'loginMfaStatus']);
-    Route::post('/login/mfa/respond', [AuthController::class, 'respondLoginMfa']);
-    Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
     Route::get('/reset-password/{token}', [AuthController::class, 'showResetToken']);
-    Route::post('/reset-password', [AuthController::class, 'resetPassword']);
 });
 
-Route::post('/payments/checkout-session', [PaymentController::class, 'createCheckoutSession']);
+// Checkout and payment initiation: 20 requests/min per IP
+Route::middleware('throttle:checkout')->group(function () {
+    Route::post('/payments/checkout-session', [PaymentController::class, 'createCheckoutSession']);
+    Route::post('/payments/validate-voucher', [PaymentController::class, 'validateVoucher']);
+});
 Route::get('/payments/checkout-session/{checkoutId}', [PaymentController::class, 'verifyCheckoutSession']);
-Route::post('/payments/validate-voucher', [PaymentController::class, 'validateVoucher']);
-Route::post('/ai-support', [\App\Http\Controllers\Api\AiSupportController::class, 'handle']);
-Route::post('/payments/webhooks/paymongo', [PaymentController::class, 'handlePaymongoWebhook']);
-Route::post('/payments/webhooks/test-paid', [PaymentController::class, 'handleTestPaidWebhook']);
 Route::get('/orders/track', [PaymentController::class, 'trackGuestOrder']);
-Route::get('/categories', [CategoryController::class, 'index']);
-Route::get('/products/slug/{slug}', [ProductController::class, 'showBySlug']);
-Route::get('/products/{id}/reviews', [ProductController::class, 'reviews']);
-Route::get('/products/{id}', [ProductController::class, 'show']);
-Route::get('/products/{id}/brand', [ProductController::class, 'brand']);
-Route::get('/products', [ProductController::class, 'index']);
-Route::get('/product-brands', [ProductBrandController::class, 'publicIndex']);
-Route::get('/web-pages/home', [WebPageController::class, 'home']);
-Route::get('/web-pages/adds-content', [AddsContentController::class, 'publicIndex']);
-Route::get('/web-pages/{type}', [WebPageController::class, 'publicIndex']);
-Route::get('/settings/general', [AdminSettingsController::class, 'publicGeneral']);
-Route::get('/address/regions', [AddressController::class, 'regions']);
-Route::get('/address/provinces', [AddressController::class, 'provinces']);
-Route::get('/address/cities', [AddressController::class, 'cities']);
-Route::get('/address/barangays', [AddressController::class, 'barangays']);
-Route::match(['GET', 'POST'], '/jnt/sandbox/logistics-trackback', [JntWebhookController::class, 'sandboxLogisticsTrackback']);
-Route::match(['GET', 'POST'], '/jnt/sandbox/order-status', [JntWebhookController::class, 'sandboxOrderStatus']);
-Route::match(['GET', 'POST'], '/jnt/webhook/logistics-trackback', [JntWebhookController::class, 'productionLogisticsTrackback']);
-Route::match(['GET', 'POST'], '/jnt/webhook/order-status', [JntWebhookController::class, 'productionOrderStatus']);
+
+// AI support is expensive — same strict limit as auth
+Route::middleware('throttle:auth')->post('/ai-support', [\App\Http\Controllers\Api\AiSupportController::class, 'handle']);
+
+// Inbound webhooks: 30 requests/min per IP; POST-only
+Route::middleware('throttle:webhooks')->group(function () {
+    Route::post('/payments/webhooks/paymongo', [PaymentController::class, 'handlePaymongoWebhook']);
+    Route::post('/payments/webhooks/test-paid', [PaymentController::class, 'handleTestPaidWebhook']);
+    Route::post('/jnt/sandbox/logistics-trackback', [JntWebhookController::class, 'sandboxLogisticsTrackback']);
+    Route::post('/jnt/sandbox/order-status', [JntWebhookController::class, 'sandboxOrderStatus']);
+    Route::post('/jnt/webhook/logistics-trackback', [JntWebhookController::class, 'productionLogisticsTrackback']);
+    Route::post('/jnt/webhook/order-status', [JntWebhookController::class, 'productionOrderStatus']);
+});
+
+// Public read endpoints: 120 requests/min per IP
+Route::middleware('throttle:public')->group(function () {
+    Route::get('/categories', [CategoryController::class, 'index']);
+    Route::get('/products/slug/{slug}', [ProductController::class, 'showBySlug']);
+    Route::get('/products/{id}/reviews', [ProductController::class, 'reviews']);
+    Route::get('/products/{id}', [ProductController::class, 'show']);
+    Route::get('/products/{id}/brand', [ProductController::class, 'brand']);
+    Route::get('/products', [ProductController::class, 'index']);
+    Route::get('/product-brands', [ProductBrandController::class, 'publicIndex']);
+    Route::get('/web-pages/home', [WebPageController::class, 'home']);
+    Route::get('/web-pages/adds-content', [AddsContentController::class, 'publicIndex']);
+    Route::get('/web-pages/{type}', [WebPageController::class, 'publicIndex']);
+    Route::get('/settings/general', [AdminSettingsController::class, 'publicGeneral']);
+    Route::get('/address/regions', [AddressController::class, 'regions']);
+    Route::get('/address/provinces', [AddressController::class, 'provinces']);
+    Route::get('/address/cities', [AddressController::class, 'cities']);
+    Route::get('/address/barangays', [AddressController::class, 'barangays']);
+});
 
 
 // Protected routes (requires Sanctum token)
@@ -320,16 +340,18 @@ Route::middleware(['auth:sanctum', 'admin.role:super_admin,admin,web_content'])-
 });
 
 Route::prefix('admin/auth')->group(function () {
-    Route::post('/login', [AdminAuthController::class, 'login']);
-    Route::post('/login/2fa/resend', [AdminAuthController::class, 'resendLoginOtp']);
+    Route::middleware('throttle:auth')->post('/login', [AdminAuthController::class, 'login']);
+    Route::middleware('throttle:otp')->post('/login/2fa/resend', [AdminAuthController::class, 'resendLoginOtp']);
 });
 
 Route::prefix('supplier/auth')->group(function () {
-    Route::post('/login', [SupplierAuthController::class, 'login']);
-    Route::post('/login/2fa/resend', [SupplierAuthController::class, 'resendLoginOtp']);
-    Route::post('/forgot-password', [SupplierAuthController::class, 'forgotPassword']);
+    Route::middleware('throttle:auth')->group(function () {
+        Route::post('/login', [SupplierAuthController::class, 'login']);
+        Route::post('/forgot-password', [SupplierAuthController::class, 'forgotPassword']);
+        Route::post('/reset-password', [SupplierAuthController::class, 'resetPassword']);
+    });
+    Route::middleware('throttle:otp')->post('/login/2fa/resend', [SupplierAuthController::class, 'resendLoginOtp']);
     Route::get('/reset-password/{token}', [SupplierAuthController::class, 'showResetToken']);
-    Route::post('/reset-password', [SupplierAuthController::class, 'resetPassword']);
 });
 
 Route::prefix('admin/invites')->group(function () {
@@ -360,8 +382,8 @@ Route::middleware(['auth:sanctum', 'supplier.actor'])->group(function () {
     Route::patch('/supplier/orders/{id}/tracking', [SupplierOrderController::class, 'updateTracking']);
 });
 
-// Leads
-Route::prefix('leads')->group(function () {
+// Leads: same strict limit as auth to prevent spam submissions
+Route::prefix('leads')->middleware('throttle:auth')->group(function () {
     Route::post('/', [LeadController::class, 'store']);
     Route::post('/batch', [LeadController::class, 'storeBatch']);
 });
