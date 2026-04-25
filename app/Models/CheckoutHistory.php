@@ -23,6 +23,7 @@ class CheckoutHistory extends Model
         'ch_fulfillment_status',
         'ch_description',
         'ch_amount',
+        'ch_shipping_fee',
         'ch_payment_method',
         'ch_quantity',
         'ch_product_name',
@@ -60,6 +61,7 @@ class CheckoutHistory extends Model
 
     protected $casts = [
         'ch_amount' => 'float',
+        'ch_shipping_fee' => 'float',
         'ch_quantity' => 'integer',
         'ch_product_pv' => 'float',
         'ch_earned_pv' => 'float',

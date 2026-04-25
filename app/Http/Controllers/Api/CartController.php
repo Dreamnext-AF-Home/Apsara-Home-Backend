@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Customer;
+use App\Models\SystemSetting;
+use App\Models\ProductVariant;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -43,7 +45,8 @@ class CartController extends Controller
                 return response()->json(['message' => 'Product not found'], 404);
             }
 
-            if (! (bool) ($product->pd_manual_checkout_enabled ?? false)) {
+            $manualCheckoutModeEnabled = (bool) (SystemSetting::query()->value('enable_manual_checkout_mode') ?? false);
+            if ($manualCheckoutModeEnabled && ! (bool) ($product->pd_manual_checkout_enabled ?? false)) {
                 return response()->json([
                     'message' => 'This product is not available for checkout at the moment.',
                 ], 422);
@@ -57,9 +60,28 @@ class CartController extends Controller
                 'price_member' => $product->pd_price_member,
             ]);
 
+            $variant = null;
+            if (!empty($validated['variant_id'])) {
+                $variant = ProductVariant::query()
+                    ->where('pv_id', $validated['variant_id'])
+                    ->where('pv_pdid', $validated['product_id'])
+                    ->where('pv_status', 1)
+                    ->first();
+
+                if (!$variant) {
+                    return response()->json(['message' => 'Selected variant is not available'], 422);
+                }
+            }
+
             // Determine price (use first non-null and non-zero price)
             $unitPrice = 0;
-            if ($product->pd_price_member && $product->pd_price_member > 0) {
+            if ($variant && $variant->pv_price_member && $variant->pv_price_member > 0) {
+                $unitPrice = $variant->pv_price_member;
+            } elseif ($variant && $variant->pv_price_dp && $variant->pv_price_dp > 0) {
+                $unitPrice = $variant->pv_price_dp;
+            } elseif ($variant && $variant->pv_price_srp && $variant->pv_price_srp > 0) {
+                $unitPrice = $variant->pv_price_srp;
+            } elseif ($product->pd_price_member && $product->pd_price_member > 0) {
                 $unitPrice = $product->pd_price_member;
             } elseif ($product->pd_price_dp && $product->pd_price_dp > 0) {
                 $unitPrice = $product->pd_price_dp;
