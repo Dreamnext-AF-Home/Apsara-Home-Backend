@@ -39,6 +39,7 @@ use App\Http\Controllers\Api\AdminConversationController;
 use App\Http\Controllers\Api\MemberTierController;
 use App\Http\Controllers\Api\MemberActivityLogController;
 use App\Http\Controllers\Api\LeadController;
+use App\Http\Controllers\Api\ShippingRateController;
 
 
 // Public auth routes
@@ -77,6 +78,7 @@ Route::get('/web-pages/home', [WebPageController::class, 'home']);
 Route::get('/web-pages/adds-content', [AddsContentController::class, 'publicIndex']);
 Route::get('/web-pages/{type}', [WebPageController::class, 'publicIndex']);
 Route::get('/settings/general', [AdminSettingsController::class, 'publicGeneral']);
+Route::get('/shipping-rates', [ShippingRateController::class, 'publicIndex']);
 Route::get('/address/regions', [AddressController::class, 'regions']);
 Route::get('/address/provinces', [AddressController::class, 'provinces']);
 Route::get('/address/cities', [AddressController::class, 'cities']);
@@ -220,6 +222,11 @@ Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_a
 });
 
 Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_admin,admin'])->group(function () {
+    Route::get('/admin/shipping/rates', [ShippingRateController::class, 'adminIndex']);
+    Route::post('/admin/shipping/rates', [ShippingRateController::class, 'store']);
+    Route::delete('/admin/shipping/rates', [ShippingRateController::class, 'bulkDestroy']);
+    Route::put('/admin/shipping/rates/{id}', [ShippingRateController::class, 'update']);
+    Route::delete('/admin/shipping/rates/{id}', [ShippingRateController::class, 'destroy']);
     Route::get('/admin/settings/general', [\App\Http\Controllers\Api\AdminSettingsController::class, 'showGeneral']);
     Route::post('/admin/settings/general', [\App\Http\Controllers\Api\AdminSettingsController::class, 'updateGeneral']);
     Route::get('/admin/settings/security', [\App\Http\Controllers\Api\AdminSettingsController::class, 'showSecurity']);
