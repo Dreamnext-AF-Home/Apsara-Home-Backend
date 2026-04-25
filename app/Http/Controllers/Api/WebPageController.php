@@ -279,21 +279,33 @@ class WebPageController extends Controller
     public function listDatabaseExports(Request $request, DatabaseExportService $databaseExportService): JsonResponse
     {
         $validated = $request->validate([
-            'limit' => 'nullable|integer|min:1|max:30',
+            'page' => 'nullable|integer|min:1',
+            'per_page' => 'nullable|integer|min:10|max:50',
+            'limit' => 'nullable|integer|min:10|max:50',
         ]);
 
-        $limit = (int) ($validated['limit'] ?? 10);
+        $page = (int) ($validated['page'] ?? 1);
+        $perPage = (int) ($validated['per_page'] ?? $validated['limit'] ?? 10);
+        $perPage = max(10, $perPage);
         $disk = Storage::disk('local');
 
         if (! $disk->exists(self::DATABASE_EXPORT_DIR)) {
             return response()->json([
                 'exports' => [],
+                'meta' => [
+                    'current_page' => 1,
+                    'last_page' => 1,
+                    'per_page' => $perPage,
+                    'total' => 0,
+                    'from' => null,
+                    'to' => null,
+                ],
             ]);
         }
 
-        $exports = collect($disk->files(self::DATABASE_EXPORT_DIR))
+        $allExports = collect($disk->files(self::DATABASE_EXPORT_DIR))
             ->filter(fn (string $path): bool => str_ends_with(strtolower($path), '.zip'))
-            ->map(function (string $path) use ($disk): array {
+            ->map(function (string $path) use ($disk, $databaseExportService): array {
                 $timestamp = $disk->lastModified($path);
 
                 return [
@@ -305,11 +317,30 @@ class WebPageController extends Controller
                 ];
             })
             ->sortByDesc('last_modified_at')
-            ->take($limit)
             ->values();
+
+        $total = $allExports->count();
+        $lastPage = max(1, (int) ceil($total / $perPage));
+        $currentPage = min(max(1, $page), $lastPage);
+        $offset = ($currentPage - 1) * $perPage;
+
+        $exports = $allExports
+            ->slice($offset, $perPage)
+            ->values();
+
+        $from = $total === 0 ? null : ($offset + 1);
+        $to = $total === 0 ? null : ($offset + $exports->count());
 
         return response()->json([
             'exports' => $exports,
+            'meta' => [
+                'current_page' => $currentPage,
+                'last_page' => $lastPage,
+                'per_page' => $perPage,
+                'total' => $total,
+                'from' => $from,
+                'to' => $to,
+            ],
         ]);
     }
 
@@ -363,6 +394,38 @@ class WebPageController extends Controller
 
         return response()->download($absolutePath, $downloadName, [
             'Content-Type' => 'application/zip',
+        ]);
+    }
+
+    public function deleteDatabaseExport(Request $request, DatabaseExportService $databaseExportService): JsonResponse
+    {
+        $validated = $request->validate([
+            'path' => 'required|string',
+        ]);
+
+        $path = trim((string) $validated['path']);
+        if (! str_starts_with($path, $databaseExportService->exportDirectory() . '/')) {
+            return response()->json([
+                'message' => 'Invalid export path.',
+            ], 422);
+        }
+
+        $disk = Storage::disk('local');
+        if (! $disk->exists($path)) {
+            return response()->json([
+                'message' => 'Export file not found.',
+            ], 404);
+        }
+
+        $deleted = $disk->delete($path);
+        if (! $deleted) {
+            return response()->json([
+                'message' => 'Failed to delete export file.',
+            ], 500);
+        }
+
+        return response()->json([
+            'message' => 'Export file deleted successfully.',
         ]);
     }
 
