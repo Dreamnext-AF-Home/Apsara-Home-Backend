@@ -206,6 +206,7 @@ Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.or_supplier'
     Route::put('/admin/products/{id}', [ProductController::class, 'update']);
     Route::delete('/admin/products/{id}', [ProductController::class, 'destroy']);
     Route::get('/admin/product-brands', [ProductBrandController::class, 'index']);
+    Route::get('/admin/suppliers/stats', [SupplierController::class, 'stats']);
     Route::get('/admin/suppliers', [SupplierController::class, 'index']);
     Route::get('/admin/suppliers/{id}/categories', [SupplierController::class, 'categories']);
     Route::get('/admin/supplier-users', [SupplierUserController::class, 'index']);
