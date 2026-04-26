@@ -12,9 +12,72 @@ use App\Models\SupplierUser;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class SupplierController extends Controller
 {
+    public function stats(Request $request): JsonResponse
+    {
+        $this->normalizeMissingSupplierIds();
+
+        $admin = $this->resolveAdmin($request);
+        if (! $admin) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        $now = now('Asia/Manila');
+        $paidStatuses = ['paid', 'succeeded', 'success'];
+
+        $totalSuppliers = (int) Supplier::query()->count();
+        $activeSuppliers = (int) Supplier::query()->where('s_status', 1)->count();
+        $supplierUsers = (int) SupplierUser::query()->count();
+
+        $suppliersWithProducts = (int) Product::query()
+            ->whereNotNull('pd_supplier')
+            ->where('pd_supplier', '>', 0)
+            ->distinct('pd_supplier')
+            ->count('pd_supplier');
+
+        $salesBase = DB::table('tbl_checkout_history as ch')
+            ->join('tbl_product as p', 'p.pd_id', '=', 'ch.ch_product_id')
+            ->whereNotNull('p.pd_supplier')
+            ->where('p.pd_supplier', '>', 0)
+            ->whereIn('ch.ch_status', $paidStatuses);
+
+        $suppliersWithSales = (int) (clone $salesBase)
+            ->distinct('p.pd_supplier')
+            ->count('p.pd_supplier');
+
+        $supplierPaidOrders = (int) (clone $salesBase)->count();
+        $supplierSalesAmount = round((float) (clone $salesBase)->sum('ch.ch_amount'), 2);
+
+        $newSuppliersThisMonth = 0;
+        if (Schema::hasColumn('tbl_supplier_user', 'su_date_created')) {
+            $monthStart = $now->copy()->startOfMonth()->utc();
+            $monthEnd = $now->copy()->endOfMonth()->utc();
+
+            $newSuppliersThisMonth = (int) DB::table('tbl_supplier_user')
+                ->whereNotNull('su_supplier')
+                ->where('su_supplier', '>', 0)
+                ->whereBetween('su_date_created', [$monthStart, $monthEnd])
+                ->distinct('su_supplier')
+                ->count('su_supplier');
+        }
+
+        return response()->json([
+            'summary' => [
+                'total_suppliers' => $totalSuppliers,
+                'active_suppliers' => $activeSuppliers,
+                'supplier_users' => $supplierUsers,
+                'suppliers_with_products' => $suppliersWithProducts,
+                'suppliers_with_sales' => $suppliersWithSales,
+                'new_suppliers_this_month' => $newSuppliersThisMonth,
+                'supplier_paid_orders' => $supplierPaidOrders,
+                'supplier_sales_amount' => $supplierSalesAmount,
+            ],
+        ]);
+    }
+
     public function index(Request $request): JsonResponse
     {
         $this->normalizeMissingSupplierIds();

@@ -346,9 +346,10 @@ class MemberController extends Controller
         return response()->json($payload);
     }
 
-    public function stats(): JsonResponse
+    public function stats(Request $request): JsonResponse
     {
-        $cacheKey = 'admin:members:stats:' . $this->membersCacheVersion();
+        $period = $this->normalizeMemberStatsPeriod((string) $request->query('period', '7d'));
+        $cacheKey = 'admin:members:stats:' . $this->membersCacheVersion() . ':' . $period;
         try {
             $cached = Cache::get($cacheKey);
         } catch (\Throwable $exception) {
@@ -363,13 +364,13 @@ class MemberController extends Controller
             $lock = Cache::lock('lock:' . $cacheKey, 30);
             $hasLock = $lock->get();
         } catch (\Throwable $exception) {
-            $payload = $this->buildStatsPayload();
+            $payload = $this->buildStatsPayload($period);
             return response()->json($payload);
         }
 
         if ($hasLock) {
             try {
-                $payload = $this->buildStatsPayload();
+                $payload = $this->buildStatsPayload($period);
                 try {
                     Cache::put($cacheKey, $payload, now()->addMinutes(10));
                 } catch (\Throwable $exception) {
@@ -394,7 +395,7 @@ class MemberController extends Controller
         }
 
         // Fallback in case lock holder failed; still return real data.
-        $payload = $this->buildStatsPayload();
+        $payload = $this->buildStatsPayload($period);
         try {
             Cache::put($cacheKey, $payload, now()->addMinutes(10));
         } catch (\Throwable $exception) {
@@ -409,6 +410,7 @@ class MemberController extends Controller
         $perPage = (int) $request->integer('per_page', 25);
         $perPage = max(1, min($perPage, 100));
         $search = trim((string) $request->query('q', ''));
+        $period = $this->normalizeMemberStatsPeriod((string) $request->query('period', '7d'));
 
         $allowedStats = [
             'total_members',
@@ -434,9 +436,10 @@ class MemberController extends Controller
             'page' => (int) $request->integer('page', 1),
             'per_page' => $perPage,
             'q' => $search,
+            'period' => $period,
         ]));
 
-        $payloadBuilder = function () use ($perPage, $stat, $search) {
+        $payloadBuilder = function () use ($perPage, $stat, $search, $period) {
             $query = Customer::query()
                 ->select([
                     'tbl_customer.c_userid',
@@ -497,11 +500,11 @@ class MemberController extends Controller
                 $query->where('tbl_customer.c_lockstatus', 1)
                     ->orderByDesc('tbl_customer.c_userid');
             } elseif ($stat === 'new_members') {
-                $title = 'New Members This 7 Days';
+                $title = 'New Members ' . $this->memberStatsPeriodLabel($period);
                 $metricLabel = 'Joined';
                 $metricResolver = fn (Customer $customer, int $referrals): string => $this->formatDateTime($customer->c_date_started) ?: 'Unknown date';
                 $query->whereNotNull('tbl_customer.c_date_started')
-                    ->whereRaw("tbl_customer.c_date_started >= (CURRENT_DATE - INTERVAL '6 days')")
+                    ->whereRaw($this->memberStatsPeriodSql($period))
                     ->orderByDesc('tbl_customer.c_date_started')
                     ->orderByDesc('tbl_customer.c_userid');
             } elseif ($stat === 'total_spent') {
@@ -1027,8 +1030,9 @@ class MemberController extends Controller
         return response()->json($payload);
     }
 
-    private function buildStatsPayload(): array
+    private function buildStatsPayload(string $period = '7d'): array
     {
+        $normalizedPeriod = $this->normalizeMemberStatsPeriod($period);
         $summary = DB::table('tbl_customer')
             ->selectRaw("
                 COUNT(*)::bigint AS total,
@@ -1037,7 +1041,7 @@ class MemberController extends Controller
                 COUNT(*) FILTER (WHERE c_lockstatus = 1)::bigint AS blocked,
                 COUNT(*) FILTER (
                     WHERE c_date_started IS NOT NULL
-                    AND c_date_started >= (CURRENT_DATE - INTERVAL '6 days')
+                    AND {$this->memberStatsPeriodSql($normalizedPeriod, 'c_date_started')}
                 )::bigint AS new_members,
                 COALESCE(SUM(c_gpv), 0)::numeric AS total_spent,
                 COALESCE(SUM(c_totalincome), 0)::numeric AS total_earnings,
@@ -1051,10 +1055,44 @@ class MemberController extends Controller
             'pending' => (int) ($summary->pending ?? 0),
             'blocked' => (int) ($summary->blocked ?? 0),
             'newMembers' => (int) ($summary->new_members ?? 0),
+            'newMembersPeriod' => $normalizedPeriod,
+            'newMembersLabel' => $this->memberStatsPeriodLabel($normalizedPeriod),
             'totalSpent' => (float) ($summary->total_spent ?? 0),
             'totalEarnings' => (float) ($summary->total_earnings ?? 0),
             'totalReferrals' => (int) ($summary->total_referrals ?? 0),
         ];
+    }
+
+    private function normalizeMemberStatsPeriod(string $period): string
+    {
+        return match (strtolower(trim($period))) {
+            '30d' => '30d',
+            'last_month' => 'last_month',
+            '3m' => '3m',
+            default => '7d',
+        };
+    }
+
+    private function memberStatsPeriodLabel(string $period): string
+    {
+        return match ($this->normalizeMemberStatsPeriod($period)) {
+            '30d' => 'This 30 Days',
+            'last_month' => 'Last Month',
+            '3m' => 'Past 3 Months',
+            default => 'This 7 Days',
+        };
+    }
+
+    private function memberStatsPeriodSql(string $period, string $column = 'tbl_customer.c_date_started'): string
+    {
+        $columnRef = trim($column) !== '' ? $column : 'tbl_customer.c_date_started';
+
+        return match ($this->normalizeMemberStatsPeriod($period)) {
+            '30d' => "{$columnRef} >= (CURRENT_DATE - INTERVAL '29 days')",
+            'last_month' => "{$columnRef} >= date_trunc('month', CURRENT_DATE - INTERVAL '1 month') AND {$columnRef} < date_trunc('month', CURRENT_DATE)",
+            '3m' => "{$columnRef} >= (CURRENT_DATE - INTERVAL '3 months')",
+            default => "{$columnRef} >= (CURRENT_DATE - INTERVAL '6 days')",
+        };
     }
 
     private function makeTemporaryPassword(): string
