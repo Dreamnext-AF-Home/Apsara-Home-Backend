@@ -24,6 +24,11 @@ class AdminAuthController extends Controller
 
     public function login(Request $request)
     {
+        $turnstileToken = trim((string) $request->input('cf_turnstile_response', ''));
+        if (!(new \App\Services\TurnstileService())->verifyAdminLogin($turnstileToken, (string) $request->ip())) {
+            return response()->json(['message' => 'Bot verification failed.'], 422);
+        }
+
         $otpValue = trim((string) $request->input('otp', ''));
         $challengeTokenValue = trim((string) $request->input('otp_challenge_token', ''));
         $otpLower = strtolower($otpValue);
