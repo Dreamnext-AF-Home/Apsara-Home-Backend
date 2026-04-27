@@ -285,7 +285,15 @@ class PaymentController extends Controller
         $sourceUrl = trim((string) ($validated['source_url'] ?? ''));
 
         $voucherCode = trim((string) ($validated['voucher_code'] ?? ''));
+        $resolvedOrderSnapshot = $this->resolveOrderSnapshot(is_array($validated['order'] ?? null) ? $validated['order'] : []);
         $subtotal = (float) ($validated['order']['subtotal'] ?? $validated['amount'] ?? 0);
+        if (!$isMember) {
+            $guestSrpUnit = (float) ($resolvedOrderSnapshot['unit_srp'] ?? 0);
+            $guestQty = max(1, (int) ($resolvedOrderSnapshot['quantity'] ?? ($validated['order']['quantity'] ?? 1)));
+            if ($guestSrpUnit > 0) {
+                $subtotal = $guestSrpUnit * $guestQty;
+            }
+        }
         $handlingFee = (float) ($validated['order']['handling_fee'] ?? 0);
 
         $voucher = null;
@@ -300,7 +308,6 @@ class PaymentController extends Controller
         }
 
         $computedAmount = max(0, $subtotal - $voucherDiscount) + $handlingFee;
-        $resolvedOrderSnapshot = $this->resolveOrderSnapshot(is_array($validated['order'] ?? null) ? $validated['order'] : []);
 
         $payload = [
             'data' => [
@@ -1072,6 +1079,7 @@ class PaymentController extends Controller
             'product_name' => $fallbackName,
             'product_sku' => $selectedSku,
             'product_pv' => $fallbackPv,
+            'unit_srp' => 0.0,
             'commission_basis_amount' => 0.0,
             'product_image' => $fallbackImage,
             'quantity' => $quantity,
@@ -1113,6 +1121,7 @@ class PaymentController extends Controller
         $snapshot['product_image'] = trim((string) ($product->pd_image ?? '')) !== ''
             ? trim((string) $product->pd_image)
             : $snapshot['product_image'];
+        $snapshot['unit_srp'] = max(0, (float) ($product->pd_price_srp ?? 0));
 
         $matchingVariant = $product->variants
             ->filter(fn ($variant) => (int) ($variant->pv_status ?? 1) === 1)
@@ -1150,6 +1159,9 @@ class PaymentController extends Controller
 
             $variantSrp = (float) ($matchingVariant->pv_price_srp ?? 0);
             $variantDp = (float) ($matchingVariant->pv_price_dp ?? 0);
+            if ($variantSrp > 0) {
+                $snapshot['unit_srp'] = $variantSrp;
+            }
             $snapshot['commission_basis_amount'] = max(0, $variantSrp - $variantDp);
         } else {
             $snapshot['product_sku'] = trim((string) ($product->pd_parent_sku ?? '')) !== ''
