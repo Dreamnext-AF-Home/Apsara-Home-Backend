@@ -156,6 +156,12 @@ return [
         'timeout' => (int) env('ZQ_TIMEOUT', 30),
     ],
 
+    'turnstile' => [
+        'login_secret'       => env('USER_LOGIN_CLOUDFLARE_TURNSTILE_SECRET'),
+        'signup_secret'      => env('USER_SIGNUP_CLOUDFLARE_TURNSTILE_SECRET'),
+        'admin_login_secret' => env('ADMIN_LOGIN_CLOUDFLARE_TURNSTILE_SECRET'),
+    ],
+
     'google_drive' => [
         'folder_id' => env('GOOGLE_DRIVE_FOLDER_ID'),
         'folder_url' => env('GOOGLE_DRIVE_FOLDER_URL'),
