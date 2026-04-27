@@ -89,6 +89,38 @@ class DatabaseExportService
 
         $summaryCsv = $this->buildCsvFromRows($tableSummaries);
         $zip->addFromString('_summary.csv', $summaryCsv);
+
+        $invoiceFiles = $this->collectExpenseInvoiceFiles();
+        foreach ($invoiceFiles as $invoiceFile) {
+            if (($invoiceFile['exists'] ?? 0) !== 1) {
+                continue;
+            }
+
+            $absolutePath = $invoiceFile['absolute_path'] ?? null;
+            $zipPath = $invoiceFile['zip_path'] ?? null;
+            if (! is_string($absolutePath) || ! is_string($zipPath) || $absolutePath === '' || $zipPath === '') {
+                continue;
+            }
+
+            if (is_file($absolutePath)) {
+                $zip->addFile($absolutePath, $zipPath);
+            }
+        }
+
+        $invoiceFileSummary = array_map(
+            static function (array $row): array {
+                return [
+                    'invoice_url' => $row['invoice_url'] ?? '',
+                    'public_path' => $row['public_path'] ?? '',
+                    'zip_path' => $row['zip_path'] ?? '',
+                    'exists' => $row['exists'] ?? 0,
+                    'size_bytes' => $row['size_bytes'] ?? 0,
+                    'note' => $row['note'] ?? '',
+                ];
+            },
+            $invoiceFiles
+        );
+        $zip->addFromString('_expense_invoice_files.csv', $this->buildCsvFromRows($invoiceFileSummary));
         $zip->close();
 
         $tempStream = fopen($tempZipPath, 'r');
@@ -166,5 +198,76 @@ class DatabaseExportService
 
         return is_string($csv) ? $csv : '';
     }
-}
 
+    private function collectExpenseInvoiceFiles(): array
+    {
+        if (! Schema::hasTable('tbl_expenses') || ! Schema::hasColumn('tbl_expenses', 'invoice_url')) {
+            return [];
+        }
+
+        $publicDisk = Storage::disk('public');
+        $invoiceUrls = DB::table('tbl_expenses')
+            ->whereNotNull('invoice_url')
+            ->pluck('invoice_url')
+            ->filter(static fn ($value): bool => is_string($value) && trim($value) !== '')
+            ->map(static fn (string $value): string => trim($value))
+            ->unique()
+            ->values();
+
+        $files = [];
+        foreach ($invoiceUrls as $invoiceUrl) {
+            $publicPath = $this->resolvePublicRelativePathFromUrl($invoiceUrl);
+            if (! $publicPath) {
+                $files[] = [
+                    'invoice_url' => $invoiceUrl,
+                    'public_path' => null,
+                    'zip_path' => null,
+                    'absolute_path' => null,
+                    'exists' => 0,
+                    'size_bytes' => 0,
+                    'note' => 'Skipped: invoice_url is not a local /storage file path.',
+                ];
+                continue;
+            }
+
+            $exists = $publicDisk->exists($publicPath);
+            $files[] = [
+                'invoice_url' => $invoiceUrl,
+                'public_path' => $publicPath,
+                'zip_path' => 'files/invoices/' . ltrim(str_replace('\\', '/', $publicPath), '/'),
+                'absolute_path' => $exists ? $publicDisk->path($publicPath) : null,
+                'exists' => $exists ? 1 : 0,
+                'size_bytes' => $exists ? (int) ($publicDisk->size($publicPath) ?? 0) : 0,
+                'note' => $exists ? '' : 'Missing file on public disk.',
+            ];
+        }
+
+        return $files;
+    }
+
+    private function resolvePublicRelativePathFromUrl(string $url): ?string
+    {
+        $value = trim($url);
+        if ($value === '') {
+            return null;
+        }
+
+        $path = parse_url($value, PHP_URL_PATH);
+        $path = is_string($path) ? trim($path) : $value;
+        if ($path === '') {
+            return null;
+        }
+
+        $storageMarker = '/storage/';
+        $position = strpos($path, $storageMarker);
+        if ($position !== false) {
+            return ltrim(substr($path, $position + strlen($storageMarker)), '/');
+        }
+
+        if (str_starts_with($path, 'storage/')) {
+            return ltrim(substr($path, strlen('storage/')), '/');
+        }
+
+        return null;
+    }
+}
