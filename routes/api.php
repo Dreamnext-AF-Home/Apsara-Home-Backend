@@ -226,6 +226,7 @@ Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.or_supplier'
     Route::post('/admin/products/bulk-update/preview', [ProductController::class, 'bulkUpdatePreview']);
     Route::post('/admin/products/bulk-update/apply', [ProductController::class, 'bulkUpdateApply']);
     Route::post('/admin/products/manual-checkout/apply', [ProductController::class, 'manualCheckoutApply']);
+    Route::post('/admin/products/push-spreadsheet', [ProductController::class, 'pushToSpreadsheet']);
     Route::get('/admin/webpages/adds-content', [AddsContentController::class, 'index']);
     Route::post('/admin/webpages/adds-content', [AddsContentController::class, 'store']);
     Route::patch('/admin/webpages/adds-content/{id}', [AddsContentController::class, 'update']);

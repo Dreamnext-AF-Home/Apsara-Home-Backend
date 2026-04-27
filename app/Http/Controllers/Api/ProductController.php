@@ -17,6 +17,7 @@ use App\Models\SupplierUser;
 use App\Models\SearchHistory;
 use App\Services\Zq\ZqApiService;
 use App\Services\Zq\ZqProductSyncService;
+use App\Services\GoogleSheetsService;
 use App\Models\ZqProduct;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -1416,7 +1417,12 @@ class ProductController extends Controller
         try {
             $admin = $this->resolveAdmin($request);
             $supplierUser = $this->resolveSupplierUser($request);
-            $perPage = max(1, min((int) $request->integer('per_page', 25), 100));
+            $perPageParam = $request->query('per_page', 25);
+            if ($perPageParam === 'all') {
+                $perPage = 999999;
+            } else {
+                $perPage = max(1, min((int) $perPageParam, 1000));
+            }
             $search  = trim((string) $request->query('q', ''));
             $status  = $request->query('status', '');
             $catId   = $request->query('cat_id', '');
@@ -3687,5 +3693,81 @@ class ProductController extends Controller
             ->filter(fn ($image) => is_string($image) && $image !== '')
             ->values()
             ->all();
+    }
+
+    public function pushToSpreadsheet(Request $request, GoogleSheetsService $googleSheetsService): JsonResponse
+    {
+        try {
+            $admin = $this->resolveAdmin($request);
+            $supplierUser = $this->resolveSupplierUser($request);
+
+            $query = Product::query()
+                ->select([
+                    'pd_id', 'pd_name', 'pd_parent_sku', 'pd_catid', 'pd_room_type', 'pd_brand_type',
+                    'pd_supplier', 'pd_price_srp', 'pd_price_dp', 'pd_price_member', 'pd_qty',
+                    'pd_prodpv', 'pd_weight', 'pd_status', 'pd_type', 'pd_musthave',
+                    'pd_bestseller', 'pd_salespromo', 'pd_assembly_required',
+                ])
+                ->with(['brand:pb_id,pb_name', 'supplier:s_id,s_company']);
+
+            $this->scopeQueryToActor($query, $admin, $supplierUser);
+
+            $products = $query->get();
+
+            $sheetName = $request->query('sheet_name', 'Sheet1');
+            $clearBefore = $request->query('clear_before', 'true') === 'true';
+
+            if ($clearBefore) {
+                $googleSheetsService->clearSheet($sheetName);
+            }
+
+            $headers = [
+                ['ID', 'Name', 'SKU', 'Category ID', 'Room Type', 'Brand', 'Supplier', 'Price SRP', 'Price DP', 'Price Member', 'Qty', 'PV', 'Weight', 'Status', 'Type', 'Must Have', 'Best Seller', 'Sales Promo', 'Assembly Required']
+            ];
+
+            $rows = $products->map(function ($product) {
+                return [
+                    $product->pd_id,
+                    $product->pd_name,
+                    $product->pd_parent_sku,
+                    $product->pd_catid,
+                    $product->pd_room_type,
+                    $product->brand->pb_name ?? '',
+                    $product->supplier->s_company ?? '',
+                    $product->pd_price_srp,
+                    $product->pd_price_dp,
+                    $product->pd_price_member,
+                    $product->pd_qty,
+                    $product->pd_prodpv,
+                    $product->pd_weight,
+                    $product->pd_status,
+                    $product->pd_type,
+                    $product->pd_musthave,
+                    $product->pd_bestseller,
+                    $product->pd_salespromo,
+                    $product->pd_assembly_required,
+                ];
+            })->toArray();
+
+            $data = array_merge($headers, $rows);
+
+            $success = $googleSheetsService->appendData($data, $sheetName);
+
+            if ($success) {
+                return response()->json([
+                    'message' => 'Products pushed to Google Sheets successfully.',
+                    'count' => count($rows),
+                ]);
+            }
+
+            return response()->json(['message' => 'Failed to push products to Google Sheets.'], 500);
+
+        } catch (\Throwable $e) {
+            Log::error('Push to spreadsheet failed', [
+                'exception' => $e::class,
+                'message' => $e->getMessage(),
+            ]);
+            return response()->json(['message' => 'Failed to push products to Google Sheets.'], 500);
+        }
     }
 }
