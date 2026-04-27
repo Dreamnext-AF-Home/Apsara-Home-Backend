@@ -2314,7 +2314,7 @@ class AiSupportController extends Controller
                    {$priceExpr} AS min_price,
                    MAX(p.pd_description) AS pd_description,
                    MAX(pie.pie_image_url) AS pp_filename,
-                   MIN(pie.pie_embedding <=> '{$vectorLiteral}') AS distance
+                   MIN(pie.pie_embedding <=> ?::vector) AS distance
             FROM tbl_product_image_embeddings pie
             JOIN tbl_product p ON p.pd_id = pie.pie_product_id
             JOIN tbl_product_variant v ON v.pv_pdid = p.pd_id
@@ -2328,9 +2328,8 @@ class AiSupportController extends Controller
         SQL;
 
         try {
-            $rows = empty($termBindings)
-                ? DB::select($sql)
-                : DB::select($sql, $termBindings);
+            $bindings = array_merge([$vectorLiteral], $termBindings);
+            $rows = DB::select($sql, $bindings);
             return $this->mapProductCards($rows);
         } catch (\Throwable $e) {
             Log::warning('Image embedding search failed', [
