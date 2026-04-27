@@ -39,6 +39,11 @@ class AuthController extends Controller
 
     public function register(Request $request)
     {
+        $turnstileToken = trim((string) $request->input('cf_turnstile_response', ''));
+        if (!(new \App\Services\TurnstileService())->verifySignup($turnstileToken, (string) $request->ip())) {
+            return response()->json(['message' => 'Bot verification failed.'], 422);
+        }
+
         $request->merge([
             'referred_by' => $this->normalizeReferralValue((string) $request->input('referred_by', '')),
         ]);
@@ -381,6 +386,11 @@ class AuthController extends Controller
 
     public function login(Request $request)
     {
+        $turnstileToken = trim((string) $request->input('cf_turnstile_response', ''));
+        if (!(new \App\Services\TurnstileService())->verifyLogin($turnstileToken, (string) $request->ip())) {
+            return response()->json(['message' => 'Bot verification failed.'], 422);
+        }
+
         $otpValue = trim((string) $request->input('otp', ''));
         $challengeTokenValue = trim((string) $request->input('otp_challenge_token', ''));
         $mfaChallengeTokenValue = trim((string) $request->input('mfa_challenge_token', ''));
