@@ -223,9 +223,9 @@ class AdminPaymentController extends Controller
             'released_requests' => (int) EncashmentRequest::query()
                 ->where('er_status', 'released')
                 ->count(),
-            'released_amount' => round((float) EncashmentRequest::query()
+            'released_amount' => round((float) (EncashmentRequest::query()
                 ->where('er_status', 'released')
-                ->sum('er_amount'), 2),
+                ->sum('er_amount') ?? 0), 2),
         ];
 
         return response()->json([

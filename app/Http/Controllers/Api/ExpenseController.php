@@ -95,20 +95,25 @@ class ExpenseController extends Controller
 
         $statusColumn = $this->resolveExpenseStatusColumn();
 
-        $query = DB::table('tbl_expenses');
+        $query = DB::table('tbl_expenses')
+            ->join('tbl_expense_categories', 'tbl_expense_categories.id', '=', 'tbl_expenses.category_id');
+        $qualifiedDateColumn = 'tbl_expenses.' . $dateColumn;
+        $qualifiedAmountColumn = 'tbl_expenses.' . $amountColumn;
+        $qualifiedStatusColumn = $statusColumn ? 'tbl_expenses.' . $statusColumn : null;
+
         if (!empty($validated['from'])) {
-            $query->whereDate($dateColumn, '>=', $validated['from']);
+            $query->whereDate($qualifiedDateColumn, '>=', $validated['from']);
         }
         if (!empty($validated['to'])) {
-            $query->whereDate($dateColumn, '<=', $validated['to']);
+            $query->whereDate($qualifiedDateColumn, '<=', $validated['to']);
         }
-        if ($statusColumn) {
+        if ($qualifiedStatusColumn) {
             $status = array_key_exists('status', $validated) ? (int) $validated['status'] : 1;
-            $query->where($statusColumn, '=', $status);
+            $query->where($qualifiedStatusColumn, '=', $status);
         }
 
         $count = (clone $query)->count();
-        $total = (float) ((clone $query)->sum($amountColumn) ?? 0);
+        $total = (float) ((clone $query)->sum($qualifiedAmountColumn) ?? 0);
 
         return response()->json([
             'count' => (int) $count,
