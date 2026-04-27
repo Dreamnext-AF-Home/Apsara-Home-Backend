@@ -100,6 +100,7 @@ Route::middleware('throttle:public')->group(function () {
     Route::get('/products/{id}/brand', [ProductController::class, 'brand']);
     Route::get('/products', [ProductController::class, 'index']);
     Route::get('/product-brands', [ProductBrandController::class, 'publicIndex']);
+    Route::get('/shipping-rates', [ShippingRateController::class, 'publicIndex']);
     Route::get('/web-pages/home', [WebPageController::class, 'home']);
     Route::get('/web-pages/adds-content', [AddsContentController::class, 'publicIndex']);
     Route::get('/web-pages/{type}', [WebPageController::class, 'publicIndex']);
@@ -179,6 +180,7 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
 
 Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_admin,admin,csr'])->group(function () {
     Route::get('/admin/members', [MemberController::class, 'index']);
+    Route::get('/admin/members/top-earners', [MemberController::class, 'topEarners']);
     Route::get('/admin/members/stats', [MemberController::class, 'stats']);
     Route::get('/admin/members/stats/{stat}', [MemberController::class, 'statDetails']);
     Route::get('/admin/members/referrals', [MemberController::class, 'referralTree']);
