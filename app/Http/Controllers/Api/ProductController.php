@@ -17,13 +17,13 @@ use App\Models\SupplierUser;
 use App\Models\SearchHistory;
 use App\Services\Zq\ZqApiService;
 use App\Services\Zq\ZqProductSyncService;
-use App\Services\GoogleSheetsService;
 use App\Models\ZqProduct;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ProductController extends Controller
 {
@@ -1268,8 +1268,8 @@ class ProductController extends Controller
             'image'       => $primaryImage,
             'images'      => $images,
             'variants'    => $this->mapVariants($p),
-            'createdAt'   => $p->pd_date ? $p->pd_date->format('Y-m-d') : null,
-            'updatedAt'   => $p->pd_last_update ? $p->pd_last_update->format('Y-m-d') : null,
+            'createdAt'   => $p->pd_date ? $p->pd_date->format('Y-m-d H:i:s') : null,
+            'updatedAt'   => $p->pd_last_update ? $p->pd_last_update->format('Y-m-d H:i:s') : null,
         ];
     }
 
@@ -1418,10 +1418,10 @@ class ProductController extends Controller
             $admin = $this->resolveAdmin($request);
             $supplierUser = $this->resolveSupplierUser($request);
             $perPageParam = $request->query('per_page', 25);
-            if ($perPageParam === 'all') {
-                $perPage = 999999;
+            if (strtolower(trim((string) $perPageParam)) === 'all') {
+                $perPage = PHP_INT_MAX;
             } else {
-                $perPage = max(1, min((int) $perPageParam, 1000));
+                $perPage = max(1, (int) $perPageParam);
             }
             $search  = trim((string) $request->query('q', ''));
             $status  = $request->query('status', '');
@@ -3695,79 +3695,169 @@ class ProductController extends Controller
             ->all();
     }
 
-    public function pushToSpreadsheet(Request $request, GoogleSheetsService $googleSheetsService): JsonResponse
+    public function exportCsv(Request $request): StreamedResponse
     {
-        try {
-            $admin = $this->resolveAdmin($request);
-            $supplierUser = $this->resolveSupplierUser($request);
+        $admin        = $this->resolveAdmin($request);
+        $supplierUser = $this->resolveSupplierUser($request);
 
-            $query = Product::query()
-                ->select([
-                    'pd_id', 'pd_name', 'pd_parent_sku', 'pd_catid', 'pd_room_type', 'pd_brand_type',
-                    'pd_supplier', 'pd_price_srp', 'pd_price_dp', 'pd_price_member', 'pd_qty',
-                    'pd_prodpv', 'pd_weight', 'pd_status', 'pd_type', 'pd_musthave',
-                    'pd_bestseller', 'pd_salespromo', 'pd_assembly_required',
-                ])
-                ->with(['brand:pb_id,pb_name', 'supplier:s_id,s_company']);
+        $search              = trim((string) $request->query('q', ''));
+        $status              = $request->query('status', '');
+        $catId               = $request->query('cat_id', '');
+        $brandType           = $request->query('brand_type', '');
+        $requestedSupplierId = (int) $request->query('supplier_id', 0);
 
-            $this->scopeQueryToActor($query, $admin, $supplierUser);
+        $query = Product::query()
+            ->select([
+                'pd_id', 'pd_name', 'pd_parent_sku', 'pd_catid', 'pd_room_type', 'pd_brand_type', 'pd_supplier',
+                'pd_price_srp', 'pd_price_dp', 'pd_price_member', 'pd_prodpv',
+                'pd_qty', 'pd_weight', 'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
+                'pd_description', 'pd_specifications', 'pd_material', 'pd_warranty',
+                'pd_type', 'pd_status', 'pd_musthave', 'pd_bestseller', 'pd_salespromo', 'pd_assembly_required',
+            ])
+            ->with([
+                'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_style,' .
+                         'pv_width,pv_dimension,pv_height,pv_price_srp,pv_price_dp,pv_price_member,' .
+                         'pv_prodpv,pv_qty,pv_status',
+            ])
+            ->when($search !== '', fn ($q) => $this->applyKeywordSearch($q, $search))
+            ->when($status !== '', function ($q) use ($status) {
+                $normalizedStatus = (int) $status;
+                if ($normalizedStatus === 1) {
+                    $q->whereIn('pd_status', [1, 2]);
+                    return;
+                }
+                $q->where('pd_status', $normalizedStatus);
+            })
+            ->when($catId !== '', fn ($q) => $q->where('pd_catid', (int) $catId))
+            ->when($brandType !== '', fn ($q) => $q->where('pd_brand_type', (int) $brandType))
+            ->orderByDesc('pd_id');
 
-            $products = $query->get();
-
-            $sheetName = $request->query('sheet_name', 'Sheet1');
-            $clearBefore = $request->query('clear_before', 'true') === 'true';
-
-            if ($clearBefore) {
-                $googleSheetsService->clearSheet($sheetName);
+        if ($supplierUser) {
+            $supplierId     = (int) $supplierUser->su_supplier;
+            $brandTypeValue = $brandType !== '' ? (int) $brandType : 0;
+            if ($brandTypeValue <= 0 && $supplierId > 0) {
+                $brandTypeValue = $this->resolveSupplierBrandType($supplierId);
             }
-
-            $headers = [
-                ['ID', 'Name', 'SKU', 'Category ID', 'Room Type', 'Brand', 'Supplier', 'Price SRP', 'Price DP', 'Price Member', 'Qty', 'PV', 'Weight', 'Status', 'Type', 'Must Have', 'Best Seller', 'Sales Promo', 'Assembly Required']
-            ];
-
-            $rows = $products->map(function ($product) {
-                return [
-                    $product->pd_id,
-                    $product->pd_name,
-                    $product->pd_parent_sku,
-                    $product->pd_catid,
-                    $product->pd_room_type,
-                    $product->brand->pb_name ?? '',
-                    $product->supplier->s_company ?? '',
-                    $product->pd_price_srp,
-                    $product->pd_price_dp,
-                    $product->pd_price_member,
-                    $product->pd_qty,
-                    $product->pd_prodpv,
-                    $product->pd_weight,
-                    $product->pd_status,
-                    $product->pd_type,
-                    $product->pd_musthave,
-                    $product->pd_bestseller,
-                    $product->pd_salespromo,
-                    $product->pd_assembly_required,
-                ];
-            })->toArray();
-
-            $data = array_merge($headers, $rows);
-
-            $success = $googleSheetsService->appendData($data, $sheetName);
-
-            if ($success) {
-                return response()->json([
-                    'message' => 'Products pushed to Google Sheets successfully.',
-                    'count' => count($rows),
-                ]);
+            if ($brandTypeValue > 0) {
+                $query->where(fn ($q) => $q->where('pd_supplier', $supplierId)->orWhere('pd_brand_type', $brandTypeValue));
+            } else {
+                $query->where('pd_supplier', $supplierId);
             }
-
-            return response()->json(['message' => 'Failed to push products to Google Sheets.'], 500);
-
-        } catch (\Throwable $e) {
-            Log::error('Push to spreadsheet failed', [
-                'exception' => $e::class,
-                'message' => $e->getMessage(),
-            ]);
-            return response()->json(['message' => 'Failed to push products to Google Sheets.'], 500);
+        } elseif ($admin && $this->roleFromLevel((int) $admin->user_level_id) === 'supplier_admin') {
+            $supplierId     = (int) ($admin->supplier_id ?? 0);
+            $brandTypeValue = $brandType !== '' ? (int) $brandType : 0;
+            if ($brandTypeValue <= 0 && $supplierId > 0) {
+                $brandTypeValue = $this->resolveSupplierBrandType($supplierId);
+            }
+            if ($brandTypeValue > 0) {
+                $query->where(fn ($q) => $q->where('pd_supplier', $supplierId > 0 ? $supplierId : -1)->orWhere('pd_brand_type', $brandTypeValue));
+            } else {
+                $query->where('pd_supplier', $supplierId > 0 ? $supplierId : -1);
+            }
+        } elseif ($requestedSupplierId > 0 && $admin) {
+            $query->where('pd_supplier', $requestedSupplierId);
         }
+
+        $filename = 'products-' . now()->format('Y-m-d-His') . '.csv';
+
+        return response()->streamDownload(function () use ($query) {
+            $handle = fopen('php://output', 'w');
+
+            fwrite($handle, "\xEF\xBB\xBF"); // UTF-8 BOM for Excel
+
+            fputcsv($handle, [
+                // Product columns
+                'Product Name', 'Parent SKU', 'Category', 'Room Type', 'Brand',
+                'Price SRP', 'Price DP', 'Price Member', 'Product PV (AUTO)',
+                'Quantity', 'Weight', 'Package Weight', 'Package Width', 'Package Length', 'Package Height',
+                'Description', 'Specifications', 'Material', 'Warranty',
+                'Product Type', 'Status', 'Must Have', 'Best Seller', 'Sales Promo', 'Assembly Required',
+                // Variant columns
+                'Variant SKU', 'Variant Name', 'Color Name', 'Color Hex',
+                'Variant Size', 'Variant Style', 'Variant Width', 'Variant Dimension', 'Variant Height',
+                'Variant Price SRP', 'Variant Price DP', 'Variant Price Member', 'Variant PV (AUTO)',
+                'Variant Qty', 'Variant Status',
+            ]);
+
+            $emptyVariantCols = array_fill(0, 15, '');
+
+            $query->chunk(500, function ($products) use ($handle, $emptyVariantCols) {
+                foreach ($products as $product) {
+                    $productCols = [
+                        $product->pd_name,
+                        $product->pd_parent_sku,
+                        $product->pd_catid,
+                        $product->pd_room_type,
+                        $product->pd_brand_type,
+                        $product->pd_price_srp,
+                        $product->pd_price_dp,
+                        $product->pd_price_member,
+                        $product->pd_prodpv,
+                        $product->pd_qty,
+                        $product->pd_weight,
+                        $product->pd_psweight,
+                        $product->pd_pswidth,
+                        $product->pd_pslenght,
+                        $product->pd_psheight,
+                        $product->pd_description,
+                        $product->pd_specifications,
+                        $product->pd_material,
+                        $product->pd_warranty,
+                        $product->pd_type,
+                        $product->pd_status,
+                        $product->pd_musthave ? 1 : 0,
+                        $product->pd_bestseller ? 1 : 0,
+                        $product->pd_salespromo ? 1 : 0,
+                        $product->pd_assembly_required ? 1 : 0,
+                    ];
+
+                    $variants = $product->variants ?? collect();
+
+                    if ($variants->isEmpty()) {
+                        fputcsv($handle, array_merge($productCols, $emptyVariantCols));
+                        continue;
+                    }
+
+                    $isFirst = true;
+                    foreach ($variants as $variant) {
+                        $variantCols = [
+                            $variant->pv_sku,
+                            $variant->pv_name,
+                            $variant->pv_color,
+                            $variant->pv_color_hex,
+                            $variant->pv_size,
+                            $variant->pv_style,
+                            $variant->pv_width,
+                            $variant->pv_dimension,
+                            $variant->pv_height,
+                            $variant->pv_price_srp,
+                            $variant->pv_price_dp,
+                            $variant->pv_price_member,
+                            $variant->pv_prodpv,
+                            $variant->pv_qty,
+                            $variant->pv_status,
+                        ];
+
+                        if ($isFirst) {
+                            // First variant row carries all product data
+                            fputcsv($handle, array_merge($productCols, $variantCols));
+                            $isFirst = false;
+                        } else {
+                            // Subsequent variant rows: repeat name, sku, category only
+                            $continuationCols = array_merge(
+                                [$product->pd_name, $product->pd_parent_sku, $product->pd_catid],
+                                array_fill(0, 22, '')
+                            );
+                            fputcsv($handle, array_merge($continuationCols, $variantCols));
+                        }
+                    }
+                }
+            });
+
+            fclose($handle);
+        }, $filename, [
+            'Content-Type'        => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => 'attachment; filename="' . $filename . '"',
+        ]);
     }
 }
