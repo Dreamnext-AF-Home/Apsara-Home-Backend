@@ -68,6 +68,21 @@ Route::prefix('auth')->group(function () {
     Route::post('/register/verify-otp', [AuthController::class, 'verifyRegistrationOtp']);
     Route::post('/login/mfa/status', [AuthController::class, 'loginMfaStatus']);
     Route::get('/reset-password/{token}', [AuthController::class, 'showResetToken']);
+
+    // Social auth - OAuth redirect and callback
+    Route::get('/{provider}', [AuthController::class, 'redirectToProvider'])->where('provider', 'google|facebook');
+    Route::get('/{provider}/callback', [AuthController::class, 'handleProviderCallback'])->where('provider', 'google|facebook');
+    
+    // Simplified Google login endpoints
+    Route::post('/google/login', [AuthController::class, 'googleLogin']);
+    Route::post('/callback/google', [AuthController::class, 'googleCallback']);
+
+    // Authenticated routes for social account management
+    Route::middleware(['auth:sanctum', 'throttle:auth'])->group(function () {
+        Route::post('/link/{provider}', [AuthController::class, 'linkSocialAccount'])->where('provider', 'google|facebook');
+        Route::post('/unlink/{provider}', [AuthController::class, 'unlinkSocialAccount'])->where('provider', 'google|facebook');
+        Route::get('/linked-accounts', [AuthController::class, 'getLinkedAccounts']);
+    });
 });
 
 // Checkout and payment initiation: 20 requests/min per IP

@@ -2487,4 +2487,716 @@ class AuthController extends Controller
             ->all();
     }
 
+    // ========================
+    // Social Authentication (OAuth)
+    // ========================
+
+    public function redirectToProvider(string $provider)
+    {
+        $allowedProviders = ['google', 'facebook'];
+
+        if (!in_array($provider, $allowedProviders, true)) {
+            return response()->json(['message' => 'Invalid provider.'], 400);
+        }
+
+        $config = config("services.{$provider}");
+
+        if (!$config || empty($config['client_id']) || empty($config['client_secret'])) {
+            return response()->json(['message' => 'OAuth not configured for this provider.'], 500);
+        }
+
+        $state = bin2hex(random_bytes(32));
+        $nonce = bin2hex(random_bytes(16));
+
+        Cache::put("oauth_state:{$state}", [
+            'provider' => $provider,
+            'nonce' => $nonce,
+            'created_at' => now()->toIso8601String(),
+        ], now()->addMinutes(10));
+
+        $baseUrls = [
+            'google' => 'https://accounts.google.com/o/oauth2/v2/auth',
+            'facebook' => 'https://www.facebook.com/v18.0/dialog/oauth',
+        ];
+
+        $scopes = [
+            'google' => 'openid email profile',
+            'facebook' => 'email public_profile',
+        ];
+
+        $params = [
+            'client_id' => $config['client_id'],
+            'redirect_uri' => $config['redirect'],
+            'response_type' => 'code',
+            'scope' => $scopes[$provider],
+            'state' => $state,
+        ];
+
+        if ($provider === 'google') {
+            $params['nonce'] = $nonce;
+            $params['access_type'] = 'offline';
+            $params['prompt'] = 'consent';
+        }
+
+        $url = $baseUrls[$provider] . '?' . http_build_query($params);
+
+        return response()->json([
+            'redirect_url' => $url,
+            'state' => $state,
+        ]);
+    }
+
+    public function handleProviderCallback(Request $request, string $provider)
+    {
+        $allowedProviders = ['google', 'facebook'];
+
+        if (!in_array($provider, $allowedProviders, true)) {
+            return response()->json(['message' => 'Invalid provider.'], 400);
+        }
+
+        $validated = $request->validate([
+            'code' => 'required|string',
+            'state' => 'required|string',
+        ]);
+
+        $stateData = Cache::get("oauth_state:{$validated['state']}");
+
+        if (!$stateData || ($stateData['provider'] ?? '') !== $provider) {
+            return response()->json(['message' => 'Invalid or expired state.'], 400);
+        }
+
+        Cache::forget("oauth_state:{$validated['state']}");
+
+        $config = config("services.{$provider}");
+
+        try {
+            $tokenResponse = $this->exchangeCodeForToken($provider, $validated['code'], $config);
+
+            if (!$tokenResponse || empty($tokenResponse['access_token'])) {
+                return response()->json(['message' => 'Failed to obtain access token.'], 400);
+            }
+
+            $userInfo = $this->getUserInfoFromProvider($provider, $tokenResponse['access_token']);
+
+            if (!$userInfo || empty($userInfo['email'])) {
+                return response()->json(['message' => 'Failed to obtain user information.'], 400);
+            }
+
+            return $this->processSocialLogin($provider, $userInfo, $tokenResponse, $request);
+        } catch (\Throwable $e) {
+            Log::error('OAuth callback error', [
+                'provider' => $provider,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json(['message' => 'Authentication failed.'], 500);
+        }
+    }
+
+    private function exchangeCodeForToken(string $provider, string $code, array $config): ?array
+    {
+        $tokenUrls = [
+            'google' => 'https://oauth2.googleapis.com/token',
+            'facebook' => 'https://graph.facebook.com/v18.0/oauth/access_token',
+        ];
+
+        $params = [
+            'client_id' => $config['client_id'],
+            'client_secret' => $config['client_secret'],
+            'code' => $code,
+            'redirect_uri' => $config['redirect'],
+            'grant_type' => 'authorization_code',
+        ];
+
+        if ($provider === 'facebook') {
+            unset($params['grant_type']);
+        }
+
+        $httpClient = new \GuzzleHttp\Client();
+
+        $response = $httpClient->post($tokenUrls[$provider], [
+            'form_params' => $params,
+            'timeout' => 30,
+        ]);
+
+        return json_decode($response->getBody()->getContents(), true);
+    }
+
+    private function getUserInfoFromProvider(string $provider, string $accessToken): ?array
+    {
+        $httpClient = new \GuzzleHttp\Client();
+
+        if ($provider === 'google') {
+            $response = $httpClient->get('https://openidconnect.googleapis.com/v1/userinfo', [
+                'headers' => ['Authorization' => "Bearer {$accessToken}"],
+                'timeout' => 30,
+            ]);
+
+            $data = json_decode($response->getBody()->getContents(), true);
+
+            return [
+                'id' => $data['sub'] ?? null,
+                'email' => $data['email'] ?? null,
+                'name' => $data['name'] ?? null,
+                'given_name' => $data['given_name'] ?? null,
+                'family_name' => $data['family_name'] ?? null,
+                'picture' => $data['picture'] ?? null,
+                'verified' => $data['email_verified'] ?? false,
+            ];
+        }
+
+        if ($provider === 'facebook') {
+            $response = $httpClient->get('https://graph.facebook.com/v18.0/me', [
+                'query' => [
+                    'access_token' => $accessToken,
+                    'fields' => 'id,name,email,first_name,last_name,picture',
+                ],
+                'timeout' => 30,
+            ]);
+
+            $data = json_decode($response->getBody()->getContents(), true);
+
+            return [
+                'id' => $data['id'] ?? null,
+                'email' => $data['email'] ?? null,
+                'name' => $data['name'] ?? null,
+                'given_name' => $data['first_name'] ?? null,
+                'family_name' => $data['last_name'] ?? null,
+                'picture' => $data['picture']['data']['url'] ?? null,
+                'verified' => true,
+            ];
+        }
+
+        return null;
+    }
+
+    private function processSocialLogin(string $provider, array $userInfo, array $tokenResponse, Request $request)
+    {
+        $email = strtolower(trim((string) ($userInfo['email'] ?? '')));
+        $providerId = (string) ($userInfo['id'] ?? '');
+
+        if ($email === '' || $providerId === '') {
+            return response()->json(['message' => 'Invalid user information received.'], 400);
+        }
+
+        // Check if this social account is already linked
+        $existingSocial = \App\Models\CustomerSocialAccount::query()
+            ->where('csa_provider', $provider)
+            ->where('csa_provider_id', $providerId)
+            ->first();
+
+        if ($existingSocial) {
+            $customer = Customer::query()->where('c_userid', $existingSocial->csa_customer_id)->first();
+
+            if ($customer) {
+                // Update tokens
+                $existingSocial->update([
+                    'csa_token' => $tokenResponse['access_token'] ?? null,
+                    'csa_refresh_token' => $tokenResponse['refresh_token'] ?? $existingSocial->csa_refresh_token,
+                    'csa_token_expires_at' => isset($tokenResponse['expires_in'])
+                        ? now()->addSeconds((int) $tokenResponse['expires_in'])
+                        : null,
+                    'csa_provider_data' => $userInfo,
+                ]);
+
+                return $this->completeSocialLogin($customer, $request);
+            }
+        }
+
+        // Check if customer exists with this email
+        $customer = Customer::query()
+            ->whereRaw('LOWER(c_email) = ?', [$email])
+            ->first();
+
+        if ($customer) {
+            // Link social account to existing customer
+            \App\Models\CustomerSocialAccount::create([
+                'csa_customer_id' => $customer->c_userid,
+                'csa_provider' => $provider,
+                'csa_provider_id' => $providerId,
+                'csa_token' => $tokenResponse['access_token'] ?? null,
+                'csa_refresh_token' => $tokenResponse['refresh_token'] ?? null,
+                'csa_token_expires_at' => isset($tokenResponse['expires_in'])
+                    ? now()->addSeconds((int) $tokenResponse['expires_in'])
+                    : null,
+                'csa_provider_data' => $userInfo,
+            ]);
+
+            return $this->completeSocialLogin($customer, $request);
+        }
+
+        // Create new customer account
+        $customer = DB::transaction(function () use ($email, $userInfo) {
+            if (DB::connection()->getDriverName() === 'pgsql') {
+                DB::statement('LOCK TABLE tbl_customer IN EXCLUSIVE MODE');
+            }
+
+            $nextCustomerId = ((int) DB::table('tbl_customer')->whereNotNull('c_userid')->max('c_userid')) + 1;
+            $username = $this->generateUniqueUsernameFromEmail($email);
+
+            return Customer::create([
+                'c_userid' => $nextCustomerId,
+                'c_fname' => $userInfo['given_name'] ?? null,
+                'c_lname' => $userInfo['family_name'] ?? null,
+                'c_username' => $username,
+                'c_email' => $email,
+                'c_mobile' => '0',
+                'c_password' => \Illuminate\Support\Facades\Hash::make(\Illuminate\Support\Str::random(32)),
+                'c_password_pin' => '',
+                'c_password_change_required' => false,
+                'c_rank' => 0,
+                'c_accnt_status' => 0,
+                'c_lockstatus' => 0,
+                'c_sponsor' => 0,
+                'c_date_started' => now(),
+            ]);
+        });
+
+        // Create social account link
+        \App\Models\CustomerSocialAccount::create([
+            'csa_customer_id' => $customer->c_userid,
+            'csa_provider' => $provider,
+            'csa_provider_id' => $providerId,
+            'csa_token' => $tokenResponse['access_token'] ?? null,
+            'csa_refresh_token' => $tokenResponse['refresh_token'] ?? null,
+            'csa_token_expires_at' => isset($tokenResponse['expires_in'])
+                ? now()->addSeconds((int) $tokenResponse['expires_in'])
+                : null,
+            'csa_provider_data' => $userInfo,
+        ]);
+
+        return $this->completeSocialLogin($customer, $request);
+    }
+
+    private function generateUniqueUsernameFromEmail(string $email): string
+    {
+        $base = preg_replace('/[^a-zA-Z0-9]/', '', explode('@', $email)[0] ?? 'user');
+        $base = strtolower(substr($base, 0, 20));
+        $username = $base;
+        $counter = 1;
+
+        while (Customer::query()->where('c_username', $username)->exists()) {
+            $suffix = random_int(1000, 9999);
+            $username = substr($base, 0, 16) . $suffix;
+            $counter++;
+
+            if ($counter > 10) {
+                $username = 'user' . time() . random_int(1000, 9999);
+                break;
+            }
+        }
+
+        return $username;
+    }
+
+    private function completeSocialLogin(Customer $customer, Request $request)
+    {
+        if ((int) ($customer->c_lockstatus ?? 0) === 1) {
+            return response()->json([
+                'message' => 'Your account has been banned. Please contact support.',
+                'reason' => 'banned',
+            ], 403);
+        }
+
+        $tokenResult = $customer->createToken('auth_token');
+        $token = $tokenResult->plainTextToken;
+        $plainTokenId = (int) ($tokenResult->accessToken->id ?? 0);
+
+        try {
+            $this->recordLoginSession($customer, $request, $plainTokenId > 0 ? $plainTokenId : null);
+        } catch (\Throwable $e) {
+            report($e);
+        }
+
+        try {
+            MemberActivityLog::create([
+                'mal_customer_id' => (int) $customer->c_userid,
+                'mal_activity_type' => 'login',
+                'mal_action' => 'create',
+                'mal_description' => 'Member logged in via social authentication',
+                'mal_resource_type' => 'account',
+                'mal_resource_id' => (int) $customer->c_userid,
+                'mal_ip_address' => $request->ip(),
+                'mal_user_agent' => $request->userAgent(),
+                'mal_created_at' => now(),
+            ]);
+        } catch (\Throwable $e) {
+            // non-fatal
+        }
+
+        return response()->json([
+            'user' => $this->transformCustomer($customer),
+            'token' => $token,
+            'message' => 'Login successful.',
+        ]);
+    }
+
+    public function linkSocialAccount(Request $request, string $provider)
+    {
+        $allowedProviders = ['google', 'facebook'];
+
+        if (!in_array($provider, $allowedProviders, true)) {
+            return response()->json(['message' => 'Invalid provider.'], 400);
+        }
+
+        $validated = $request->validate([
+            'provider_id' => 'required|string',
+            'token' => 'required|string',
+            'email' => 'required|email',
+            'name' => 'nullable|string',
+        ]);
+
+        /** @var Customer $customer */
+        $customer = $request->user();
+
+        // Check if already linked
+        $existing = \App\Models\CustomerSocialAccount::query()
+            ->where('csa_provider', $provider)
+            ->where('csa_provider_id', $validated['provider_id'])
+            ->first();
+
+        if ($existing) {
+            if ((int) $existing->csa_customer_id === (int) $customer->c_userid) {
+                return response()->json(['message' => 'Account already linked.'], 200);
+            }
+
+            return response()->json(['message' => 'This social account is linked to another user.'], 409);
+        }
+
+        // Verify the token with provider (basic check)
+        $userInfo = $this->getUserInfoFromProvider($provider, $validated['token']);
+
+        if (!$userInfo || (string) $userInfo['id'] !== $validated['provider_id']) {
+            return response()->json(['message' => 'Invalid token or provider ID.'], 400);
+        }
+
+        // Validate that the social account email matches the user's account email
+        $socialEmail = strtolower(trim((string) ($userInfo['email'] ?? '')));
+        $userEmail = strtolower(trim((string) ($customer->c_email ?? '')));
+
+        if ($socialEmail !== $userEmail) {
+            return response()->json([
+                'message' => 'Email mismatch. The Google account email does not match your account email.',
+                'social_email' => $socialEmail,
+                'account_email' => $userEmail,
+            ], 400);
+        }
+
+        // Create social account link
+        \App\Models\CustomerSocialAccount::create([
+            'csa_customer_id' => $customer->c_userid,
+            'csa_provider' => $provider,
+            'csa_provider_id' => $validated['provider_id'],
+            'csa_token' => $validated['token'],
+            'csa_provider_data' => $userInfo,
+        ]);
+
+        return response()->json([
+            'message' => ucfirst($provider) . ' account linked successfully.',
+        ]);
+    }
+
+    public function unlinkSocialAccount(Request $request, string $provider)
+    {
+        $allowedProviders = ['google', 'facebook'];
+
+        if (!in_array($provider, $allowedProviders, true)) {
+            return response()->json(['message' => 'Invalid provider.'], 400);
+        }
+
+        /** @var Customer $customer */
+        $customer = $request->user();
+
+        $deleted = \App\Models\CustomerSocialAccount::query()
+            ->where('csa_customer_id', $customer->c_userid)
+            ->where('csa_provider', $provider)
+            ->delete();
+
+        if ($deleted === 0) {
+            return response()->json(['message' => 'No linked account found.'], 404);
+        }
+
+        return response()->json([
+            'message' => ucfirst($provider) . ' account unlinked successfully.',
+        ]);
+    }
+
+    public function getLinkedAccounts(Request $request)
+    {
+        /** @var Customer $customer */
+        $customer = $request->user();
+
+        $accounts = \App\Models\CustomerSocialAccount::query()
+            ->where('csa_customer_id', $customer->c_userid)
+            ->get(['csa_provider', 'created_at'])
+            ->map(function ($account) {
+                return [
+                    'provider' => $account->csa_provider,
+                    'linked_at' => $account->created_at->toIso8601String(),
+                ];
+            });
+
+        return response()->json([
+            'accounts' => $accounts,
+        ]);
+    }
+
+    // ========================
+    // Simplified Google Login
+    // ========================
+
+    public function googleLogin(Request $request)
+    {
+        $validated = $request->validate([
+            'id_token' => 'required|string',
+        ]);
+
+        try {
+            // Decode the JWT ID token (basic verification without Google Client)
+            $tokenParts = explode('.', $validated['id_token']);
+            
+            if (count($tokenParts) !== 3) {
+                return response()->json(['message' => 'Invalid ID token format.'], 400);
+            }
+
+            // Decode the payload
+            $payload = json_decode(base64_decode(str_replace(['-', '_'], ['+', '/'], $tokenParts[1])), true);
+
+            if (!$payload) {
+                return response()->json(['message' => 'Failed to decode ID token.'], 400);
+            }
+
+            // Basic validation
+            if (empty($payload['email']) || empty($payload['sub'])) {
+                return response()->json(['message' => 'Invalid ID token payload.'], 400);
+            }
+
+            // Check if token is expired
+            if (isset($payload['exp']) && $payload['exp'] < time()) {
+                return response()->json(['message' => 'ID token has expired.'], 400);
+            }
+
+            // Verify audience (your Google Client ID)
+            if (isset($payload['aud']) && $payload['aud'] !== config('services.google.client_id')) {
+                return response()->json(['message' => 'Invalid token audience.'], 400);
+            }
+
+            // Extract user information
+            $email = strtolower($payload['email']);
+            $googleId = $payload['sub'];
+            $name = $payload['name'] ?? null;
+            $firstName = $payload['given_name'] ?? null;
+            $lastName = $payload['family_name'] ?? null;
+            $picture = $payload['picture'] ?? null;
+
+            // Check if this Google account is already linked
+            $existingSocial = \App\Models\CustomerSocialAccount::query()
+                ->where('csa_provider', 'google')
+                ->where('csa_provider_id', $googleId)
+                ->first();
+
+            if ($existingSocial) {
+                $customer = Customer::query()->where('c_userid', $existingSocial->csa_customer_id)->first();
+
+                if ($customer) {
+                    // Update provider data
+                    $existingSocial->update([
+                        'csa_provider_data' => [
+                            'id' => $googleId,
+                            'email' => $email,
+                            'name' => $name,
+                            'given_name' => $firstName,
+                            'family_name' => $lastName,
+                            'picture' => $picture,
+                            'verified' => $payload['email_verified'] ?? false,
+                        ],
+                    ]);
+
+                    return $this->completeSocialLogin($customer, $request);
+                }
+            }
+
+            // Check if customer exists with this email
+            $customer = Customer::query()
+                ->whereRaw('LOWER(c_email) = ?', [$email])
+                ->first();
+
+            if ($customer) {
+                // Link Google account to existing customer
+                \App\Models\CustomerSocialAccount::create([
+                    'csa_customer_id' => $customer->c_userid,
+                    'csa_provider' => 'google',
+                    'csa_provider_id' => $googleId,
+                    'csa_token' => $validated['id_token'],
+                    'csa_provider_data' => [
+                        'id' => $googleId,
+                        'email' => $email,
+                        'name' => $name,
+                        'given_name' => $firstName,
+                        'family_name' => $lastName,
+                        'picture' => $picture,
+                        'verified' => $payload['email_verified'] ?? false,
+                    ],
+                ]);
+
+                return $this->completeSocialLogin($customer, $request);
+            }
+
+            // Create new customer account
+            $customer = DB::transaction(function () use ($email, $firstName, $lastName) {
+                if (DB::connection()->getDriverName() === 'pgsql') {
+                    DB::statement('LOCK TABLE tbl_customer IN EXCLUSIVE MODE');
+                }
+
+                $nextCustomerId = ((int) DB::table('tbl_customer')->whereNotNull('c_userid')->max('c_userid')) + 1;
+                $username = $this->generateUniqueUsernameFromEmail($email);
+
+                return Customer::create([
+                    'c_userid' => $nextCustomerId,
+                    'c_fname' => $firstName,
+                    'c_lname' => $lastName,
+                    'c_username' => $username,
+                    'c_email' => $email,
+                    'c_mobile' => '0',
+                    'c_password' => \Illuminate\Support\Facades\Hash::make(\Illuminate\Support\Str::random(32)),
+                    'c_password_pin' => '',
+                    'c_password_change_required' => false,
+                    'c_rank' => 0,
+                    'c_accnt_status' => 0,
+                    'c_lockstatus' => 0,
+                    'c_sponsor' => 0,
+                    'c_date_started' => now(),
+                ]);
+            });
+
+            // Create social account link
+            \App\Models\CustomerSocialAccount::create([
+                'csa_customer_id' => $customer->c_userid,
+                'csa_provider' => 'google',
+                'csa_provider_id' => $googleId,
+                'csa_token' => $validated['id_token'],
+                'csa_provider_data' => [
+                    'id' => $googleId,
+                    'email' => $email,
+                    'name' => $name,
+                    'given_name' => $firstName,
+                    'family_name' => $lastName,
+                    'picture' => $picture,
+                    'verified' => $payload['email_verified'] ?? false,
+                ],
+            ]);
+
+            return $this->completeSocialLogin($customer, $request);
+
+        } catch (\Throwable $e) {
+            return response()->json(['message' => 'Authentication failed.'], 500);
+        }
+    }
+
+    public function googleCallback(Request $request)
+    {
+        $validated = $request->validate([
+            'id_token' => 'required|string',
+        ]);
+
+        try {
+            $token = $validated['id_token'];
+            $tokenParts = explode('.', $token);
+            
+            // Check if it's an access token (starts with 'ya29.') or ID token (JWT with 3 parts)
+            if (strpos($token, 'ya29.') === 0) {
+                // This is an access token, use Google API to get user info
+                $response = \Http::get('https://www.googleapis.com/oauth2/v2/userinfo', [
+                    'access_token' => $token
+                ]);
+
+                if (!$response->successful()) {
+                    return response()->json(['message' => 'Invalid access token.'], 400);
+                }
+
+                $userInfo = $response->json();
+                
+                if (empty($userInfo['email'])) {
+                    return response()->json(['message' => 'Failed to get user information.'], 400);
+                }
+
+                // Extract user information from API response
+                $email = strtolower($userInfo['email']);
+                $googleId = $userInfo['id'];
+                $name = $userInfo['name'] ?? null;
+                $firstName = $userInfo['given_name'] ?? null;
+                $lastName = $userInfo['family_name'] ?? null;
+                $picture = $userInfo['picture'] ?? null;
+                
+            } elseif (count($tokenParts) === 3) {
+                // This is an ID token (JWT), decode it
+
+                // Decode the payload
+                $payload = json_decode(base64_decode(str_replace(['-', '_'], ['+', '/'], $tokenParts[1])), true);
+
+                if (!$payload) {
+                    return response()->json(['message' => 'Failed to decode ID token.'], 400);
+                }
+
+                // Basic validation
+                if (empty($payload['email']) || empty($payload['sub'])) {
+                    return response()->json(['message' => 'Invalid ID token payload.'], 400);
+                }
+
+                // Check if token is expired
+                if (isset($payload['exp']) && $payload['exp'] < time()) {
+                    return response()->json(['message' => 'ID token has expired.'], 400);
+                }
+
+                // Extract user information from ID token
+                $email = strtolower($payload['email']);
+                $googleId = $payload['sub'];
+                $name = $payload['name'] ?? null;
+                $firstName = $payload['given_name'] ?? null;
+                $lastName = $payload['family_name'] ?? null;
+                $picture = $payload['picture'] ?? null;
+                
+            } else {
+                return response()->json(['message' => 'Invalid token format.'], 400);
+            }
+
+            $socialAccount = \App\Models\CustomerSocialAccount::query()
+                ->where('csa_provider', 'google')
+                ->where('csa_provider_id', $googleId)
+                ->first();
+
+            if (!$socialAccount) {
+                return response()->json([
+                    'message' => 'No Google account found. Please link your Google account first.',
+                    'error' => 'social_account_not_found'
+                ], 401);
+            }
+
+            $customer = Customer::query()->where('c_userid', $socialAccount->csa_customer_id)->first();
+
+            if (!$customer) {
+                return response()->json(['message' => 'Customer account not found.'], 401);
+            }
+
+            // Update the social account with latest data
+            $socialAccount->update([
+                'csa_token' => $validated['id_token'],
+                'csa_provider_data' => [
+                    'id' => $googleId,
+                    'email' => $email,
+                    'name' => $name,
+                    'given_name' => $firstName,
+                    'family_name' => $lastName,
+                    'picture' => $picture,
+                    'verified' => $payload['email_verified'] ?? false,
+                ],
+            ]);
+
+            return $this->completeSocialLogin($customer, $request);
+
+        } catch (\Throwable $e) {
+            return response()->json(['message' => 'Authentication failed.'], 500);
+        }
+    }
+
 }
