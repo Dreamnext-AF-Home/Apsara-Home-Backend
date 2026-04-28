@@ -661,6 +661,11 @@ class AuthController extends Controller
 
     public function forgotPassword(Request $request)
     {
+        $turnstileToken = trim((string) $request->input('cf_turnstile_response', ''));
+        if (!(new \App\Services\TurnstileService())->verifyForgotPassword($turnstileToken, (string) $request->ip())) {
+            return response()->json(['message' => 'Bot verification failed.'], 422);
+        }
+
         $validated = $request->validate([
             'email' => 'required|email',
         ]);
