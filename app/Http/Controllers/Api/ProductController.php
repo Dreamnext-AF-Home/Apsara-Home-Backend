@@ -162,6 +162,10 @@ class ProductController extends Controller
                 'r.pr_id',
                 'r.pr_rating',
                 'r.pr_review',
+                'r.pr_image_url',
+                'r.pr_video_url',
+                'r.pr_image_urls',
+                'r.pr_video_urls',
                 'r.created_at',
                 'c.c_username',
                 'c.c_fname',
@@ -180,11 +184,36 @@ class ProductController extends Controller
                 if ($createdAt instanceof \DateTimeInterface) {
                     $createdAt = $createdAt->format('Y-m-d H:i:s');
                 }
+                $imageUrls = [];
+                if (is_string($row->pr_image_urls) && trim($row->pr_image_urls) !== '') {
+                    $decoded = json_decode($row->pr_image_urls, true);
+                    if (is_array($decoded)) {
+                        $imageUrls = array_values(array_filter(array_map(static fn ($item) => is_string($item) ? trim($item) : '', $decoded)));
+                    }
+                }
+                if (empty($imageUrls) && ! empty($row->pr_image_url)) {
+                    $imageUrls = [(string) $row->pr_image_url];
+                }
+
+                $videoUrls = [];
+                if (is_string($row->pr_video_urls) && trim($row->pr_video_urls) !== '') {
+                    $decoded = json_decode($row->pr_video_urls, true);
+                    if (is_array($decoded)) {
+                        $videoUrls = array_values(array_filter(array_map(static fn ($item) => is_string($item) ? trim($item) : '', $decoded)));
+                    }
+                }
+                if (empty($videoUrls) && ! empty($row->pr_video_url)) {
+                    $videoUrls = [(string) $row->pr_video_url];
+                }
 
                 return [
                     'id' => (int) $row->pr_id,
                     'rating' => (int) $row->pr_rating,
                     'review' => (string) $row->pr_review,
+                    'review_image' => $imageUrls[0] ?? null,
+                    'review_video' => $videoUrls[0] ?? null,
+                    'review_images' => $imageUrls,
+                    'review_videos' => $videoUrls,
                     'customer_name' => $displayName,
                     'customer_avatar' => $row->c_avatar_url ?: null,
                     'created_at' => $createdAt ? (string) $createdAt : null,

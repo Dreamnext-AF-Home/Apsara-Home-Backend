@@ -15,5 +15,14 @@ class ProductReview extends Model
         'pr_order_id',
         'pr_rating',
         'pr_review',
+        'pr_image_url',
+        'pr_video_url',
+        'pr_image_urls',
+        'pr_video_urls',
+    ];
+
+    protected $casts = [
+        'pr_image_urls' => 'array',
+        'pr_video_urls' => 'array',
     ];
 }
