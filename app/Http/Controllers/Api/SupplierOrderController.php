@@ -7,6 +7,7 @@ use App\Models\CheckoutHistory;
 use App\Models\ProductBrand;
 use App\Models\Supplier;
 use App\Models\SupplierUser;
+use App\Support\DirectReferralCommission;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -220,6 +221,16 @@ class SupplierOrderController extends Controller
             );
             $order->ch_shipment_payload = $payload;
             $order->save();
+
+            if ($status === 'delivered') {
+                DirectReferralCommission::releaseAvailableForOrder($order, null);
+            } elseif (in_array($status, ['cancelled', 'returned'], true)) {
+                DirectReferralCommission::cancelPendingForOrder(
+                    $order,
+                    null,
+                    'Direct referral commission cancelled because the supplier marked the order as ' . $status . '.'
+                );
+            }
         });
 
         return response()->json([
@@ -282,6 +293,16 @@ class SupplierOrderController extends Controller
             );
             $order->ch_shipment_payload = $payload;
             $order->save();
+
+            if ($shipmentStatus === 'delivered') {
+                DirectReferralCommission::releaseAvailableForOrder($order, null);
+            } elseif (in_array($shipmentStatus, ['failed_delivery', 'cancelled', 'returned_to_sender'], true)) {
+                DirectReferralCommission::cancelPendingForOrder(
+                    $order,
+                    null,
+                    'Direct referral commission cancelled because the supplier shipment status became ' . $shipmentStatus . '.'
+                );
+            }
         });
 
         return response()->json([
