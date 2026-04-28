@@ -48,12 +48,7 @@ class DatabaseExportService
         $timestamp = now()->format('Ymd-His');
         $filename = 'database-export-' . $timestamp . '.zip';
         $relativePath = self::EXPORT_DIR . '/' . $filename;
-        $tempBase = tempnam(sys_get_temp_dir(), 'afhome_db_export_');
-        if ($tempBase === false) {
-            throw new RuntimeException('Failed to initialize temporary export file.');
-        }
-        $tempZipPath = $tempBase . '.zip';
-        @unlink($tempBase);
+        $tempZipPath = $this->createTempFilePath('afhome_db_export_');
 
         $zip = new ZipArchive();
         $zipStatus = $zip->open($tempZipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE);
@@ -65,63 +60,71 @@ class DatabaseExportService
         $previewCsv = '';
         $previewTable = '';
         $totalRows = 0;
+        $tableCsvTempPaths = [];
 
-        foreach ($tables as $table) {
-            $rows = DB::table($table)->get()->map(
-                static fn (object $row): array => (array) $row
-            )->all();
+        try {
+            foreach ($tables as $table) {
+                [$tableCsvPath, $rowCount, $tablePreview] = $this->buildTableCsvTempFile($table);
+                $tableCsvTempPaths[] = $tableCsvPath;
+                $totalRows += $rowCount;
 
-            $rowCount = count($rows);
-            $totalRows += $rowCount;
-            $csv = $this->buildCsvFromRows($rows);
+                if ($previewCsv === '') {
+                    $previewCsv = $tablePreview;
+                    $previewTable = $table;
+                }
 
-            if ($previewCsv === '') {
-                $previewCsv = $csv;
-                $previewTable = $table;
-            }
-
-            $zip->addFromString($table . '.csv', $csv);
-            $tableSummaries[] = [
-                'name' => $table,
-                'row_count' => $rowCount,
-            ];
-        }
-
-        $summaryCsv = $this->buildCsvFromRows($tableSummaries);
-        $zip->addFromString('_summary.csv', $summaryCsv);
-
-        $invoiceFiles = $this->collectExpenseInvoiceFiles();
-        foreach ($invoiceFiles as $invoiceFile) {
-            if (($invoiceFile['exists'] ?? 0) !== 1) {
-                continue;
-            }
-
-            $absolutePath = $invoiceFile['absolute_path'] ?? null;
-            $zipPath = $invoiceFile['zip_path'] ?? null;
-            if (! is_string($absolutePath) || ! is_string($zipPath) || $absolutePath === '' || $zipPath === '') {
-                continue;
-            }
-
-            if (is_file($absolutePath)) {
-                $zip->addFile($absolutePath, $zipPath);
-            }
-        }
-
-        $invoiceFileSummary = array_map(
-            static function (array $row): array {
-                return [
-                    'invoice_url' => $row['invoice_url'] ?? '',
-                    'public_path' => $row['public_path'] ?? '',
-                    'zip_path' => $row['zip_path'] ?? '',
-                    'exists' => $row['exists'] ?? 0,
-                    'size_bytes' => $row['size_bytes'] ?? 0,
-                    'note' => $row['note'] ?? '',
+                $zip->addFile($tableCsvPath, $table . '.csv');
+                $tableSummaries[] = [
+                    'name' => $table,
+                    'row_count' => $rowCount,
                 ];
-            },
-            $invoiceFiles
-        );
-        $zip->addFromString('_expense_invoice_files.csv', $this->buildCsvFromRows($invoiceFileSummary));
-        $zip->close();
+            }
+
+            $summaryCsv = $this->buildCsvFromRows($tableSummaries);
+            $zip->addFromString('_summary.csv', $summaryCsv);
+
+            $invoiceFiles = $this->collectExpenseInvoiceFiles();
+            foreach ($invoiceFiles as $invoiceFile) {
+                if (($invoiceFile['exists'] ?? 0) !== 1) {
+                    continue;
+                }
+
+                $absolutePath = $invoiceFile['absolute_path'] ?? null;
+                $zipPath = $invoiceFile['zip_path'] ?? null;
+                if (! is_string($absolutePath) || ! is_string($zipPath) || $absolutePath === '' || $zipPath === '') {
+                    continue;
+                }
+
+                if (is_file($absolutePath)) {
+                    $zip->addFile($absolutePath, $zipPath);
+                }
+            }
+
+            $invoiceFileSummary = array_map(
+                static function (array $row): array {
+                    return [
+                        'invoice_url' => $row['invoice_url'] ?? '',
+                        'public_path' => $row['public_path'] ?? '',
+                        'zip_path' => $row['zip_path'] ?? '',
+                        'exists' => $row['exists'] ?? 0,
+                        'size_bytes' => $row['size_bytes'] ?? 0,
+                        'note' => $row['note'] ?? '',
+                    ];
+                },
+                $invoiceFiles
+            );
+            $zip->addFromString('_expense_invoice_files.csv', $this->buildCsvFromRows($invoiceFileSummary));
+
+            $closeStatus = $zip->close();
+            if ($closeStatus !== true) {
+                @unlink($tempZipPath);
+                throw new RuntimeException('Failed to finalize export archive.');
+            }
+        } finally {
+            foreach ($tableCsvTempPaths as $tempCsvPath) {
+                @unlink($tempCsvPath);
+            }
+        }
 
         $tempStream = fopen($tempZipPath, 'r');
         if (! is_resource($tempStream)) {
@@ -150,6 +153,77 @@ class DatabaseExportService
             'preview_table' => $previewTable,
             'preview_csv' => $previewCsv,
         ];
+    }
+
+    /**
+     * @return array{0: string, 1: int, 2: string}
+     */
+    private function buildTableCsvTempFile(string $table): array
+    {
+        $columns = Schema::getColumnListing($table);
+        $tempCsvPath = $this->createTempFilePath('afhome_db_table_');
+
+        $stream = fopen($tempCsvPath, 'w');
+        if (! is_resource($stream)) {
+            @unlink($tempCsvPath);
+            throw new RuntimeException('Failed to initialize table export stream.');
+        }
+
+        $rowCount = 0;
+
+        if (empty($columns)) {
+            fputcsv($stream, ['message']);
+            fputcsv($stream, ['No rows']);
+        } else {
+            fputcsv($stream, $columns);
+
+            foreach (DB::table($table)->select($columns)->cursor() as $row) {
+                $line = [];
+                $rowData = (array) $row;
+                foreach ($columns as $column) {
+                    $line[] = $this->normalizeCsvValue($rowData[$column] ?? null);
+                }
+                fputcsv($stream, $line);
+                $rowCount++;
+            }
+        }
+
+        fclose($stream);
+
+        $preview = file_get_contents($tempCsvPath, false, null, 0, 50000);
+        $previewCsv = is_string($preview) ? $preview : '';
+
+        return [$tempCsvPath, $rowCount, $previewCsv];
+    }
+
+    private function createTempFilePath(string $prefix): string
+    {
+        $tempDir = $this->resolveTempDirectoryPath();
+        $basePath = tempnam($tempDir, $prefix);
+        if ($basePath === false) {
+            throw new RuntimeException('Failed to initialize temporary export file.');
+        }
+
+        return $basePath;
+    }
+
+    private function resolveTempDirectoryPath(): string
+    {
+        $systemTempPath = sys_get_temp_dir();
+        if (is_dir($systemTempPath) && is_writable($systemTempPath)) {
+            return $systemTempPath;
+        }
+
+        $storageTmpPath = storage_path('app/tmp');
+        if (! is_dir($storageTmpPath)) {
+            @mkdir($storageTmpPath, 0775, true);
+        }
+
+        if (is_dir($storageTmpPath) && is_writable($storageTmpPath)) {
+            return $storageTmpPath;
+        }
+
+        throw new RuntimeException('No writable temporary directory is available for database export.');
     }
 
     private function buildCsvFromRows(array $rows): string
@@ -181,13 +255,7 @@ class DatabaseExportService
             $line = [];
             foreach ($headers as $header) {
                 $value = $row[$header] ?? null;
-                if (is_bool($value)) {
-                    $line[] = $value ? '1' : '0';
-                } elseif (is_array($value) || is_object($value)) {
-                    $line[] = json_encode($value, JSON_UNESCAPED_SLASHES);
-                } else {
-                    $line[] = $value;
-                }
+                $line[] = $this->normalizeCsvValue($value);
             }
             fputcsv($stream, $line);
         }
@@ -197,6 +265,19 @@ class DatabaseExportService
         fclose($stream);
 
         return is_string($csv) ? $csv : '';
+    }
+
+    private function normalizeCsvValue(mixed $value): mixed
+    {
+        if (is_bool($value)) {
+            return $value ? '1' : '0';
+        }
+
+        if (is_array($value) || is_object($value)) {
+            return json_encode($value, JSON_UNESCAPED_SLASHES);
+        }
+
+        return $value;
     }
 
     private function collectExpenseInvoiceFiles(): array

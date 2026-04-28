@@ -9,9 +9,8 @@ class GoogleDriveUploadService
 {
     public function isConfigured(): bool
     {
-        return $this->serviceAccountEmail() !== ''
-            && $this->serviceAccountPrivateKey() !== ''
-            && $this->folderId() !== '';
+        return $this->folderId() !== ''
+            && ($this->hasOauthConfig() || $this->hasServiceAccountConfig());
     }
 
     /**
@@ -70,6 +69,40 @@ class GoogleDriveUploadService
 
     private function fetchAccessToken(): string
     {
+        if ($this->hasOauthConfig()) {
+            return $this->fetchAccessTokenViaOauthRefreshToken();
+        }
+
+        if ($this->hasServiceAccountConfig()) {
+            return $this->fetchAccessTokenViaServiceAccount();
+        }
+
+        throw new RuntimeException('Google Drive auth is not configured.');
+    }
+
+    private function fetchAccessTokenViaOauthRefreshToken(): string
+    {
+        $tokenResponse = Http::asForm()->post('https://oauth2.googleapis.com/token', [
+            'grant_type' => 'refresh_token',
+            'client_id' => $this->oauthClientId(),
+            'client_secret' => $this->oauthClientSecret(),
+            'refresh_token' => $this->oauthRefreshToken(),
+        ]);
+
+        if (! $tokenResponse->successful()) {
+            throw new RuntimeException('Failed to fetch Google access token via OAuth refresh token: ' . $tokenResponse->status() . ' ' . $tokenResponse->body());
+        }
+
+        $accessToken = (string) ($tokenResponse->json('access_token') ?? '');
+        if ($accessToken === '') {
+            throw new RuntimeException('Google OAuth access token is empty.');
+        }
+
+        return $accessToken;
+    }
+
+    private function fetchAccessTokenViaServiceAccount(): string
+    {
         $now = time();
         $header = ['alg' => 'RS256', 'typ' => 'JWT'];
         $payload = [
@@ -116,6 +149,19 @@ class GoogleDriveUploadService
         return $accessToken;
     }
 
+    private function hasOauthConfig(): bool
+    {
+        return $this->oauthClientId() !== ''
+            && $this->oauthClientSecret() !== ''
+            && $this->oauthRefreshToken() !== '';
+    }
+
+    private function hasServiceAccountConfig(): bool
+    {
+        return $this->serviceAccountEmail() !== ''
+            && $this->serviceAccountPrivateKey() !== '';
+    }
+
     private function folderId(): string
     {
         $rawId = trim((string) config('services.google_drive.folder_id', ''));
@@ -147,9 +193,23 @@ class GoogleDriveUploadService
         return trim($normalized);
     }
 
+    private function oauthClientId(): string
+    {
+        return trim((string) config('services.google_drive.oauth_client_id', ''));
+    }
+
+    private function oauthClientSecret(): string
+    {
+        return trim((string) config('services.google_drive.oauth_client_secret', ''));
+    }
+
+    private function oauthRefreshToken(): string
+    {
+        return trim((string) config('services.google_drive.oauth_refresh_token', ''));
+    }
+
     private function base64UrlEncode(string $value): string
     {
         return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
     }
 }
-

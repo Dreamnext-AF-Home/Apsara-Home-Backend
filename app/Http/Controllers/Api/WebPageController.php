@@ -347,6 +347,10 @@ class WebPageController extends Controller
     public function exportDatabase(Request $request, DatabaseExportService $databaseExportService): JsonResponse
     {
         try {
+            if (function_exists('set_time_limit')) {
+                @set_time_limit(300);
+            }
+
             $export = $databaseExportService->exportDatabaseZip();
 
             return response()->json([
