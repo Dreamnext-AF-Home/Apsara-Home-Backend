@@ -11,6 +11,8 @@ class Expense extends Model
     protected $fillable = [
         'e_title',
         'category_id',
+        'sub_category_name',
+        'invoice_url',
         'amount',
         'intent',
         'transaction_date',

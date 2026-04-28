@@ -20,6 +20,156 @@ class MemberController extends Controller
 {
     private const MEMBERS_CACHE_VERSION_KEY = 'admin:members:cache-version';
 
+    public function topEarners(Request $request): JsonResponse
+    {
+        $search = trim((string) $request->query('q', ''));
+        $tier = trim((string) $request->query('tier', ''));
+        $sort = trim((string) $request->query('sort', 'earnings'));
+        $allowedSorts = ['earnings', 'orders', 'referrals', 'total_spent'];
+
+        if (!in_array($sort, $allowedSorts, true)) {
+            $sort = 'earnings';
+        }
+
+        $cacheVersion = $this->membersCacheVersion();
+        $cacheKey = 'admin:members:top-earners:' . md5(json_encode([
+            'v' => $cacheVersion,
+            'q' => $search,
+            'tier' => $tier,
+            'sort' => $sort,
+        ]));
+
+        $payloadBuilder = function () use ($search, $tier, $sort) {
+            $paidStatuses = ['paid', 'succeeded', 'success'];
+            $members = Customer::query()
+                ->select([
+                    'tbl_customer.c_userid',
+                    'tbl_customer.c_username',
+                    'tbl_customer.c_fname',
+                    'tbl_customer.c_mname',
+                    'tbl_customer.c_lname',
+                    'tbl_customer.c_email',
+                    'tbl_customer.c_rank',
+                    'tbl_customer.c_totalpair',
+                    'tbl_customer.c_gpv',
+                    'tbl_customer.c_totalincome',
+                    'tbl_customer.c_date_started',
+                    'tbl_customer.c_last_logindate',
+                    'tbl_customer.c_lockstatus',
+                    'tbl_customer.c_accnt_status',
+                ])
+                ->when($search !== '', fn ($query) => $this->applyMemberSearch($query, $search))
+                ->when($tier !== '', function ($query) use ($tier) {
+                    if ($tier === 'Lifestyle Elite') {
+                        $query->where('tbl_customer.c_rank', '>=', 5);
+                        return;
+                    }
+
+                    if ($tier === 'Lifestyle Consultant') {
+                        $query->where('tbl_customer.c_rank', 4);
+                        return;
+                    }
+
+                    if ($tier === 'Home Stylist') {
+                        $query->where('tbl_customer.c_rank', 3);
+                        return;
+                    }
+
+                    if ($tier === 'Home Builder') {
+                        $query->where('tbl_customer.c_rank', 2);
+                        return;
+                    }
+
+                    if ($tier === 'Home Starter') {
+                        $query->where('tbl_customer.c_rank', '<=', 1);
+                    }
+                })
+                ->get();
+
+            $memberIds = $members->pluck('c_userid')->map(fn ($id) => (int) $id)->all();
+            $referralCounts = empty($memberIds)
+                ? collect()
+                : Customer::query()
+                    ->selectRaw('c_sponsor, COUNT(*) as total')
+                    ->whereIn('c_sponsor', $memberIds)
+                    ->groupBy('c_sponsor')
+                    ->pluck('total', 'c_sponsor');
+            $orderMetrics = empty($memberIds)
+                ? collect()
+                : DB::table('tbl_checkout_history')
+                    ->selectRaw('ch_customer_id, COUNT(*) as total_orders, COALESCE(SUM(ch_amount), 0) as total_spent')
+                    ->whereIn('ch_customer_id', $memberIds)
+                    ->whereIn('ch_status', $paidStatuses)
+                    ->groupBy('ch_customer_id')
+                    ->get()
+                    ->keyBy('ch_customer_id');
+
+            $rows = $members
+                ->map(function (Customer $customer) use ($orderMetrics, $referralCounts): array {
+                    $customerId = (int) $customer->c_userid;
+                    $metrics = $orderMetrics->get($customerId);
+
+                    return [
+                        'id' => $customerId,
+                        'name' => $this->displayName($customer),
+                        'email' => (string) ($customer->c_email ?? ''),
+                        'tier' => $this->mapTier((int) ($customer->c_rank ?? 0)),
+                        'earnings' => (float) ($customer->c_totalincome ?? 0),
+                        'orders' => (int) ($metrics->total_orders ?? 0),
+                        'referrals' => (int) ($referralCounts[$customerId] ?? 0),
+                        'status' => $this->mapStatus(
+                            (int) ($customer->c_lockstatus ?? 0),
+                            (int) ($customer->c_accnt_status ?? 0)
+                        ),
+                        'joinedAt' => $this->formatDate($customer->c_date_started),
+                        'lastActive' => $this->formatDate($customer->c_last_logindate) ?: $this->formatDate($customer->c_date_started),
+                        'totalSpent' => (float) ($metrics->total_spent ?? 0),
+                    ];
+                })
+                ->sort(function (array $left, array $right) use ($sort) {
+                    $leftMetric = match ($sort) {
+                        'orders' => (int) ($left['orders'] ?? 0),
+                        'referrals' => (int) ($left['referrals'] ?? 0),
+                        'total_spent' => (float) ($left['totalSpent'] ?? 0),
+                        default => (float) ($left['earnings'] ?? 0),
+                    };
+
+                    $rightMetric = match ($sort) {
+                        'orders' => (int) ($right['orders'] ?? 0),
+                        'referrals' => (int) ($right['referrals'] ?? 0),
+                        'total_spent' => (float) ($right['totalSpent'] ?? 0),
+                        default => (float) ($right['earnings'] ?? 0),
+                    };
+
+                    if ($leftMetric === $rightMetric) {
+                        return ((int) ($right['id'] ?? 0)) <=> ((int) ($left['id'] ?? 0));
+                    }
+
+                    return $rightMetric <=> $leftMetric;
+                })
+                ->values();
+
+            return [
+                'summary' => [
+                    'totalEarnings' => (float) $rows->sum('earnings'),
+                    'activeEarners' => (int) $rows->filter(fn (array $row) => (float) ($row['earnings'] ?? 0) > 0)->count(),
+                    'avgEarnings' => $rows->count() > 0 ? (float) ($rows->sum('earnings') / $rows->count()) : 0.0,
+                    'topEarnerAmount' => (float) ($rows->first()['earnings'] ?? 0),
+                    'totalMembers' => (int) $rows->count(),
+                ],
+                'members' => $rows->all(),
+            ];
+        };
+
+        try {
+            $payload = Cache::remember($cacheKey, now()->addMinutes(2), $payloadBuilder);
+        } catch (\Throwable $exception) {
+            $payload = $payloadBuilder();
+        }
+
+        return response()->json($payload);
+    }
+
     public function index(Request $request): JsonResponse
     {
         $perPage = (int) $request->integer('per_page', 25);
@@ -346,9 +496,10 @@ class MemberController extends Controller
         return response()->json($payload);
     }
 
-    public function stats(): JsonResponse
+    public function stats(Request $request): JsonResponse
     {
-        $cacheKey = 'admin:members:stats:' . $this->membersCacheVersion();
+        $period = $this->normalizeMemberStatsPeriod((string) $request->query('period', '7d'));
+        $cacheKey = 'admin:members:stats:' . $this->membersCacheVersion() . ':' . $period;
         try {
             $cached = Cache::get($cacheKey);
         } catch (\Throwable $exception) {
@@ -363,13 +514,13 @@ class MemberController extends Controller
             $lock = Cache::lock('lock:' . $cacheKey, 30);
             $hasLock = $lock->get();
         } catch (\Throwable $exception) {
-            $payload = $this->buildStatsPayload();
+            $payload = $this->buildStatsPayload($period);
             return response()->json($payload);
         }
 
         if ($hasLock) {
             try {
-                $payload = $this->buildStatsPayload();
+                $payload = $this->buildStatsPayload($period);
                 try {
                     Cache::put($cacheKey, $payload, now()->addMinutes(10));
                 } catch (\Throwable $exception) {
@@ -394,7 +545,7 @@ class MemberController extends Controller
         }
 
         // Fallback in case lock holder failed; still return real data.
-        $payload = $this->buildStatsPayload();
+        $payload = $this->buildStatsPayload($period);
         try {
             Cache::put($cacheKey, $payload, now()->addMinutes(10));
         } catch (\Throwable $exception) {
@@ -409,6 +560,7 @@ class MemberController extends Controller
         $perPage = (int) $request->integer('per_page', 25);
         $perPage = max(1, min($perPage, 100));
         $search = trim((string) $request->query('q', ''));
+        $period = $this->normalizeMemberStatsPeriod((string) $request->query('period', '7d'));
 
         $allowedStats = [
             'total_members',
@@ -434,9 +586,10 @@ class MemberController extends Controller
             'page' => (int) $request->integer('page', 1),
             'per_page' => $perPage,
             'q' => $search,
+            'period' => $period,
         ]));
 
-        $payloadBuilder = function () use ($perPage, $stat, $search) {
+        $payloadBuilder = function () use ($perPage, $stat, $search, $period) {
             $query = Customer::query()
                 ->select([
                     'tbl_customer.c_userid',
@@ -497,11 +650,11 @@ class MemberController extends Controller
                 $query->where('tbl_customer.c_lockstatus', 1)
                     ->orderByDesc('tbl_customer.c_userid');
             } elseif ($stat === 'new_members') {
-                $title = 'New Members This 7 Days';
+                $title = 'New Members ' . $this->memberStatsPeriodLabel($period);
                 $metricLabel = 'Joined';
                 $metricResolver = fn (Customer $customer, int $referrals): string => $this->formatDateTime($customer->c_date_started) ?: 'Unknown date';
                 $query->whereNotNull('tbl_customer.c_date_started')
-                    ->whereRaw("tbl_customer.c_date_started >= (CURRENT_DATE - INTERVAL '6 days')")
+                    ->whereRaw($this->memberStatsPeriodSql($period))
                     ->orderByDesc('tbl_customer.c_date_started')
                     ->orderByDesc('tbl_customer.c_userid');
             } elseif ($stat === 'total_spent') {
@@ -1027,8 +1180,9 @@ class MemberController extends Controller
         return response()->json($payload);
     }
 
-    private function buildStatsPayload(): array
+    private function buildStatsPayload(string $period = '7d'): array
     {
+        $normalizedPeriod = $this->normalizeMemberStatsPeriod($period);
         $summary = DB::table('tbl_customer')
             ->selectRaw("
                 COUNT(*)::bigint AS total,
@@ -1037,7 +1191,7 @@ class MemberController extends Controller
                 COUNT(*) FILTER (WHERE c_lockstatus = 1)::bigint AS blocked,
                 COUNT(*) FILTER (
                     WHERE c_date_started IS NOT NULL
-                    AND c_date_started >= (CURRENT_DATE - INTERVAL '6 days')
+                    AND {$this->memberStatsPeriodSql($normalizedPeriod, 'c_date_started')}
                 )::bigint AS new_members,
                 COALESCE(SUM(c_gpv), 0)::numeric AS total_spent,
                 COALESCE(SUM(c_totalincome), 0)::numeric AS total_earnings,
@@ -1051,10 +1205,44 @@ class MemberController extends Controller
             'pending' => (int) ($summary->pending ?? 0),
             'blocked' => (int) ($summary->blocked ?? 0),
             'newMembers' => (int) ($summary->new_members ?? 0),
+            'newMembersPeriod' => $normalizedPeriod,
+            'newMembersLabel' => $this->memberStatsPeriodLabel($normalizedPeriod),
             'totalSpent' => (float) ($summary->total_spent ?? 0),
             'totalEarnings' => (float) ($summary->total_earnings ?? 0),
             'totalReferrals' => (int) ($summary->total_referrals ?? 0),
         ];
+    }
+
+    private function normalizeMemberStatsPeriod(string $period): string
+    {
+        return match (strtolower(trim($period))) {
+            '30d' => '30d',
+            'last_month' => 'last_month',
+            '3m' => '3m',
+            default => '7d',
+        };
+    }
+
+    private function memberStatsPeriodLabel(string $period): string
+    {
+        return match ($this->normalizeMemberStatsPeriod($period)) {
+            '30d' => 'This 30 Days',
+            'last_month' => 'Last Month',
+            '3m' => 'Past 3 Months',
+            default => 'This 7 Days',
+        };
+    }
+
+    private function memberStatsPeriodSql(string $period, string $column = 'tbl_customer.c_date_started'): string
+    {
+        $columnRef = trim($column) !== '' ? $column : 'tbl_customer.c_date_started';
+
+        return match ($this->normalizeMemberStatsPeriod($period)) {
+            '30d' => "{$columnRef} >= (CURRENT_DATE - INTERVAL '29 days')",
+            'last_month' => "{$columnRef} >= date_trunc('month', CURRENT_DATE - INTERVAL '1 month') AND {$columnRef} < date_trunc('month', CURRENT_DATE)",
+            '3m' => "{$columnRef} >= (CURRENT_DATE - INTERVAL '3 months')",
+            default => "{$columnRef} >= (CURRENT_DATE - INTERVAL '6 days')",
+        };
     }
 
     private function makeTemporaryPassword(): string

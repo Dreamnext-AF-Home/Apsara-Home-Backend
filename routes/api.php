@@ -40,6 +40,7 @@ use App\Http\Controllers\Api\MemberTierController;
 use App\Http\Controllers\Api\MemberActivityLogController;
 use App\Http\Controllers\Api\LeadController;
 use App\Http\Controllers\Api\ShippingRateController;
+use App\Http\Controllers\Api\PasskeyAuthController;
 
 
 // Public auth routes
@@ -48,6 +49,8 @@ Route::prefix('auth')->group(function () {
     Route::middleware('throttle:auth')->group(function () {
         Route::post('/register', [AuthController::class, 'register']);
         Route::post('/login', [AuthController::class, 'login']);
+        Route::post('/passkeys/login/options', [PasskeyAuthController::class, 'loginOptions']);
+        Route::post('/passkeys/login/verify', [PasskeyAuthController::class, 'loginVerify']);
         Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
         Route::post('/reset-password', [AuthController::class, 'resetPassword']);
         Route::post('/login/mfa/respond', [AuthController::class, 'respondLoginMfa']);
@@ -97,6 +100,7 @@ Route::middleware('throttle:public')->group(function () {
     Route::get('/products/{id}/brand', [ProductController::class, 'brand']);
     Route::get('/products', [ProductController::class, 'index']);
     Route::get('/product-brands', [ProductBrandController::class, 'publicIndex']);
+    Route::get('/shipping-rates', [ShippingRateController::class, 'publicIndex']);
     Route::get('/web-pages/home', [WebPageController::class, 'home']);
     Route::get('/web-pages/adds-content', [AddsContentController::class, 'publicIndex']);
     Route::get('/web-pages/{type}', [WebPageController::class, 'publicIndex']);
@@ -149,6 +153,10 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::get('/search/history', [ProductController::class, 'getSearchHistory']);
     Route::delete('/search/history', [ProductController::class, 'clearSearchHistory']);
     Route::delete('/search/history/{id}', [ProductController::class, 'deleteSearchHistory']);
+    Route::get('/auth/passkeys', [PasskeyAuthController::class, 'index']);
+    Route::post('/auth/passkeys/register/options', [PasskeyAuthController::class, 'registerOptions']);
+    Route::post('/auth/passkeys/register/verify', [PasskeyAuthController::class, 'registerVerify']);
+    Route::delete('/auth/passkeys/{id}', [PasskeyAuthController::class, 'destroy']);
 
     // Customer Service / Conversations
     Route::get('/conversations', [CustomerConversationController::class, 'index']);
@@ -172,6 +180,7 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
 
 Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_admin,admin,csr'])->group(function () {
     Route::get('/admin/members', [MemberController::class, 'index']);
+    Route::get('/admin/members/top-earners', [MemberController::class, 'topEarners']);
     Route::get('/admin/members/stats', [MemberController::class, 'stats']);
     Route::get('/admin/members/stats/{stat}', [MemberController::class, 'statDetails']);
     Route::get('/admin/members/referrals', [MemberController::class, 'referralTree']);
@@ -226,6 +235,7 @@ Route::get('/admin/webpages/adds-content', [AddsContentController::class, 'index
     Route::put('/admin/products/{id}', [ProductController::class, 'update']);
     Route::delete('/admin/products/{id}', [ProductController::class, 'destroy']);
     Route::get('/admin/product-brands', [ProductBrandController::class, 'index']);
+    Route::get('/admin/suppliers/stats', [SupplierController::class, 'stats']);
     Route::get('/admin/suppliers', [SupplierController::class, 'index']);
     Route::get('/admin/suppliers/{id}/categories', [SupplierController::class, 'categories']);
     Route::get('/admin/supplier-users', [SupplierUserController::class, 'index']);

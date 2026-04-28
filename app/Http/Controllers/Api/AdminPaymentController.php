@@ -61,6 +61,34 @@ class AdminPaymentController extends Controller
             ->orderByDesc('tx_count')
             ->get();
 
+        $topMethodKeys = $paymentMethodRows
+            ->sortByDesc(fn ($row) => (float) ($row->total_amount ?? 0))
+            ->pluck('method_key')
+            ->map(fn ($value) => (string) $value)
+            ->filter()
+            ->take(3)
+            ->values()
+            ->all();
+
+        if (empty($topMethodKeys)) {
+            $topMethodKeys = ['unknown'];
+        }
+
+        $salesTrends = [
+            'series' => collect($topMethodKeys)->map(function (string $key, int $index): array {
+                $colors = ['#14b8a6', '#f97316', '#8b5cf6'];
+
+                return [
+                    'key' => $key,
+                    'label' => $this->formatPaymentMethod($key),
+                    'color' => $colors[$index] ?? '#64748b',
+                ];
+            })->values(),
+            'daily' => $this->buildSalesTrendSeries('daily', $topMethodKeys, $paidStatuses),
+            'monthly' => $this->buildSalesTrendSeries('monthly', $topMethodKeys, $paidStatuses),
+            'yearly' => $this->buildSalesTrendSeries('yearly', $topMethodKeys, $paidStatuses),
+        ];
+
         $recentTransactions = CheckoutHistory::query()
             ->orderByDesc(DB::raw('COALESCE(ch_paid_at, created_at)'))
             ->limit(8)
@@ -195,9 +223,9 @@ class AdminPaymentController extends Controller
             'released_requests' => (int) EncashmentRequest::query()
                 ->where('er_status', 'released')
                 ->count(),
-            'released_amount' => round((float) EncashmentRequest::query()
+            'released_amount' => round((float) (EncashmentRequest::query()
                 ->where('er_status', 'released')
-                ->sum('er_amount'), 2),
+                ->sum('er_amount') ?? 0), 2),
         ];
 
         return response()->json([
@@ -217,6 +245,7 @@ class AdminPaymentController extends Controller
                     'amount' => round((float) $row->total_amount, 2),
                 ];
             })->values(),
+            'sales_trends' => $salesTrends,
             'recent_transactions' => $recentTransactions,
             'voucher_summary' => $voucherSummary,
             'recent_vouchers' => $recentVouchers,
@@ -256,5 +285,92 @@ class AdminPaymentController extends Controller
         }
 
         return $normalized !== '' ? $normalized : 'unknown';
+    }
+
+    private function buildSalesTrendSeries(string $range, array $methodKeys, array $paidStatuses)
+    {
+        $now = now('Asia/Manila');
+        $bucketFormat = match ($range) {
+            'daily' => 'Y-m-d',
+            'monthly' => 'Y-m',
+            'yearly' => 'Y',
+            default => 'Y-m-d',
+        };
+
+        $labelFormat = match ($range) {
+            'daily' => 'j M',
+            'monthly' => 'M',
+            'yearly' => 'Y',
+            default => 'j M',
+        };
+
+        $steps = match ($range) {
+            'daily' => 7,
+            'monthly' => 6,
+            'yearly' => 6,
+            default => 7,
+        };
+
+        $maxOffset = $steps - 1;
+
+        $periodStarts = collect(range(0, $steps - 1))
+            ->map(function (int $index) use ($maxOffset, $now, $range) {
+                $offset = $maxOffset - $index;
+                return match ($range) {
+                    'daily' => $now->copy()->subDays($offset)->startOfDay(),
+                    'monthly' => $now->copy()->subMonths($offset)->startOfMonth(),
+                    'yearly' => $now->copy()->subYears($offset)->startOfYear(),
+                    default => $now->copy()->subDays($offset)->startOfDay(),
+                };
+            })
+            ->values();
+
+        $rangeStart = $periodStarts->first()?->copy() ?? $now->copy()->startOfDay();
+        $rangeEnd = match ($range) {
+            'daily' => $now->copy()->endOfDay(),
+            'monthly' => $now->copy()->endOfMonth(),
+            'yearly' => $now->copy()->endOfYear(),
+            default => $now->copy()->endOfDay(),
+        };
+
+        $rows = CheckoutHistory::query()
+            ->whereIn('ch_status', $paidStatuses)
+            ->whereBetween('ch_paid_at', [$rangeStart->copy()->utc(), $rangeEnd->copy()->utc()])
+            ->get([
+                'ch_amount',
+                'ch_payment_method',
+                'ch_paid_at',
+            ]);
+
+        $aggregated = [];
+
+        foreach ($rows as $row) {
+            $paidAt = $row->ch_paid_at ? \Illuminate\Support\Carbon::parse($row->ch_paid_at)->timezone('Asia/Manila') : null;
+            if (!$paidAt) {
+                continue;
+            }
+
+            $bucketKey = $paidAt->format($bucketFormat);
+            $methodKey = strtolower(trim((string) ($row->ch_payment_method ?? 'unknown')));
+            if (!in_array($methodKey, $methodKeys, true)) {
+                continue;
+            }
+
+            $aggregated[$bucketKey] ??= [];
+            $aggregated[$bucketKey][$methodKey] = round(($aggregated[$bucketKey][$methodKey] ?? 0) + (float) ($row->ch_amount ?? 0), 2);
+        }
+
+        return $periodStarts->map(function ($periodStart) use ($aggregated, $methodKeys, $bucketFormat, $labelFormat): array {
+            $bucketKey = $periodStart->format($bucketFormat);
+            $point = [
+                'time' => $periodStart->format($labelFormat),
+            ];
+
+            foreach ($methodKeys as $methodKey) {
+                $point[$methodKey] = round((float) ($aggregated[$bucketKey][$methodKey] ?? 0), 2);
+            }
+
+            return $point;
+        })->values();
     }
 }

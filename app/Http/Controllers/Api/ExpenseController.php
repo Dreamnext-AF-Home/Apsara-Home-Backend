@@ -9,6 +9,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
 
 class ExpenseController extends Controller
 {
@@ -33,6 +34,14 @@ class ExpenseController extends Controller
             'transaction_date' => $validated['transaction_date'],
             'status' => (int) ($validated['status'] ?? 1),
         ];
+
+        if ($this->hasExpenseColumn('sub_category_name')) {
+            $data['sub_category_name'] = substr(trim((string) ($validated['sub_category_name'] ?? '')), 0, 180);
+        }
+        if ($this->hasExpenseColumn('invoice_url') && array_key_exists('invoice_url', $validated)) {
+            $url = trim((string) ($validated['invoice_url'] ?? ''));
+            $data['invoice_url'] = $url !== '' ? substr($url, 0, 2000) : null;
+        }
 
         if ($createdBy !== null && $this->hasExpenseColumn('created_by_admin_id')) {
             $data['created_by_admin_id'] = $createdBy;
@@ -77,6 +86,44 @@ class ExpenseController extends Controller
         return null;
     }
 
+    private function getPublicDiskPathFromUrl(?string $url): ?string
+    {
+        $value = trim((string) $url);
+        if ($value === '') {
+            return null;
+        }
+
+        $path = parse_url($value, PHP_URL_PATH);
+        $path = is_string($path) ? trim($path) : $value;
+        if ($path === '') {
+            return null;
+        }
+
+        $marker = '/storage/';
+        $position = strpos($path, $marker);
+        if ($position === false) {
+            if (str_starts_with($path, 'storage/')) {
+                return ltrim(substr($path, strlen('storage/')), '/');
+            }
+            return null;
+        }
+
+        $relative = substr($path, $position + strlen($marker));
+        return ltrim((string) $relative, '/');
+    }
+
+    private function deletePublicInvoiceFile(?string $url): void
+    {
+        $relativePath = $this->getPublicDiskPathFromUrl($url);
+        if (! $relativePath) {
+            return;
+        }
+
+        if (Storage::disk('public')->exists($relativePath)) {
+            Storage::disk('public')->delete($relativePath);
+        }
+    }
+
     public function summary(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -95,20 +142,25 @@ class ExpenseController extends Controller
 
         $statusColumn = $this->resolveExpenseStatusColumn();
 
-        $query = DB::table('tbl_expenses');
+        $query = DB::table('tbl_expenses')
+            ->join('tbl_expense_categories', 'tbl_expense_categories.id', '=', 'tbl_expenses.category_id');
+        $qualifiedDateColumn = 'tbl_expenses.' . $dateColumn;
+        $qualifiedAmountColumn = 'tbl_expenses.' . $amountColumn;
+        $qualifiedStatusColumn = $statusColumn ? 'tbl_expenses.' . $statusColumn : null;
+
         if (!empty($validated['from'])) {
-            $query->whereDate($dateColumn, '>=', $validated['from']);
+            $query->whereDate($qualifiedDateColumn, '>=', $validated['from']);
         }
         if (!empty($validated['to'])) {
-            $query->whereDate($dateColumn, '<=', $validated['to']);
+            $query->whereDate($qualifiedDateColumn, '<=', $validated['to']);
         }
-        if ($statusColumn) {
+        if ($qualifiedStatusColumn) {
             $status = array_key_exists('status', $validated) ? (int) $validated['status'] : 1;
-            $query->where($statusColumn, '=', $status);
+            $query->where($qualifiedStatusColumn, '=', $status);
         }
 
         $count = (clone $query)->count();
-        $total = (float) ((clone $query)->sum($amountColumn) ?? 0);
+        $total = (float) ((clone $query)->sum($qualifiedAmountColumn) ?? 0);
 
         return response()->json([
             'count' => (int) $count,
@@ -121,8 +173,12 @@ class ExpenseController extends Controller
     public function index(Request $request): JsonResponse
     {
         $search = trim((string) $request->query('q', ''));
+        $categoryId = (int) $request->query('category_id', 0);
         $dateFrom = trim((string) $request->query('date_from', ''));
         $dateTo = trim((string) $request->query('date_to', ''));
+        $page = max(1, (int) $request->query('page', 1));
+        $perPage = max(10, (int) $request->query('per_page', 10));
+        $perPage = min($perPage, 100);
 
         $query = Expense::query()
             ->select([
@@ -134,11 +190,20 @@ class ExpenseController extends Controller
             ->orderByDesc('tbl_expenses.transaction_date');
 
         if ($search !== '') {
-            $query->where(function ($builder) use ($search) {
+            $hasSubCategoryName = $this->hasExpenseColumn('sub_category_name');
+            $query->where(function ($builder) use ($search, $hasSubCategoryName) {
                 $builder
                     ->where('tbl_expenses.intent', 'like', '%' . $search . '%')
                     ->orWhere('tbl_expense_categories.name', 'like', '%' . $search . '%');
+
+                if ($hasSubCategoryName) {
+                    $builder->orWhere('tbl_expenses.sub_category_name', 'like', '%' . $search . '%');
+                }
             });
+        }
+
+        if ($categoryId > 0) {
+            $query->where('tbl_expenses.category_id', '=', $categoryId);
         }
 
         if ($dateFrom !== '') {
@@ -148,13 +213,24 @@ class ExpenseController extends Controller
             $query->whereDate('tbl_expenses.transaction_date', '<=', $dateTo);
         }
 
-        $rows = $query->get();
+        $total = (clone $query)->count();
+        $filteredTotalAmount = (float) ((clone $query)->sum('tbl_expenses.amount') ?? 0);
+        $lastPage = max(1, (int) ceil($total / $perPage));
+        $page = min($page, $lastPage);
+
+        $rows = (clone $query)
+            ->forPage($page, $perPage)
+            ->get();
 
         return response()->json([
             'expenses' => $rows->map(function ($row) {
                 return $this->formatExpenseRow($row);
             })->values(),
-            'total' => $rows->count(),
+            'total' => $total,
+            'filtered_total_amount' => $filteredTotalAmount,
+            'current_page' => $page,
+            'per_page' => $perPage,
+            'last_page' => $lastPage,
         ]);
     }
 
@@ -162,11 +238,19 @@ class ExpenseController extends Controller
     {
         $validated = $request->validate([
             'category_id' => 'required|integer|exists:tbl_expense_categories,id',
+            'sub_category_name' => 'nullable|string|max:180',
+            'invoice_url' => 'nullable|string|max:2000',
+            'invoice_file' => 'nullable|file|image|max:5120',
+            'remove_invoice' => 'nullable|boolean',
             'amount' => 'required|numeric|min:0|max:999999999.99',
             'intent' => 'required|string|max:500',
             'transaction_date' => 'required|date_format:Y-m-d',
             'status' => 'nullable|integer|in:0,1',
         ]);
+        if ($request->hasFile('invoice_file') && $this->hasExpenseColumn('invoice_url')) {
+            $path = $request->file('invoice_file')->store('expenses/invoices', 'public');
+            $validated['invoice_url'] = Storage::disk('public')->url($path);
+        }
 
         $actor = $request->user();
         $createdBy = $actor && isset($actor->id) ? (int) $actor->id : null;
@@ -194,17 +278,45 @@ class ExpenseController extends Controller
 
         $validated = $request->validate([
             'category_id' => 'required|integer|exists:tbl_expense_categories,id',
+            'sub_category_name' => 'nullable|string|max:180',
+            'invoice_url' => 'nullable|string|max:2000',
+            'invoice_file' => 'nullable|file|image|max:5120',
+            'remove_invoice' => 'nullable|boolean',
             'amount' => 'required|numeric|min:0|max:999999999.99',
             'intent' => 'required|string|max:500',
             'transaction_date' => 'required|date_format:Y-m-d',
             'status' => 'nullable|integer|in:0,1',
         ]);
+        $oldInvoiceUrl = $expense->invoice_url ? (string) $expense->invoice_url : null;
+        $removeInvoice = (bool) ($validated['remove_invoice'] ?? false);
+        unset($validated['remove_invoice']);
+
+        if ($removeInvoice && $this->hasExpenseColumn('invoice_url')) {
+            $validated['invoice_url'] = null;
+        }
+
+        if ($request->hasFile('invoice_file') && $this->hasExpenseColumn('invoice_url')) {
+            $path = $request->file('invoice_file')->store('expenses/invoices', 'public');
+            $validated['invoice_url'] = Storage::disk('public')->url($path);
+        }
 
         $writeData = $this->buildExpenseWriteData($validated, null);
+        $newInvoiceUrl = array_key_exists('invoice_url', $writeData)
+            ? ($writeData['invoice_url'] ?: null)
+            : $oldInvoiceUrl;
+
         foreach ($writeData as $key => $value) {
             $expense->{$key} = $value;
         }
         $expense->save();
+
+        if (
+            $this->hasExpenseColumn('invoice_url')
+            && $oldInvoiceUrl
+            && $newInvoiceUrl !== $oldInvoiceUrl
+        ) {
+            $this->deletePublicInvoiceFile($oldInvoiceUrl);
+        }
 
         $category = ExpenseCategory::query()->find((int) $validated['category_id']);
 
@@ -238,6 +350,8 @@ class ExpenseController extends Controller
                 'status' => (int) ($category?->status ?? 1),
             ],
             'category_id' => (int) $expense->category_id,
+            'sub_category_name' => (string) ($expense->sub_category_name ?? ''),
+            'invoice_url' => $expense->invoice_url ? (string) $expense->invoice_url : null,
             'amount' => (float) $expense->amount,
             'intent' => (string) ($expense->intent ?? ''),
             'transaction_date' => (string) ($expense->transaction_date?->format('Y-m-d') ?? ''),
@@ -264,6 +378,8 @@ class ExpenseController extends Controller
                 'status' => (int) ($row->category_status ?? 1),
             ],
             'category_id' => (int) ($row->category_id ?? 0),
+            'sub_category_name' => (string) ($row->sub_category_name ?? ''),
+            'invoice_url' => !empty($row->invoice_url) ? (string) $row->invoice_url : null,
             'amount' => (float) ($row->amount ?? 0),
             'intent' => (string) ($row->intent ?? ''),
             'transaction_date' => (string) ($row->transaction_date ?? ''),
