@@ -2,7 +2,9 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Events\CustomerAccountDeleted;
 use App\Http\Controllers\Controller;
+use App\Models\AdminNotification;
 use App\Models\Customer;
 use App\Models\CustomerWalletLedger;
 use Carbon\Carbon;
@@ -996,6 +998,15 @@ class MemberController extends Controller
             $memberName = (string) ($customer->c_username ?: ('Member #' . $customer->c_userid));
         }
 
+        // Count downline before deletion (they will become orphaned via SET NULL)
+        $orphanedCount = Customer::query()->where('c_sponsor', $id)->count();
+
+        // Broadcast to the customer's private channel before deleting
+        broadcast(new CustomerAccountDeleted($id));
+
+        // Revoke all active tokens — forces logout immediately
+        $customer->tokens()->delete();
+
         try {
             $customer->delete();
         } catch (QueryException $e) {
@@ -1006,8 +1017,78 @@ class MemberController extends Controller
 
         $this->bustMembersCache();
 
+        // Notify admin if there are orphaned members
+        if ($orphanedCount > 0) {
+            AdminNotification::query()->create([
+                'an_type'        => 'orphaned_members',
+                'an_severity'    => 'warning',
+                'an_title'       => 'Members Need Sponsor Assignment',
+                'an_message'     => "{$orphanedCount} member(s) lost their sponsor after deleting {$memberName}. Please assign new sponsors.",
+                'an_href'        => '/admin/members?filter=no_sponsor',
+                'an_payload'     => ['deleted_member' => $memberName, 'orphaned_count' => $orphanedCount],
+                'an_source_type' => 'member_deletion',
+                'an_source_id'   => $id,
+                'an_created_at'  => now(),
+            ]);
+        }
+
         return response()->json([
-            'message' => "{$memberName} deleted successfully.",
+            'message' => "{$memberName} deleted successfully."
+                . ($orphanedCount > 0 ? " {$orphanedCount} member(s) need a new sponsor assignment." : ''),
+        ]);
+    }
+
+    public function orphanedMembers(): JsonResponse
+    {
+        $members = Customer::query()
+            ->whereNull('c_sponsor')
+            ->orderBy('c_userid')
+            ->get(['c_userid', 'c_fname', 'c_lname', 'c_username', 'c_email', 'c_date_started']);
+
+        $data = $members->map(fn (Customer $c) => [
+            'id'         => (int) $c->c_userid,
+            'name'       => trim("{$c->c_fname} {$c->c_lname}"),
+            'username'   => (string) ($c->c_username ?? ''),
+            'email'      => (string) ($c->c_email ?? ''),
+            'joined_at'  => $c->c_date_started,
+        ]);
+
+        return response()->json([
+            'data'  => $data,
+            'total' => $data->count(),
+        ]);
+    }
+
+    public function assignSponsor(Request $request, int $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'sponsor_username' => ['required', 'string'],
+        ]);
+
+        $customer = Customer::query()->where('c_userid', $id)->first();
+        if (!$customer) {
+            return response()->json(['message' => 'Member not found.'], 404);
+        }
+
+        $sponsor = Customer::query()
+            ->whereRaw('LOWER(c_username) = ?', [strtolower(trim($validated['sponsor_username']))])
+            ->first();
+
+        if (!$sponsor) {
+            return response()->json(['message' => 'Sponsor username not found.'], 404);
+        }
+
+        if ((int) $sponsor->c_userid === (int) $customer->c_userid) {
+            return response()->json(['message' => 'A member cannot be their own sponsor.'], 422);
+        }
+
+        $customer->c_sponsor = (int) $sponsor->c_userid;
+        $customer->save();
+
+        $this->bustMembersCache();
+
+        return response()->json([
+            'message' => "Sponsor assigned successfully. {$customer->c_username} is now under {$sponsor->c_username}.",
         ]);
     }
 
@@ -1409,6 +1490,38 @@ class MemberController extends Controller
         } catch (\Throwable $exception) {
             return null;
         }
+    }
+
+    public function pusherAuth(Request $request): JsonResponse
+    {
+        $customer = $request->user();
+        if (!$customer) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        $validated = $request->validate([
+            'socket_id'    => 'required|string|max:100',
+            'channel_name' => 'required|string|max:255',
+        ]);
+
+        $channelName = (string) $validated['channel_name'];
+        $expectedChannel = 'private-customer.' . $customer->c_userid;
+
+        if ($channelName !== $expectedChannel) {
+            return response()->json(['message' => 'Forbidden channel.'], 403);
+        }
+
+        $key    = (string) config('services.pusher.key', '');
+        $secret = (string) config('services.pusher.secret', '');
+
+        if ($key === '' || $secret === '') {
+            return response()->json(['message' => 'Pusher is not configured.'], 503);
+        }
+
+        $socketId  = (string) $validated['socket_id'];
+        $signature = hash_hmac('sha256', $socketId . ':' . $channelName, $secret);
+
+        return response()->json(['auth' => $key . ':' . $signature]);
     }
 
     private function membersCacheVersion(): int
