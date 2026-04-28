@@ -8,6 +8,7 @@ use App\Models\CustomerPasskey;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
@@ -162,7 +163,18 @@ class PasskeyAuthController extends Controller
 
         $origin = (string) ($clientData['origin'] ?? '');
         $allowedOrigins = is_array($cached['allowed_origins'] ?? null) ? $cached['allowed_origins'] : [];
-        if ($origin === '' || ! in_array($origin, $allowedOrigins, true)) {
+        if (! $this->isAllowedOrigin($origin, $allowedOrigins)) {
+            Log::warning('Passkey login origin mismatch.', [
+                'origin_raw' => $origin,
+                'origin_normalized' => $this->normalizeOrigin($origin),
+                'allowed_origins_raw' => $allowedOrigins,
+                'allowed_origins_normalized' => collect($allowedOrigins)
+                    ->filter(fn ($value) => is_string($value))
+                    ->map(fn (string $value) => $this->normalizeOrigin($value))
+                    ->filter()
+                    ->values()
+                    ->all(),
+            ]);
             throw ValidationException::withMessages([
                 'credential' => ['Passkey origin is not allowed.'],
             ]);
@@ -358,7 +370,18 @@ class PasskeyAuthController extends Controller
 
         $origin = (string) ($clientData['origin'] ?? '');
         $allowedOrigins = is_array($cached['allowed_origins'] ?? null) ? $cached['allowed_origins'] : [];
-        if ($origin === '' || ! in_array($origin, $allowedOrigins, true)) {
+        if (! $this->isAllowedOrigin($origin, $allowedOrigins)) {
+            Log::warning('Passkey register origin mismatch.', [
+                'origin_raw' => $origin,
+                'origin_normalized' => $this->normalizeOrigin($origin),
+                'allowed_origins_raw' => $allowedOrigins,
+                'allowed_origins_normalized' => collect($allowedOrigins)
+                    ->filter(fn ($value) => is_string($value))
+                    ->map(fn (string $value) => $this->normalizeOrigin($value))
+                    ->filter()
+                    ->values()
+                    ->all(),
+            ]);
             throw ValidationException::withMessages([
                 'credential' => ['Passkey origin is not allowed.'],
             ]);
@@ -569,6 +592,52 @@ class PasskeyAuthController extends Controller
     private function base64UrlEncode(string $binary): string
     {
         return rtrim(strtr(base64_encode($binary), '+/', '-_'), '=');
+    }
+
+    private function isAllowedOrigin(string $origin, array $allowedOrigins): bool
+    {
+        $normalizedOrigin = $this->normalizeOrigin($origin);
+        if ($normalizedOrigin === null) {
+            return false;
+        }
+
+        foreach ($allowedOrigins as $allowedOrigin) {
+            if (! is_string($allowedOrigin)) {
+                continue;
+            }
+
+            $normalizedAllowed = $this->normalizeOrigin($allowedOrigin);
+            if ($normalizedAllowed !== null && $normalizedAllowed === $normalizedOrigin) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function normalizeOrigin(string $origin): ?string
+    {
+        $candidate = trim($origin);
+        if ($candidate === '') {
+            return null;
+        }
+
+        $parts = parse_url($candidate);
+        if (! is_array($parts)) {
+            return null;
+        }
+
+        $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+        $host = strtolower((string) ($parts['host'] ?? ''));
+        if ($scheme === '' || $host === '') {
+            return null;
+        }
+
+        $port = isset($parts['port']) ? (int) $parts['port'] : null;
+        $isDefaultPort = ($scheme === 'https' && $port === 443) || ($scheme === 'http' && $port === 80);
+        $portSuffix = $port !== null && ! $isDefaultPort ? ':' . $port : '';
+
+        return $scheme . '://' . $host . $portSuffix;
     }
 
     private function base64UrlDecode(string $value): ?string
