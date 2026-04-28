@@ -21,6 +21,11 @@ class TurnstileService
         return $this->verify($token, config('services.turnstile.admin_login_secret'), $ip);
     }
 
+    public function verifyForgotPassword(string $token, string $ip = ''): bool
+    {
+        return $this->verify($token, config('services.turnstile.forgot_password_secret'), $ip);
+    }
+
     private function verify(string $token, ?string $secret, string $ip): bool
     {
         if (app()->environment('local', 'development', 'dev')) {

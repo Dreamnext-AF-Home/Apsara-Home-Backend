@@ -212,6 +212,7 @@ Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_a
 
 Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.or_supplier'])->group(function () {
     Route::get('/admin/products', [ProductController::class, 'index']);
+    Route::get('/admin/products/export', [ProductController::class, 'exportCsv']);
     Route::get('/admin/products/activity-logs', [ProductController::class, 'activityLogs']);
     Route::post('/admin/products', [ProductController::class, 'store']);
     Route::post('/admin/products/import', [ProductController::class, 'import']);
@@ -226,8 +227,7 @@ Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.or_supplier'
     Route::post('/admin/products/bulk-update/preview', [ProductController::class, 'bulkUpdatePreview']);
     Route::post('/admin/products/bulk-update/apply', [ProductController::class, 'bulkUpdateApply']);
     Route::post('/admin/products/manual-checkout/apply', [ProductController::class, 'manualCheckoutApply']);
-    Route::post('/admin/products/push-spreadsheet', [ProductController::class, 'pushToSpreadsheet']);
-    Route::get('/admin/webpages/adds-content', [AddsContentController::class, 'index']);
+Route::get('/admin/webpages/adds-content', [AddsContentController::class, 'index']);
     Route::post('/admin/webpages/adds-content', [AddsContentController::class, 'store']);
     Route::patch('/admin/webpages/adds-content/{id}', [AddsContentController::class, 'update']);
     Route::patch('/admin/webpages/adds-content/{id}/status', [AddsContentController::class, 'updateStatus']);
