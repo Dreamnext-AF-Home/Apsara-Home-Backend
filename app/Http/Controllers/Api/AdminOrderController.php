@@ -18,6 +18,7 @@ use App\Support\AdminAccess;
 use App\Support\DirectAffiliatePerformanceBonus;
 use App\Support\DirectReferralCommission;
 use App\Support\GroupPurchaseBonus;
+use App\Support\TierEvaluator;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -1439,6 +1440,15 @@ class AdminOrderController extends Controller
 
         DirectAffiliatePerformanceBonus::awardEligibleMilestonesForBuyer($customer, $order, (int) $admin->id);
         GroupPurchaseBonus::awardForBuyer($customer, $order, (int) $admin->id);
+        TierEvaluator::evaluate($customer);
+
+        // Re-evaluate the sponsor's tier too since their group PV and active member counts may have changed
+        if ((int) ($customer->c_sponsor ?? 0) > 0) {
+            $sponsor = Customer::query()->where('c_userid', (int) $customer->c_sponsor)->first();
+            if ($sponsor) {
+                TierEvaluator::evaluate($sponsor);
+            }
+        }
     }
 
     private function resolvePvRecipient(CheckoutHistory $order): ?Customer

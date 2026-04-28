@@ -6,6 +6,7 @@ use App\Models\CheckoutHistory;
 use App\Models\Customer;
 use App\Models\CustomerWalletLedger;
 use App\Models\GroupPurchaseBonusAward;
+use App\Models\MemberTier;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -113,26 +114,9 @@ class GroupPurchaseBonus
 
     public static function unlockedMaxLevel(Customer $member): int
     {
-        $directs = Customer::query()
-            ->where('c_sponsor', (int) $member->c_userid)
-            ->get(['c_userid', 'c_gpv']);
-
-        $directsAt100 = $directs->filter(fn (Customer $row) => (float) ($row->c_gpv ?? 0) >= 100)->count();
-        $directsAt400 = $directs->filter(fn (Customer $row) => (float) ($row->c_gpv ?? 0) >= 400)->count();
-
-        if ($directsAt400 >= 3) {
-            return 10;
-        }
-
-        if ($directsAt100 >= 3) {
-            return 9;
-        }
-
-        if ($directsAt100 >= 2) {
-            return 8;
-        }
-
-        return 7;
+        $rank = (int) ($member->c_rank ?? 1);
+        $tier = MemberTier::getByRank($rank);
+        return (int) ($tier?->mt_max_group_levels ?? 0);
     }
 
     public static function rateForLevel(int $levelNo): float

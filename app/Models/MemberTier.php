@@ -18,17 +18,27 @@ class MemberTier extends Model
         'mt_min_pv',
         'mt_min_direct_referrals',
         'mt_min_group_volume',
+        'mt_min_active_members',
+        'mt_min_active_member_pv',
+        'mt_min_active_builders',
+        'mt_min_active_leaders',
+        'mt_max_group_levels',
         'mt_is_active',
         'mt_sort_order',
     ];
 
     protected $casts = [
-        'mt_min_pv' => 'float',
+        'mt_min_pv'               => 'float',
         'mt_min_direct_referrals' => 'integer',
-        'mt_min_group_volume' => 'integer',
-        'mt_is_active' => 'boolean',
-        'created_at' => 'datetime',
-        'updated_at' => 'datetime',
+        'mt_min_group_volume'     => 'integer',
+        'mt_min_active_members'   => 'integer',
+        'mt_min_active_member_pv' => 'float',
+        'mt_min_active_builders'  => 'integer',
+        'mt_min_active_leaders'   => 'integer',
+        'mt_max_group_levels'     => 'integer',
+        'mt_is_active'            => 'boolean',
+        'created_at'              => 'datetime',
+        'updated_at'              => 'datetime',
     ];
 
     /**
