@@ -183,6 +183,7 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::post('/conversations/{id}/reopen', [CustomerConversationController::class, 'reopenConversation']);
     Route::get('/conversations/unread/count', [CustomerConversationController::class, 'unreadCount']);
     Route::post('/conversations/pusher/auth', [CustomerConversationController::class, 'pusherAuth']);
+    Route::post('/customer/pusher/auth', [MemberController::class, 'pusherAuth']);
 
     // Activity Logs
     Route::get('/activity-logs', [MemberActivityLogController::class, 'myLogs']);
@@ -201,6 +202,8 @@ Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_a
     Route::get('/admin/members/referrals', [MemberController::class, 'referralTree']);
     Route::patch('/admin/members/{id}', [MemberController::class, 'update']);
     Route::delete('/admin/members/{id}', [MemberController::class, 'destroy']);
+    Route::get('/admin/members/orphaned', [MemberController::class, 'orphanedMembers']);
+    Route::patch('/admin/members/{id}/assign-sponsor', [MemberController::class, 'assignSponsor']);
     Route::get('/admin/members/kyc', [AdminMemberKycController::class, 'index']);
     Route::patch('/admin/members/kyc/{id}/approve', [AdminMemberKycController::class, 'approve']);
     Route::patch('/admin/members/kyc/{id}/reject', [AdminMemberKycController::class, 'reject']);
