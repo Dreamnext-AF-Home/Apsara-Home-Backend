@@ -157,9 +157,10 @@ return [
     ],
 
     'turnstile' => [
-        'login_secret'       => env('USER_LOGIN_CLOUDFLARE_TURNSTILE_SECRET'),
-        'signup_secret'      => env('USER_SIGNUP_CLOUDFLARE_TURNSTILE_SECRET'),
-        'admin_login_secret' => env('ADMIN_LOGIN_CLOUDFLARE_TURNSTILE_SECRET'),
+        'login_secret'          => env('USER_LOGIN_CLOUDFLARE_TURNSTILE_SECRET'),
+        'signup_secret'         => env('USER_SIGNUP_CLOUDFLARE_TURNSTILE_SECRET'),
+        'admin_login_secret'    => env('ADMIN_LOGIN_CLOUDFLARE_TURNSTILE_SECRET'),
+        'forgot_password_secret' => env('USER_FORGOT_PASSWORD_CLOUDFLARE_TURNSTILE_SECRET'),
     ],
 
     'google_drive' => [
