@@ -743,6 +743,7 @@ class ProductController extends Controller
     private function normalizeImportRow(array $row): array
     {
         $map = [
+            'Main Product Name'             => 'pd_name',
             'Product Name'                  => 'pd_name',
             'Parent SKU'                    => 'pd_parent_sku',
             'Product SKU'                   => 'pd_parent_sku',
@@ -3710,14 +3711,16 @@ class ProductController extends Controller
             ->select([
                 'pd_id', 'pd_name', 'pd_parent_sku', 'pd_catid', 'pd_room_type', 'pd_brand_type', 'pd_supplier',
                 'pd_price_srp', 'pd_price_dp', 'pd_price_member', 'pd_prodpv',
+                'pd_pricing_tier', 'pd_reversed_pv_multiplier',
                 'pd_qty', 'pd_weight', 'pd_psweight', 'pd_pswidth', 'pd_pslenght', 'pd_psheight',
-                'pd_description', 'pd_specifications', 'pd_material', 'pd_warranty',
-                'pd_type', 'pd_status', 'pd_musthave', 'pd_bestseller', 'pd_salespromo', 'pd_assembly_required',
+                'pd_description', 'pd_specifications', 'pd_material', 'pd_warranty', 'pd_image',
+                'pd_type', 'pd_status', 'pd_musthave', 'pd_bestseller', 'pd_salespromo',
+                'pd_assembly_required', 'pd_verified',
             ])
             ->with([
                 'variants:pv_id,pv_pdid,pv_sku,pv_name,pv_color,pv_color_hex,pv_size,pv_style,' .
                          'pv_width,pv_dimension,pv_height,pv_price_srp,pv_price_dp,pv_price_member,' .
-                         'pv_prodpv,pv_qty,pv_status',
+                         'pv_prodpv,pv_qty,pv_status,pv_images',
             ])
             ->when($search !== '', fn ($q) => $this->applyKeywordSearch($q, $search))
             ->when($status !== '', function ($q) use ($status) {
@@ -3766,23 +3769,29 @@ class ProductController extends Controller
             fwrite($handle, "\xEF\xBB\xBF"); // UTF-8 BOM for Excel
 
             fputcsv($handle, [
-                // Product columns
-                'Product Name', 'Parent SKU', 'Category', 'Room Type', 'Brand',
+                // Product columns (29)
+                'Main Product Name', 'Parent SKU', 'Category', 'Room Type', 'Brand',
                 'Price SRP', 'Price DP', 'Price Member', 'Product PV (AUTO)',
+                'PV Pricing Tier', 'Reversed PV Multiplier (AUTO)',
                 'Quantity', 'Weight', 'Package Weight', 'Package Width', 'Package Length', 'Package Height',
-                'Description', 'Specifications', 'Material', 'Warranty',
+                'Description', 'Specifications', 'Material', 'Warranty', 'Images',
                 'Product Type', 'Status', 'Must Have', 'Best Seller', 'Sales Promo', 'Assembly Required',
-                // Variant columns
+                'Verified',
+                // Variant columns (17)
                 'Variant SKU', 'Variant Name', 'Color Name', 'Color Hex',
                 'Variant Size', 'Variant Style', 'Variant Width', 'Variant Dimension', 'Variant Height',
-                'Variant Price SRP', 'Variant Price DP', 'Variant Price Member', 'Variant PV (AUTO)',
-                'Variant Qty', 'Variant Status',
+                'Variant Price SRP', 'Variant Price DP', 'Variant Price Member',
+                'Reversed PV Multiplier (AUTO)', 'Variant PV (AUTO)',
+                'Variant Qty', 'Variant Status', 'Variant Images',
             ]);
 
-            $emptyVariantCols = array_fill(0, 15, '');
+            // 17 variant columns, 26 = 29 product cols - 3 repeated (name, sku, category)
+            $emptyVariantCols = array_fill(0, 17, '');
 
             $query->chunk(500, function ($products) use ($handle, $emptyVariantCols) {
                 foreach ($products as $product) {
+                    $images = $product->pd_image ? $product->pd_image : '';
+
                     $productCols = [
                         $product->pd_name,
                         $product->pd_parent_sku,
@@ -3793,6 +3802,8 @@ class ProductController extends Controller
                         $product->pd_price_dp,
                         $product->pd_price_member,
                         $product->pd_prodpv,
+                        $product->pd_pricing_tier,
+                        $product->pd_reversed_pv_multiplier,
                         $product->pd_qty,
                         $product->pd_weight,
                         $product->pd_psweight,
@@ -3803,12 +3814,14 @@ class ProductController extends Controller
                         $product->pd_specifications,
                         $product->pd_material,
                         $product->pd_warranty,
+                        $images,
                         $product->pd_type,
                         $product->pd_status,
                         $product->pd_musthave ? 1 : 0,
                         $product->pd_bestseller ? 1 : 0,
                         $product->pd_salespromo ? 1 : 0,
                         $product->pd_assembly_required ? 1 : 0,
+                        $product->pd_verified ? 1 : 0,
                     ];
 
                     $variants = $product->variants ?? collect();
@@ -3820,6 +3833,10 @@ class ProductController extends Controller
 
                     $isFirst = true;
                     foreach ($variants as $variant) {
+                        $variantImages = is_array($variant->pv_images)
+                            ? implode('|', $variant->pv_images)
+                            : (string) ($variant->pv_images ?? '');
+
                         $variantCols = [
                             $variant->pv_sku,
                             $variant->pv_name,
@@ -3833,20 +3850,21 @@ class ProductController extends Controller
                             $variant->pv_price_srp,
                             $variant->pv_price_dp,
                             $variant->pv_price_member,
+                            '', // Reversed PV Multiplier — variant level not stored separately
                             $variant->pv_prodpv,
                             $variant->pv_qty,
                             $variant->pv_status,
+                            $variantImages,
                         ];
 
                         if ($isFirst) {
-                            // First variant row carries all product data
                             fputcsv($handle, array_merge($productCols, $variantCols));
                             $isFirst = false;
                         } else {
-                            // Subsequent variant rows: repeat name, sku, category only
+                            // Repeat name, sku, category; leave remaining 26 product cols blank
                             $continuationCols = array_merge(
                                 [$product->pd_name, $product->pd_parent_sku, $product->pd_catid],
-                                array_fill(0, 22, '')
+                                array_fill(0, 26, '')
                             );
                             fputcsv($handle, array_merge($continuationCols, $variantCols));
                         }
