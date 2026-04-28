@@ -19,6 +19,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Pusher\Pusher;
 
@@ -877,6 +878,12 @@ class PaymentController extends Controller
         $validated = $request->validate([
             'rating' => 'required|integer|min:1|max:5',
             'review' => 'required|string|min:3|max:2000',
+            'review_image' => 'nullable|image|max:10240',
+            'review_video' => 'nullable|file|mimetypes:video/mp4,video/quicktime,video/webm|max:102400',
+            'review_images' => 'nullable|array|max:10',
+            'review_images.*' => 'image|max:10240',
+            'review_videos' => 'nullable|array|max:5',
+            'review_videos.*' => 'file|mimetypes:video/mp4,video/quicktime,video/webm|max:102400',
         ]);
 
         $order = CheckoutHistory::query()
@@ -901,13 +908,52 @@ class PaymentController extends Controller
             return response()->json(['message' => 'Review already submitted.'], 409);
         }
 
-        \Illuminate\Support\Facades\DB::transaction(function () use ($order, $customer, $validated) {
+        $reviewImageUrls = [];
+        if ($request->hasFile('review_images')) {
+            foreach ((array) $request->file('review_images') as $imageFile) {
+                if (! $imageFile) {
+                    continue;
+                }
+                $reviewImagePath = $imageFile->store('reviews/images', 'public');
+                $reviewImageUrls[] = Storage::disk('public')->url($reviewImagePath);
+            }
+        }
+
+        $reviewVideoUrls = [];
+        if ($request->hasFile('review_videos')) {
+            foreach ((array) $request->file('review_videos') as $videoFile) {
+                if (! $videoFile) {
+                    continue;
+                }
+                $reviewVideoPath = $videoFile->store('reviews/videos', 'public');
+                $reviewVideoUrls[] = Storage::disk('public')->url($reviewVideoPath);
+            }
+        }
+
+        if ($request->hasFile('review_image')) {
+            $reviewImagePath = $request->file('review_image')->store('reviews/images', 'public');
+            $reviewImageUrls[] = Storage::disk('public')->url($reviewImagePath);
+        }
+
+        if ($request->hasFile('review_video')) {
+            $reviewVideoPath = $request->file('review_video')->store('reviews/videos', 'public');
+            $reviewVideoUrls[] = Storage::disk('public')->url($reviewVideoPath);
+        }
+
+        $reviewImageUrls = array_values(array_unique(array_filter($reviewImageUrls)));
+        $reviewVideoUrls = array_values(array_unique(array_filter($reviewVideoUrls)));
+
+        \Illuminate\Support\Facades\DB::transaction(function () use ($order, $customer, $validated, $reviewImageUrls, $reviewVideoUrls) {
             ProductReview::create([
                 'pr_product_id' => (int) ($order->ch_product_id ?? 0),
                 'pr_customer_id' => (int) $customer->getAuthIdentifier(),
                 'pr_order_id' => (int) $order->ch_id,
                 'pr_rating' => (int) $validated['rating'],
                 'pr_review' => (string) $validated['review'],
+                'pr_image_url' => $reviewImageUrls[0] ?? null,
+                'pr_video_url' => $reviewVideoUrls[0] ?? null,
+                'pr_image_urls' => ! empty($reviewImageUrls) ? $reviewImageUrls : null,
+                'pr_video_urls' => ! empty($reviewVideoUrls) ? $reviewVideoUrls : null,
             ]);
 
             $order->ch_fulfillment_status = 'delivered';
