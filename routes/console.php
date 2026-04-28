@@ -1,6 +1,7 @@
 <?php
 
 use App\Services\DatabaseExportService;
+use App\Services\GoogleDriveUploadService;
 use App\Services\Payments\PaymongoPaymentSyncService;
 use App\Services\Zq\ZqTrackingSyncService;
 use Illuminate\Foundation\Inspiring;
@@ -82,38 +83,91 @@ Artisan::command('zq:sync-tracking {--limit=25}', function () {
 Artisan::command('database:export-daily', function () {
     /** @var DatabaseExportService $service */
     $service = app(DatabaseExportService::class);
+    $driveUploadService = app(GoogleDriveUploadService::class);
     $export = $service->exportDatabaseZip();
     $disk = \Illuminate\Support\Facades\Storage::disk('local');
     $absolutePath = $disk->path((string) ($export['path'] ?? ''));
-    $backupDir = (string) env('GOOGLE_DRIVE_DESKTOP_BACKUP_PATH', 'G:\\My Drive\\db_backup');
+    $backupDir = trim((string) env('GOOGLE_DRIVE_DESKTOP_BACKUP_PATH', 'G:\\My Drive\\db_backup'), " \t\n\r\0\x0B\"'");
+    $backupDir = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $backupDir);
     $downloadName = (string) ($export['download_name'] ?? $service->buildBackupDownloadName());
 
     if (! str_ends_with(strtolower($downloadName), '.zip')) {
         $downloadName .= '.zip';
     }
 
-    if (! File::isDirectory($backupDir)) {
-        File::makeDirectory($backupDir, 0755, true);
+    $uploadedViaApi = false;
+    if ($driveUploadService->isConfigured()) {
+        try {
+            $uploaded = $driveUploadService->uploadFile($absolutePath, $downloadName);
+            $uploadedViaApi = true;
+            $this->line('Google Drive API upload: OK');
+            $this->line('Drive file ID: ' . (string) ($uploaded['id'] ?? 'unknown'));
+            if (! empty($uploaded['webViewLink'])) {
+                $this->line('View link: ' . (string) $uploaded['webViewLink']);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Daily backup upload to Google Drive API failed.', [
+                'file' => $absolutePath,
+                'error' => $e->getMessage(),
+            ]);
+            $this->warn('Google Drive API upload failed: ' . $e->getMessage());
+            $this->warn('Falling back to Google Drive Desktop path copy...');
+        }
+    } else {
+        $this->line('Google Drive API upload skipped (service account config missing).');
     }
 
-    $destinationPath = rtrim($backupDir, "\\/") . DIRECTORY_SEPARATOR . $downloadName;
-    if (File::exists($destinationPath)) {
-        $base = pathinfo($downloadName, PATHINFO_FILENAME);
-        $ext = pathinfo($downloadName, PATHINFO_EXTENSION);
-        $destinationPath = rtrim($backupDir, "\\/") . DIRECTORY_SEPARATOR . $base . '_' . now()->format('His') . ($ext !== '' ? '.' . $ext : '');
-    }
+    if (! $uploadedViaApi) {
+        try {
+            if ($backupDir === '') {
+                throw new \RuntimeException('Backup directory path is empty.');
+            }
 
-    try {
-        File::copy($absolutePath, $destinationPath);
-        $this->line('Google Drive Desktop copy: OK');
-        $this->line('Saved to: ' . $destinationPath);
-    } catch (\Throwable $e) {
-        Log::warning('Daily backup copy to Google Drive Desktop path failed.', [
-            'destination' => $destinationPath,
-            'error' => $e->getMessage(),
-        ]);
-        $this->warn('Google Drive Desktop copy failed: ' . $e->getMessage());
-        $this->warn('Backup was still created in local storage exports folder.');
+            if (! File::isDirectory($backupDir)) {
+                File::makeDirectory($backupDir, 0755, true);
+            }
+
+            if (! File::isWritable($backupDir)) {
+                throw new \RuntimeException('Backup directory is not writable by PHP process: ' . $backupDir);
+            }
+
+            $destinationPath = rtrim($backupDir, "\\/") . DIRECTORY_SEPARATOR . $downloadName;
+            if (File::exists($destinationPath)) {
+                $base = pathinfo($downloadName, PATHINFO_FILENAME);
+                $ext = pathinfo($downloadName, PATHINFO_EXTENSION);
+                $destinationPath = rtrim($backupDir, "\\/") . DIRECTORY_SEPARATOR . $base . '_' . now()->format('His') . ($ext !== '' ? '.' . $ext : '');
+            }
+
+            $copied = File::copy($absolutePath, $destinationPath);
+            if (! $copied || ! File::exists($destinationPath)) {
+                $source = fopen($absolutePath, 'rb');
+                $target = fopen($destinationPath, 'wb');
+                if (! is_resource($source) || ! is_resource($target)) {
+                    if (is_resource($source)) {
+                        fclose($source);
+                    }
+                    if (is_resource($target)) {
+                        fclose($target);
+                    }
+                    throw new \RuntimeException('Unable to open source or destination stream for backup copy.');
+                }
+                stream_copy_to_stream($source, $target);
+                fclose($source);
+                fclose($target);
+            }
+
+            $this->line('Google Drive Desktop copy: OK');
+            $this->line('Saved to: ' . $destinationPath);
+        } catch (\Throwable $e) {
+            Log::warning('Daily backup copy to Google Drive Desktop path failed.', [
+                'destination' => $destinationPath ?? null,
+                'backup_dir' => $backupDir,
+                'error' => $e->getMessage(),
+            ]);
+            $this->warn('Google Drive Desktop copy failed: ' . $e->getMessage());
+            $this->warn('Tip: make sure Google Drive Desktop is running and the PHP user can write to ' . $backupDir);
+            $this->warn('Backup was still created in local storage exports folder.');
+        }
     }
 
     $this->info('Daily database export completed.');

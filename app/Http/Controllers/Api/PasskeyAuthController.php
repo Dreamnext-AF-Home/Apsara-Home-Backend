@@ -520,19 +520,50 @@ class PasskeyAuthController extends Controller
     private function resolveRpId(Request $request): string
     {
         $configured = trim((string) env('WEBAUTHN_RP_ID', ''));
+        $originHeader = trim((string) $request->headers->get('Origin', ''));
+        $originHost = is_string(parse_url($originHeader, PHP_URL_HOST))
+            ? trim((string) parse_url($originHeader, PHP_URL_HOST))
+            : '';
+
         if ($configured !== '') {
-            return $configured;
+            // In local/dev, the configured RP ID can point to production domain.
+            // Use it only when it is valid for the requesting origin host.
+            if ($originHost === '' || $this->isRpIdUsableForHost($configured, $originHost)) {
+                return $configured;
+            }
         }
 
         $origins = $this->resolveAllowedOrigins($request);
         foreach ($origins as $origin) {
             $host = parse_url($origin, PHP_URL_HOST);
             if (is_string($host) && trim($host) !== '') {
-                return trim($host);
+                $candidateHost = trim($host);
+                if ($originHost === '' || $this->isRpIdUsableForHost($candidateHost, $originHost)) {
+                    return $candidateHost;
+                }
             }
         }
 
+        if ($originHost !== '') {
+            return $originHost;
+        }
+
         return $request->getHost();
+    }
+
+    private function isRpIdUsableForHost(string $rpId, string $originHost): bool
+    {
+        $rp = ltrim(strtolower(trim($rpId)), '.');
+        $host = strtolower(trim($originHost));
+        if ($rp === '' || $host === '') {
+            return false;
+        }
+
+        if ($rp === $host) {
+            return true;
+        }
+
+        return str_ends_with($host, '.' . $rp);
     }
 
     private function base64UrlEncode(string $binary): string
@@ -562,4 +593,3 @@ class PasskeyAuthController extends Controller
         return "-----BEGIN PUBLIC KEY-----\n{$base64}-----END PUBLIC KEY-----\n";
     }
 }
-
