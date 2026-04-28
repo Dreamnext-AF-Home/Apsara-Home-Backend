@@ -918,6 +918,8 @@ class PaymentController extends Controller
                 $order->ch_shipped_at = now();
             }
             $order->save();
+
+            DirectReferralCommission::releaseAvailableForOrder($order, (int) $customer->getAuthIdentifier());
         });
 
         return response()->json([

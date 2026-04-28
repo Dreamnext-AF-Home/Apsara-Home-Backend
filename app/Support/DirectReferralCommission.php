@@ -11,6 +11,38 @@ use Illuminate\Support\Facades\Schema;
 
 class DirectReferralCommission
 {
+    public static function releasePendingForDeliveredOrders(?int $referrerCustomerId = null): void
+    {
+        if (!Schema::hasTable('tbl_referral_earnings') || !Schema::hasTable('tbl_checkout_history')) {
+            return;
+        }
+
+        $query = ReferralEarning::query()
+            ->where('re_status', 'pending')
+            ->whereIn('re_order_id', function ($builder) {
+                $builder
+                    ->select('ch_id')
+                    ->from('tbl_checkout_history')
+                    ->where(function ($statusQuery) {
+                        $statusQuery
+                            ->where('ch_fulfillment_status', 'delivered')
+                            ->orWhere('ch_fulfillment_status', 'completed')
+                            ->orWhere('ch_shipment_status', 'delivered');
+                    });
+            });
+
+        if ((int) $referrerCustomerId > 0) {
+            $query->where('re_referrer_customer_id', (int) $referrerCustomerId);
+        }
+
+        $query->get()->each(function (ReferralEarning $earning) {
+            $order = CheckoutHistory::query()->find((int) $earning->re_order_id);
+            if ($order) {
+                self::releaseAvailableForOrder($order, null);
+            }
+        });
+    }
+
     public static function createPendingIfEligible(CheckoutHistory $order, ?int $referrerCustomerId, ?string $sourceType = null): void
     {
         if (!Schema::hasTable('tbl_referral_earnings')) {

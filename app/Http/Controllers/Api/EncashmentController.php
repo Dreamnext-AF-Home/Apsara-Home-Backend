@@ -15,6 +15,7 @@ use App\Models\EncashmentRequest;
 use App\Models\ReferralEarning;
 use App\Support\AdminAccess;
 use App\Support\CustomerCashWallet;
+use App\Support\DirectReferralCommission;
 use App\Support\MemberMonthlyActivation;
 use App\Support\PersonalPurchaseCashback;
 use Illuminate\Http\Request;
@@ -33,6 +34,8 @@ class EncashmentController extends Controller
         if (!$customer instanceof Customer) {
             return response()->json(['message' => 'Only customer accounts can view wallet data.'], 403);
         }
+
+        DirectReferralCommission::releasePendingForDeliveredOrders((int) $customer->c_userid);
 
         $validated = $request->validate([
             'page' => 'nullable|integer|min:1',

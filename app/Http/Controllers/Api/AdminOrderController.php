@@ -1065,7 +1065,14 @@ class AdminOrderController extends Controller
 
         $mappedStatus = $this->mapZqStateToLocalStatus($state);
         if ($mappedStatus !== null) {
+            $previousStatus = (string) ($order->ch_fulfillment_status ?? 'pending');
             $order->ch_fulfillment_status = $mappedStatus;
+
+            if ($mappedStatus === 'delivered' && $previousStatus !== 'delivered') {
+                DirectReferralCommission::releaseAvailableForOrder($order, null);
+            } elseif (in_array($mappedStatus, ['cancelled', 'refunded'], true) && !in_array($previousStatus, ['cancelled', 'refunded'], true)) {
+                DirectReferralCommission::cancelPendingForOrder($order, null, 'Order cancelled via ZQ sync.');
+            }
         }
 
         $order->save();
