@@ -3199,4 +3199,32 @@ class AuthController extends Controller
         }
     }
 
+    public function facebookDataDeletion(Request $request)
+    {
+        $signedRequest = $request->input('signed_request');
+
+        if (!$signedRequest || !str_contains($signedRequest, '.')) {
+            return response()->json(['error' => 'Missing or invalid signed_request.'], 400);
+        }
+
+        [$encodedSig, $payload] = explode('.', $signedRequest, 2);
+
+        $data = json_decode(base64_decode(strtr($payload, '-_', '+/')), true);
+        $facebookUserId = $data['user_id'] ?? null;
+
+        if ($facebookUserId) {
+            \App\Models\CustomerSocialAccount::query()
+                ->where('csa_provider', 'facebook')
+                ->where('csa_provider_id', (string) $facebookUserId)
+                ->delete();
+        }
+
+        $confirmationCode = 'fbdel_' . ($facebookUserId ?? uniqid());
+
+        return response()->json([
+            'url' => url('/api/auth/facebook/data-deletion/status?id=' . $confirmationCode),
+            'confirmation_code' => $confirmationCode,
+        ]);
+    }
+
 }
