@@ -28,7 +28,12 @@ class Customer extends Authenticatable
     protected $hidden = [
         'c_password',
         'c_password_pin',
+        'c_totp_secret',
         'remember_token',
+    ];
+
+    protected $casts = [
+        'c_totp_secret' => 'encrypted',
     ];
 
     public function addresses(): HasMany

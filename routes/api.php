@@ -41,6 +41,7 @@ use App\Http\Controllers\Api\MemberActivityLogController;
 use App\Http\Controllers\Api\LeadController;
 use App\Http\Controllers\Api\ShippingRateController;
 use App\Http\Controllers\Api\PasskeyAuthController;
+use App\Http\Controllers\Api\TotpController;
 
 
 // Public auth routes
@@ -137,14 +138,15 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::post('/auth/logout', [AuthController::class, 'logout']);
     Route::get('/auth/me',      [AuthController::class, 'me']);
     Route::get('/auth/activity', [AuthController::class, 'activity']);
-    Route::get('/auth/sessions', [AuthController::class, 'sessions']);
-    Route::delete('/auth/sessions/{tokenId}', [AuthController::class, 'revokeSession']);
-    Route::get('/auth/referral-tree', [AuthController::class, 'referralTree']);
-    Route::put('/auth/me',      [AuthController::class, 'updateMe']);
-    Route::patch('/auth/change-password', [AuthController::class, 'changePassword']);
-    Route::post('/auth/username-change/send-otp', [AuthController::class, 'sendUsernameChangeOtp']);
-    Route::post('/auth/username-change/submit', [AuthController::class, 'submitUsernameChangeRequest']);
-    Route::get('/auth/username-change/latest', [AuthController::class, 'latestUsernameChangeRequest']);
+    Route::get('/me', [AuthController::class, 'me']);
+    Route::put('/me', [AuthController::class, 'updateMe']);
+    Route::get('/referral-tree', [AuthController::class, 'referralTree']);
+    Route::get('/sessions', [AuthController::class, 'sessions']);
+    Route::delete('/sessions/{tokenId}', [AuthController::class, 'revokeSession']);
+    Route::get('/username-change/latest', [AuthController::class, 'latestUsernameChangeRequest']);
+    Route::post('/username-change/send-otp', [AuthController::class, 'sendUsernameChangeOtp']);
+    Route::post('/username-change/submit', [AuthController::class, 'submitUsernameChangeRequest']);
+    Route::get('/account/snapshot', [AuthController::class, 'accountSnapshot']);
     Route::get('/auth/addresses', [CustomerAddressController::class, 'index']);
     Route::post('/auth/addresses', [CustomerAddressController::class, 'store']);
     Route::patch('/auth/addresses/{id}/default', [CustomerAddressController::class, 'setDefault']);
@@ -177,6 +179,10 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::post('/auth/passkeys/register/options', [PasskeyAuthController::class, 'registerOptions']);
     Route::post('/auth/passkeys/register/verify', [PasskeyAuthController::class, 'registerVerify']);
     Route::delete('/auth/passkeys/{id}', [PasskeyAuthController::class, 'destroy']);
+
+    Route::post('/auth/totp/setup', [TotpController::class, 'setup']);
+    Route::post('/auth/totp/enable', [TotpController::class, 'enable']);
+    Route::post('/auth/totp/disable', [TotpController::class, 'disable']);
 
     // Customer Service / Conversations
     Route::get('/conversations', [CustomerConversationController::class, 'index']);
