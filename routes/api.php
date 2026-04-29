@@ -41,6 +41,7 @@ use App\Http\Controllers\Api\MemberActivityLogController;
 use App\Http\Controllers\Api\LeadController;
 use App\Http\Controllers\Api\ShippingRateController;
 use App\Http\Controllers\Api\PasskeyAuthController;
+use App\Http\Controllers\Api\ProductViewerController;
 
 
 // Public auth routes
@@ -124,6 +125,7 @@ Route::middleware('throttle:public')->group(function () {
     Route::get('/address/provinces', [AddressController::class, 'provinces']);
     Route::get('/address/cities', [AddressController::class, 'cities']);
     Route::get('/address/barangays', [AddressController::class, 'barangays']);
+    Route::post('/products/{id}/viewers/heartbeat', [ProductViewerController::class, 'heartbeat']);
 });
 
 
