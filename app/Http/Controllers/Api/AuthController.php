@@ -2849,7 +2849,7 @@ class AuthController extends Controller
         /** @var Customer $customer */
         $customer = $request->user();
 
-        // Check if already linked
+        // Check if this specific provider account is already linked to anyone
         $existing = \App\Models\CustomerSocialAccount::query()
             ->where('csa_provider', $provider)
             ->where('csa_provider_id', $validated['provider_id'])
@@ -2861,6 +2861,18 @@ class AuthController extends Controller
             }
 
             return response()->json(['message' => 'This social account is linked to another user.'], 409);
+        }
+
+        // Check if customer already has a different account for this provider linked
+        $existingForProvider = \App\Models\CustomerSocialAccount::query()
+            ->where('csa_customer_id', $customer->c_userid)
+            ->where('csa_provider', $provider)
+            ->first();
+
+        if ($existingForProvider) {
+            return response()->json([
+                'message' => 'You already have a ' . ucfirst($provider) . ' account linked. Unlink it first before linking a different one.',
+            ], 409);
         }
 
         // Verify the token with provider (basic check)
@@ -2876,7 +2888,7 @@ class AuthController extends Controller
 
         if ($socialEmail !== $userEmail) {
             return response()->json([
-                'message' => 'Email mismatch. The Google account email does not match your account email.',
+                'message' => 'Email mismatch. The ' . ucfirst($provider) . ' account email does not match your account email.',
                 'social_email' => $socialEmail,
                 'account_email' => $userEmail,
             ], 400);
@@ -3197,6 +3209,114 @@ class AuthController extends Controller
         } catch (\Throwable $e) {
             return response()->json(['message' => 'Authentication failed.'], 500);
         }
+    }
+
+    public function facebookCallback(Request $request)
+    {
+        $validated = $request->validate([
+            'access_token' => 'required|string',
+            'provider_id'  => 'required|string',
+        ]);
+
+        try {
+            $accessToken = $validated['access_token'];
+            $providerId  = $validated['provider_id'];
+
+            $response = \Http::get('https://graph.facebook.com/v18.0/me', [
+                'fields'       => 'id,name,email,first_name,last_name',
+                'access_token' => $accessToken,
+            ]);
+
+            if (!$response->successful()) {
+                return response()->json(['message' => 'Invalid Facebook access token.'], 400);
+            }
+
+            $userInfo = $response->json();
+
+            if (!empty($userInfo['error'])) {
+                return response()->json(['message' => 'Invalid Facebook access token.'], 400);
+            }
+
+            $facebookId = $userInfo['id'] ?? null;
+
+            if (!$facebookId || $facebookId !== $providerId) {
+                return response()->json(['message' => 'Facebook token verification failed.'], 400);
+            }
+
+            $socialAccount = \App\Models\CustomerSocialAccount::query()
+                ->where('csa_provider', 'facebook')
+                ->where('csa_provider_id', $facebookId)
+                ->first();
+
+            if (!$socialAccount) {
+                return response()->json([
+                    'message' => 'No Facebook account found. Please link your Facebook account first.',
+                    'error'   => 'social_account_not_found',
+                ], 401);
+            }
+
+            $customer = Customer::query()->where('c_userid', $socialAccount->csa_customer_id)->first();
+
+            if (!$customer) {
+                return response()->json(['message' => 'Customer account not found.'], 401);
+            }
+
+            $socialAccount->update([
+                'csa_token'         => $accessToken,
+                'csa_provider_data' => $userInfo,
+            ]);
+
+            return $this->completeSocialLogin($customer, $request);
+
+        } catch (\Throwable $e) {
+            return response()->json(['message' => 'Authentication failed.'], 500);
+        }
+    }
+
+    public function facebookDataDeletion(Request $request)
+    {
+        $signedRequest = $request->input('signed_request');
+
+        if (!$signedRequest || !str_contains($signedRequest, '.')) {
+            return response()->json(['error' => 'Missing or invalid signed_request.'], 400);
+        }
+
+        [$encodedSig, $payload] = explode('.', $signedRequest, 2);
+
+        $data = json_decode(base64_decode(strtr($payload, '-_', '+/')), true);
+        $facebookUserId = $data['user_id'] ?? null;
+
+        if ($facebookUserId) {
+            \App\Models\CustomerSocialAccount::query()
+                ->where('csa_provider', 'facebook')
+                ->where('csa_provider_id', (string) $facebookUserId)
+                ->delete();
+        }
+
+        $confirmationCode = 'fbdel_' . ($facebookUserId ?? uniqid());
+
+        return response()->json([
+            'url' => url('/api/auth/facebook/data-deletion/status?id=' . $confirmationCode),
+            'confirmation_code' => $confirmationCode,
+        ]);
+    }
+
+    /**
+     * Facebook data deletion status endpoint (required by Facebook Platform Policy)
+     */
+    public function facebookDataDeletionStatus(Request $request)
+    {
+        $confirmationId = $request->query('id');
+
+        if (!$confirmationId) {
+            return response()->json(['error' => 'Missing confirmation ID.'], 400);
+        }
+
+        return response()->json([
+            'id' => $confirmationId,
+            'status' => 'deleted',
+            'deletion_time' => now()->toIso8601String(),
+        ]);
     }
 
 }
