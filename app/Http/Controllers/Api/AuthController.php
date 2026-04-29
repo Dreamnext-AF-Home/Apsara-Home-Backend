@@ -1547,6 +1547,7 @@ class AuthController extends Controller
             'email_verified' => true,
             'password_change_required' => $this->customerRequiresPasswordChange($customer),
             'two_factor_enabled' => (bool) ($customer->c_two_factor_enabled ?? false),
+            'totp_enabled' => (bool) ($customer->c_totp_enabled ?? false),
         ];
     }
 
@@ -2849,7 +2850,7 @@ class AuthController extends Controller
         /** @var Customer $customer */
         $customer = $request->user();
 
-        // Check if already linked
+        // Check if this specific provider account is already linked to anyone
         $existing = \App\Models\CustomerSocialAccount::query()
             ->where('csa_provider', $provider)
             ->where('csa_provider_id', $validated['provider_id'])
@@ -2861,6 +2862,18 @@ class AuthController extends Controller
             }
 
             return response()->json(['message' => 'This social account is linked to another user.'], 409);
+        }
+
+        // Check if customer already has a different account for this provider linked
+        $existingForProvider = \App\Models\CustomerSocialAccount::query()
+            ->where('csa_customer_id', $customer->c_userid)
+            ->where('csa_provider', $provider)
+            ->first();
+
+        if ($existingForProvider) {
+            return response()->json([
+                'message' => 'You already have a ' . ucfirst($provider) . ' account linked. Unlink it first before linking a different one.',
+            ], 409);
         }
 
         // Verify the token with provider (basic check)
@@ -2876,7 +2889,7 @@ class AuthController extends Controller
 
         if ($socialEmail !== $userEmail) {
             return response()->json([
-                'message' => 'Email mismatch. The Google account email does not match your account email.',
+                'message' => 'Email mismatch. The ' . ucfirst($provider) . ' account email does not match your account email.',
                 'social_email' => $socialEmail,
                 'account_email' => $userEmail,
             ], 400);
@@ -3197,6 +3210,297 @@ class AuthController extends Controller
         } catch (\Throwable $e) {
             return response()->json(['message' => 'Authentication failed.'], 500);
         }
+    }
+
+    public function facebookCallback(Request $request)
+    {
+        $validated = $request->validate([
+            'access_token' => 'required|string',
+            'provider_id'  => 'required|string',
+        ]);
+
+        try {
+            $accessToken = $validated['access_token'];
+            $providerId  = $validated['provider_id'];
+
+            $response = \Http::get('https://graph.facebook.com/v18.0/me', [
+                'fields'       => 'id,name,email,first_name,last_name',
+                'access_token' => $accessToken,
+            ]);
+
+            if (!$response->successful()) {
+                return response()->json(['message' => 'Invalid Facebook access token.'], 400);
+            }
+
+            $userInfo = $response->json();
+
+            if (!empty($userInfo['error'])) {
+                return response()->json(['message' => 'Invalid Facebook access token.'], 400);
+            }
+
+            $facebookId = $userInfo['id'] ?? null;
+
+            if (!$facebookId || $facebookId !== $providerId) {
+                return response()->json(['message' => 'Facebook token verification failed.'], 400);
+            }
+
+            $socialAccount = \App\Models\CustomerSocialAccount::query()
+                ->where('csa_provider', 'facebook')
+                ->where('csa_provider_id', $facebookId)
+                ->first();
+
+            if (!$socialAccount) {
+                return response()->json([
+                    'message' => 'No Facebook account found. Please link your Facebook account first.',
+                    'error'   => 'social_account_not_found',
+                ], 401);
+            }
+
+            $customer = Customer::query()->where('c_userid', $socialAccount->csa_customer_id)->first();
+
+            if (!$customer) {
+                return response()->json(['message' => 'Customer account not found.'], 401);
+            }
+
+            $socialAccount->update([
+                'csa_token'         => $accessToken,
+                'csa_provider_data' => $userInfo,
+            ]);
+
+            return $this->completeSocialLogin($customer, $request);
+
+        } catch (\Throwable $e) {
+            return response()->json(['message' => 'Authentication failed.'], 500);
+        }
+    }
+
+    public function facebookDataDeletion(Request $request)
+    {
+        $signedRequest = $request->input('signed_request');
+
+        if (!$signedRequest || !str_contains($signedRequest, '.')) {
+            return response()->json(['error' => 'Missing or invalid signed_request.'], 400);
+        }
+
+        [$encodedSig, $payload] = explode('.', $signedRequest, 2);
+
+        $data = json_decode(base64_decode(strtr($payload, '-_', '+/')), true);
+        $facebookUserId = $data['user_id'] ?? null;
+
+        if ($facebookUserId) {
+            \App\Models\CustomerSocialAccount::query()
+                ->where('csa_provider', 'facebook')
+                ->where('csa_provider_id', (string) $facebookUserId)
+                ->delete();
+        }
+
+        $confirmationCode = 'fbdel_' . ($facebookUserId ?? uniqid());
+
+        return response()->json([
+            'url' => url('/api/auth/facebook/data-deletion/status?id=' . $confirmationCode),
+            'confirmation_code' => $confirmationCode,
+        ]);
+    }
+
+    /**
+     * Facebook data deletion status endpoint (required by Facebook Platform Policy)
+     */
+    public function facebookDataDeletionStatus(Request $request)
+    {
+        $confirmationId = $request->query('id');
+
+        if (!$confirmationId) {
+            return response()->json(['error' => 'Missing confirmation ID.'], 400);
+        }
+
+        return response()->json([
+            'id' => $confirmationId,
+            'status' => 'deleted',
+            'deletion_time' => now()->toIso8601String(),
+        ]);
+    }
+
+    public function accountSnapshot(Request $request)
+    {
+        $customer = $request->user();
+        if (!$customer) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        $customerId = (int) $customer->getAuthIdentifier();
+
+        try {
+            // Get Orders Summary
+            $orders = DB::table('tbl_checkout_history')
+                ->where('ch_customer_id', $customerId)
+                ->orderByDesc('ch_paid_at')
+                ->orderByDesc('ch_id')
+                ->get();
+
+            $ordersSummary = [
+                'total' => $orders->count(),
+                'pending' => $orders->whereIn('ch_status', ['pending', 'pending_approval'])->count(),
+                'paid' => $orders->whereIn('ch_status', ['paid', 'succeeded', 'success'])->count(),
+                'shipped' => $orders->where('ch_fulfillment_status', 'shipped')->count(),
+                'delivered' => $orders->where('ch_fulfillment_status', 'delivered')->count(),
+                'completed' => $orders->whereIn('ch_status', ['completed', 'shipped'])->count(),
+                'total_spent' => (float) $orders->whereIn('ch_status', ['paid', 'completed', 'shipped'])->sum('ch_amount'),
+                'recent_orders' => $orders->take(5)->map(function ($order) {
+                    $status = $order->ch_fulfillment_status
+                        ? (string) $order->ch_fulfillment_status
+                        : $this->mapCheckoutStatusToOrderStatus((string) $order->ch_status);
+
+                    return [
+                        'id' => (int) $order->ch_id,
+                        'order_number' => $order->ch_checkout_id,
+                        'status' => $status,
+                        'product_name' => $order->ch_product_name ?: $order->ch_description,
+                        'amount' => (float) $order->ch_amount,
+                        'date' => $order->ch_paid_at ? (is_string($order->ch_paid_at) ? $order->ch_paid_at : $order->ch_paid_at->format('Y-m-d H:i:s')) : null,
+                        'image' => $order->ch_product_image ?: '/Images/HeroSection/sofas.jpg',
+                    ];
+                })->toArray()
+            ];
+
+            // Get Wishlist Summary
+            $wishlistItems = DB::table('tbl_customer_wishlist')
+                ->where('cw_customer_id', $customerId)
+                ->count();
+
+            // Get Customer Reviews
+            $customerReviews = DB::table('tbl_product_reviews as r')
+                ->join('tbl_product as p', 'p.pd_id', '=', 'r.pr_product_id')
+                ->where('r.pr_customer_id', $customerId)
+                ->orderByDesc('r.created_at')
+                ->get([
+                    'r.pr_id',
+                    'r.pr_product_id',
+                    'r.pr_rating',
+                    'r.pr_review',
+                    'r.created_at',
+                    'p.pd_name',
+                    'p.pd_image',
+                ]);
+
+            $reviewsSummary = [
+                'total' => $customerReviews->count(),
+                'average_rating' => $customerReviews->count() > 0 
+                    ? round($customerReviews->sum('pr_rating') / $customerReviews->count(), 2)
+                    : 0,
+                'recent_reviews' => $customerReviews->take(5)->map(function ($review) {
+                    return [
+                        'id' => (int) $review->pr_id,
+                        'product_id' => (int) $review->pr_product_id,
+                        'product_name' => $review->pd_name,
+                        'rating' => (int) $review->pr_rating,
+                        'review' => $review->pr_review,
+                        'date' => is_string($review->created_at) ? $review->created_at : $review->created_at->format('Y-m-d H:i:s'),
+                        'product_image' => $review->pd_image ?: '/Images/HeroSection/sofas.jpg',
+                    ];
+                })->toArray()
+            ];
+
+            // Get Loyalty/Tier Information
+            $tier = $this->mapCustomerTier((int) ($customer->c_rank ?? 0));
+            $loyaltyInfo = [
+                'tier' => $tier,
+                'rank' => (int) ($customer->c_rank ?? 0),
+                'badge_name' => $tier,
+                'total_orders' => (int) ($customer->c_totalpair ?? 0),
+                'total_spent' => (float) ($customer->c_gpv ?? 0),
+                'total_earnings' => (float) ($customer->c_totalincome ?? 0),
+                'pv_balance' => (float) ($customer->c_gpv ?? 0),
+                'cash_balance' => (float) ($customer->c_totalincome ?? 0),
+                'referral_count' => DB::table('tbl_customer')->where('c_sponsor', $customerId)->count(),
+                'join_date' => $customer->c_date_started ? (is_string($customer->c_date_started) ? $customer->c_date_started : $customer->c_date_started->format('Y-m-d')) : null,
+                'last_login' => $customer->c_last_logindate ? (is_string($customer->c_last_logindate) ? $customer->c_last_logindate : $customer->c_last_logindate->format('Y-m-d H:i:s')) : null,
+            ];
+
+            // Account Status
+            $accountStatus = $this->mapAccountStatus(
+                (int) ($customer->c_lockstatus ?? 0),
+                (int) ($customer->c_accnt_status ?? 0)
+            );
+
+            // Profile Information
+            $profileInfo = [
+                'id' => $customerId,
+                'username' => $customer->c_username,
+                'first_name' => $customer->c_fname,
+                'last_name' => $customer->c_lname,
+                'email' => $customer->c_email,
+                'phone' => $customer->c_mobile,
+                'avatar_url' => $customer->c_avatar_url,
+                'verification_status' => $accountStatus['verification_status'],
+                'account_status' => $accountStatus['account_status'],
+            ];
+
+            return response()->json([
+                'profile' => $profileInfo,
+                'loyalty' => $loyaltyInfo,
+                'orders' => $ordersSummary,
+                'wishlist' => [
+                    'total_items' => $wishlistItems,
+                ],
+                'reviews' => $reviewsSummary,
+                'snapshot_date' => now()->format('Y-m-d H:i:s'),
+            ]);
+
+        } catch (\Throwable $e) {
+            Log::error('Account snapshot error', [
+                'customer_id' => $customerId,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            return response()->json(['message' => 'Failed to load account snapshot.'], 500);
+        }
+    }
+
+    private function mapCheckoutStatusToOrderStatus(string $status): string
+    {
+        return match ($status) {
+            'pending', 'pending_approval' => 'pending',
+            'paid', 'succeeded', 'success' => 'paid',
+            'completed' => 'completed',
+            'shipped' => 'shipped',
+            'delivered' => 'delivered',
+            'failed', 'cancelled' => 'cancelled',
+            default => 'unknown',
+        };
+    }
+
+    private function mapCustomerTier(int $rank): string
+    {
+        return match ($rank) {
+            5 => 'Lifestyle Elite',
+            4 => 'Lifestyle Consultant',
+            3 => 'Home Stylist',
+            2 => 'Home Builder',
+            1 => 'Home Starter',
+            default => 'Home Starter',
+        };
+    }
+
+    private function mapAccountStatus(int $lockStatus, int $accountStatus): array
+    {
+        $verificationStatus = match ($accountStatus) {
+            1 => 'verified',
+            2 => 'pending_review',
+            default => 'not_verified',
+        };
+
+        $accountStatus = match (true) {
+            $lockStatus === 1 => 'blocked',
+            $accountStatus === 2 => 'kyc_review',
+            $accountStatus === 0 => 'pending',
+            default => 'active',
+        };
+
+        return [
+            'verification_status' => $verificationStatus,
+            'account_status' => $accountStatus,
+        ];
     }
 
 }

@@ -998,7 +998,7 @@ class MemberController extends Controller
             $memberName = (string) ($customer->c_username ?: ('Member #' . $customer->c_userid));
         }
 
-        // Count downline before deletion (they will become orphaned via SET NULL)
+        // Count direct downlines before deletion. Their own downlines remain connected under them.
         $orphanedCount = Customer::query()->where('c_sponsor', $id)->count();
 
         // Broadcast to the customer's private channel before deleting
@@ -1008,6 +1008,10 @@ class MemberController extends Controller
         $customer->tokens()->delete();
 
         try {
+            Customer::query()
+                ->where('c_sponsor', $id)
+                ->update(['c_sponsor' => null]);
+
             $customer->delete();
         } catch (QueryException $e) {
             return response()->json([
@@ -1080,6 +1084,37 @@ class MemberController extends Controller
 
         if ((int) $sponsor->c_userid === (int) $customer->c_userid) {
             return response()->json(['message' => 'A member cannot be their own sponsor.'], 422);
+        }
+
+        $pendingDownlineIds = Customer::query()
+            ->where('c_sponsor', (int) $customer->c_userid)
+            ->pluck('c_userid')
+            ->map(fn ($userId) => (int) $userId)
+            ->all();
+        $visitedDownlineIds = [];
+
+        while (!empty($pendingDownlineIds)) {
+            $downlineId = (int) array_shift($pendingDownlineIds);
+
+            if ($downlineId <= 0 || isset($visitedDownlineIds[$downlineId])) {
+                continue;
+            }
+
+            if ($downlineId === (int) $sponsor->c_userid) {
+                return response()->json([
+                    'message' => 'The selected sponsor is in this member\'s downline. Choose another sponsor.',
+                ], 422);
+            }
+
+            $visitedDownlineIds[$downlineId] = true;
+
+            $childIds = Customer::query()
+                ->where('c_sponsor', $downlineId)
+                ->pluck('c_userid')
+                ->map(fn ($userId) => (int) $userId)
+                ->all();
+
+            $pendingDownlineIds = array_merge($pendingDownlineIds, $childIds);
         }
 
         $customer->c_sponsor = (int) $sponsor->c_userid;
