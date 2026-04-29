@@ -523,7 +523,29 @@ class PasskeyAuthController extends Controller
             }, explode(',', $raw)), static fn (string $origin): bool => $origin !== ''));
         }
 
+        $originHeader = trim((string) $request->headers->get('Origin', ''));
+        $refererHeader = trim((string) $request->headers->get('Referer', ''));
+        $refererOrigin = '';
+        if ($refererHeader !== '') {
+            $refererScheme = parse_url($refererHeader, PHP_URL_SCHEME);
+            $refererHost = parse_url($refererHeader, PHP_URL_HOST);
+            $refererPort = parse_url($refererHeader, PHP_URL_PORT);
+
+            if (is_string($refererScheme) && is_string($refererHost) && $refererScheme !== '' && $refererHost !== '') {
+                $refererOrigin = strtolower($refererScheme) . '://' . strtolower($refererHost);
+                if (is_int($refererPort)) {
+                    $isDefaultPort = (strtolower($refererScheme) === 'https' && $refererPort === 443)
+                        || (strtolower($refererScheme) === 'http' && $refererPort === 80);
+                    if (! $isDefaultPort) {
+                        $refererOrigin .= ':' . $refererPort;
+                    }
+                }
+            }
+        }
+
         $fallbackCandidates = [
+            $originHeader,
+            $refererOrigin,
             trim((string) env('NEXT_PUBLIC_APP_URL', '')),
             trim((string) env('FRONTEND_URL', '')),
             trim((string) config('app.url', '')),

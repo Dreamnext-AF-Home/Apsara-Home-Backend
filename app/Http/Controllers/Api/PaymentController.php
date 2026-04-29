@@ -11,6 +11,7 @@ use App\Models\ProductReview;
 use App\Models\Product;
 use App\Models\SystemSetting;
 use App\Models\WebPageContent;
+use App\Services\CloudinaryUploadService;
 use App\Support\DirectReferralCommission;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -22,6 +23,7 @@ use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Pusher\Pusher;
+use RuntimeException;
 
 
 class PaymentController extends Controller
@@ -910,34 +912,58 @@ class PaymentController extends Controller
 
         $reviewImageUrls = [];
         if ($request->hasFile('review_images')) {
-            foreach ((array) $request->file('review_images') as $imageFile) {
-                if (! $imageFile) {
-                    continue;
+            try {
+                $cloudinary = app(CloudinaryUploadService::class);
+                foreach ((array) $request->file('review_images') as $imageFile) {
+                    if (! $imageFile) {
+                        continue;
+                    }
+                    $upload = $cloudinary->uploadImage($imageFile, 'afhome/reviews/images');
+                    $reviewImageUrls[] = (string) ($upload['secure_url'] ?? '');
                 }
-                $reviewImagePath = $imageFile->store('reviews/images', 'public');
-                $reviewImageUrls[] = Storage::disk('public')->url($reviewImagePath);
+            } catch (RuntimeException $exception) {
+                return response()->json(['message' => $exception->getMessage()], 422);
             }
         }
 
         $reviewVideoUrls = [];
         if ($request->hasFile('review_videos')) {
-            foreach ((array) $request->file('review_videos') as $videoFile) {
-                if (! $videoFile) {
-                    continue;
+            try {
+                $cloudinary = app(CloudinaryUploadService::class);
+                foreach ((array) $request->file('review_videos') as $videoFile) {
+                    if (! $videoFile) {
+                        continue;
+                    }
+                    $upload = $cloudinary->uploadVideo($videoFile, 'afhome/reviews/videos');
+                    $reviewVideoUrls[] = (string) ($upload['secure_url'] ?? '');
                 }
-                $reviewVideoPath = $videoFile->store('reviews/videos', 'public');
-                $reviewVideoUrls[] = Storage::disk('public')->url($reviewVideoPath);
+            } catch (RuntimeException $exception) {
+                return response()->json(['message' => $exception->getMessage()], 422);
             }
         }
 
         if ($request->hasFile('review_image')) {
-            $reviewImagePath = $request->file('review_image')->store('reviews/images', 'public');
-            $reviewImageUrls[] = Storage::disk('public')->url($reviewImagePath);
+            try {
+                $upload = app(CloudinaryUploadService::class)->uploadImage(
+                    $request->file('review_image'),
+                    'afhome/reviews/images'
+                );
+                $reviewImageUrls[] = (string) ($upload['secure_url'] ?? '');
+            } catch (RuntimeException $exception) {
+                return response()->json(['message' => $exception->getMessage()], 422);
+            }
         }
 
         if ($request->hasFile('review_video')) {
-            $reviewVideoPath = $request->file('review_video')->store('reviews/videos', 'public');
-            $reviewVideoUrls[] = Storage::disk('public')->url($reviewVideoPath);
+            try {
+                $upload = app(CloudinaryUploadService::class)->uploadVideo(
+                    $request->file('review_video'),
+                    'afhome/reviews/videos'
+                );
+                $reviewVideoUrls[] = (string) ($upload['secure_url'] ?? '');
+            } catch (RuntimeException $exception) {
+                return response()->json(['message' => $exception->getMessage()], 422);
+            }
         }
 
         $reviewImageUrls = array_values(array_unique(array_filter($reviewImageUrls)));

@@ -5,11 +5,13 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Expense;
 use App\Models\ExpenseCategory;
+use App\Services\CloudinaryUploadService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
+use RuntimeException;
 
 class ExpenseController extends Controller
 {
@@ -248,8 +250,17 @@ class ExpenseController extends Controller
             'status' => 'nullable|integer|in:0,1',
         ]);
         if ($request->hasFile('invoice_file') && $this->hasExpenseColumn('invoice_url')) {
-            $path = $request->file('invoice_file')->store('expenses/invoices', 'public');
-            $validated['invoice_url'] = Storage::disk('public')->url($path);
+            try {
+                $upload = app(CloudinaryUploadService::class)->uploadImage(
+                    $request->file('invoice_file'),
+                    'afhome/expenses/invoices'
+                );
+                $validated['invoice_url'] = (string) ($upload['secure_url'] ?? '');
+            } catch (RuntimeException $exception) {
+                return response()->json([
+                    'message' => $exception->getMessage(),
+                ], 422);
+            }
         }
 
         $actor = $request->user();
@@ -296,8 +307,17 @@ class ExpenseController extends Controller
         }
 
         if ($request->hasFile('invoice_file') && $this->hasExpenseColumn('invoice_url')) {
-            $path = $request->file('invoice_file')->store('expenses/invoices', 'public');
-            $validated['invoice_url'] = Storage::disk('public')->url($path);
+            try {
+                $upload = app(CloudinaryUploadService::class)->uploadImage(
+                    $request->file('invoice_file'),
+                    'afhome/expenses/invoices'
+                );
+                $validated['invoice_url'] = (string) ($upload['secure_url'] ?? '');
+            } catch (RuntimeException $exception) {
+                return response()->json([
+                    'message' => $exception->getMessage(),
+                ], 422);
+            }
         }
 
         $writeData = $this->buildExpenseWriteData($validated, null);
