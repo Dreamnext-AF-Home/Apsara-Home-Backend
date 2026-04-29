@@ -4,9 +4,11 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\AddsContent;
+use App\Services\CloudinaryUploadService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
+use RuntimeException;
 
 class AddsContentController extends Controller
 {
@@ -26,8 +28,8 @@ class AddsContentController extends Controller
             ->get()
             ->map(fn (AddsContent $row) => [
                 'id' => (int) $row->ac_id,
-                'image_url' => $row->ac_image_path ? Storage::disk('public')->url($row->ac_image_path) : null,
-                'video_url' => $row->ac_video_path ? Storage::disk('public')->url($row->ac_video_path) : null,
+                'image_url' => $this->resolveMediaUrl($row->ac_image_path),
+                'video_url' => $this->resolveMediaUrl($row->ac_video_path),
                 'date_created' => optional($row->ac_date_created)->toDateString(),
                 'status' => (int) ($row->ac_status ?? 0),
                 'page' => $row->ac_page,
@@ -48,8 +50,8 @@ class AddsContentController extends Controller
             ->get()
             ->map(fn (AddsContent $row) => [
                 'id' => (int) $row->ac_id,
-                'image_url' => $row->ac_image_path ? Storage::disk('public')->url($row->ac_image_path) : null,
-                'video_url' => $row->ac_video_path ? Storage::disk('public')->url($row->ac_video_path) : null,
+                'image_url' => $this->resolveMediaUrl($row->ac_image_path),
+                'video_url' => $this->resolveMediaUrl($row->ac_video_path),
                 'date_created' => optional($row->ac_date_created)->toDateString(),
                 'status' => (int) ($row->ac_status ?? 0),
                 'page' => $row->ac_page,
@@ -74,12 +76,18 @@ class AddsContentController extends Controller
         $imagePath = null;
         $videoPath = null;
 
-        if ($request->hasFile('image')) {
-            $imagePath = $request->file('image')->store('adds-content/images', 'public');
-        }
+        try {
+            if ($request->hasFile('image')) {
+                $upload = app(CloudinaryUploadService::class)->uploadImage($request->file('image'), 'afhome/adds-content/images');
+                $imagePath = (string) ($upload['secure_url'] ?? '');
+            }
 
-        if ($request->hasFile('video')) {
-            $videoPath = $request->file('video')->store('adds-content/videos', 'public');
+            if ($request->hasFile('video')) {
+                $upload = app(CloudinaryUploadService::class)->uploadVideo($request->file('video'), 'afhome/adds-content/videos');
+                $videoPath = (string) ($upload['secure_url'] ?? '');
+            }
+        } catch (RuntimeException $exception) {
+            return response()->json(['message' => $exception->getMessage()], 422);
         }
 
         $row = AddsContent::create([
@@ -94,8 +102,8 @@ class AddsContentController extends Controller
             'message' => 'Content saved successfully.',
             'item' => [
                 'id' => (int) $row->ac_id,
-                'image_url' => $imagePath ? Storage::disk('public')->url($imagePath) : null,
-                'video_url' => $videoPath ? Storage::disk('public')->url($videoPath) : null,
+                'image_url' => $this->resolveMediaUrl($imagePath),
+                'video_url' => $this->resolveMediaUrl($videoPath),
                 'date_created' => optional($row->ac_date_created)->toDateString(),
                 'status' => (int) ($row->ac_status ?? 0),
                 'page' => $row->ac_page,
@@ -134,18 +142,20 @@ class AddsContentController extends Controller
 
         $row = AddsContent::query()->where('ac_id', $id)->firstOrFail();
 
-        if ($request->hasFile('image')) {
-            if ($row->ac_image_path) {
-                Storage::disk('public')->delete($row->ac_image_path);
+        try {
+            if ($request->hasFile('image')) {
+                $this->deleteLocalMediaIfApplicable($row->ac_image_path);
+                $upload = app(CloudinaryUploadService::class)->uploadImage($request->file('image'), 'afhome/adds-content/images');
+                $row->ac_image_path = (string) ($upload['secure_url'] ?? '');
             }
-            $row->ac_image_path = $request->file('image')->store('adds-content/images', 'public');
-        }
 
-        if ($request->hasFile('video')) {
-            if ($row->ac_video_path) {
-                Storage::disk('public')->delete($row->ac_video_path);
+            if ($request->hasFile('video')) {
+                $this->deleteLocalMediaIfApplicable($row->ac_video_path);
+                $upload = app(CloudinaryUploadService::class)->uploadVideo($request->file('video'), 'afhome/adds-content/videos');
+                $row->ac_video_path = (string) ($upload['secure_url'] ?? '');
             }
-            $row->ac_video_path = $request->file('video')->store('adds-content/videos', 'public');
+        } catch (RuntimeException $exception) {
+            return response()->json(['message' => $exception->getMessage()], 422);
         }
 
         if (array_key_exists('date_created', $validated)) {
@@ -161,8 +171,8 @@ class AddsContentController extends Controller
             'message' => 'Content updated.',
             'item' => [
                 'id' => (int) $row->ac_id,
-                'image_url' => $row->ac_image_path ? Storage::disk('public')->url($row->ac_image_path) : null,
-                'video_url' => $row->ac_video_path ? Storage::disk('public')->url($row->ac_video_path) : null,
+                'image_url' => $this->resolveMediaUrl($row->ac_image_path),
+                'video_url' => $this->resolveMediaUrl($row->ac_video_path),
                 'date_created' => optional($row->ac_date_created)->toDateString(),
                 'status' => (int) ($row->ac_status ?? 0),
                 'page' => $row->ac_page,
@@ -175,13 +185,8 @@ class AddsContentController extends Controller
     {
         $row = AddsContent::query()->where('ac_id', $id)->firstOrFail();
 
-        if ($row->ac_image_path) {
-            Storage::disk('public')->delete($row->ac_image_path);
-        }
-
-        if ($row->ac_video_path) {
-            Storage::disk('public')->delete($row->ac_video_path);
-        }
+        $this->deleteLocalMediaIfApplicable($row->ac_image_path);
+        $this->deleteLocalMediaIfApplicable($row->ac_video_path);
 
         $row->delete();
 
@@ -189,5 +194,31 @@ class AddsContentController extends Controller
             'message' => 'Content deleted.',
             'id' => (int) $id,
         ]);
+    }
+
+    private function resolveMediaUrl(?string $value): ?string
+    {
+        $path = trim((string) $value);
+        if ($path === '') {
+            return null;
+        }
+
+        if (preg_match('#^https?://#i', $path)) {
+            return $path;
+        }
+
+        return Storage::disk('public')->url($path);
+    }
+
+    private function deleteLocalMediaIfApplicable(?string $value): void
+    {
+        $path = trim((string) $value);
+        if ($path === '' || preg_match('#^https?://#i', $path)) {
+            return;
+        }
+
+        if (Storage::disk('public')->exists($path)) {
+            Storage::disk('public')->delete($path);
+        }
     }
 }

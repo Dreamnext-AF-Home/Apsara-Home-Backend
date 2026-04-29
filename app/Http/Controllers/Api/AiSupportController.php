@@ -97,6 +97,21 @@ class AiSupportController extends Controller
         $detectedBrandId = (int) ($detectedBrand['id'] ?? 0);
         $detectedBrandName = (string) ($detectedBrand['name'] ?? '');
 
+        // Prioritize order-tracking flow before product-matching branches.
+        if ($this->isOrderTrackingIntent($qLower) || $this->looksLikeTrackingFollowUp($question)) {
+            $orderReply = $this->handleOrderTracking($question, $isMember, $memberId);
+            return response()->json([
+                'status' => 'ok',
+                'reply' => (string) ($orderReply['reply'] ?? 'I can help track your order.'),
+                'quick_replies' => ['Payment methods', 'Contact support', 'Shipping policy'],
+                'product_cards' => [],
+                'brand_cards' => [],
+                'category_cards' => [],
+                'brand_view_all_url' => '',
+                'step_images' => [],
+            ]);
+        }
+
         try {
             if ($this->isRegistrationIntent($qLower) || $this->isRegistrationIntent($qNormSimple)) {
                 $frontendBase = $this->frontendBaseUrl();
@@ -2985,106 +3000,169 @@ class AiSupportController extends Controller
 
     private function handleOrderTracking(string $question, bool $isMember, int $memberId): array
     {
-        $orderNo = '';
-        if (preg_match('/\b\d{6,}-\d{6,}\b/', $question, $m)) {
-            $orderNo = trim((string) $m[0]);
+        $orderRef = $this->extractOrderReference($question);
+        $contact = $this->extractContactReference($question);
+
+        if ($orderRef === '') {
+            return [
+                'reply' => 'Hi! I can help you check that. Please share your order/tracking number, and for security also include the email or phone used on checkout.',
+            ];
         }
 
-        if ($orderNo !== '') {
-            if ($isMember) {
-                $row = DB::table('tbl_order')
-                    ->select('od_orderno', 'od_status', 'od_claim_status', 'od_date')
-                    ->where('od_user', $memberId)
-                    ->where('od_orderno', $orderNo)
-                    ->orderByDesc('od_id')
-                    ->first();
-                if ($row) {
-                    $date = $row->od_date ? date('M j, Y h:i A', strtotime($row->od_date)) : '';
-                    $reply = 'Order ' . $row->od_orderno . ' status: ' . $this->statusLabel((int) $row->od_status, (int) $row->od_claim_status) . ($date !== '' ? (' (' . $date . ').') : '.');
-                } else {
-                    $reply = 'I could not find that order number in your account. Please verify the number.';
-                }
-            } else {
-                $guestTable = $this->findGuestTable();
-                if ($guestTable === '') {
-                    $reply = 'Guest tracking table is not available right now. Please try again later.';
-                } else {
-                    $row = DB::table($guestTable . ' as g')
-                        ->leftJoin('tbl_order as o', 'o.od_orderno', '=', 'g.order_no')
-                        ->select('g.order_no', 'g.tracking_number', 'o.od_status', 'o.od_claim_status')
-                        ->where('g.order_no', $orderNo)
-                        ->orderByDesc('g.go_id')
-                        ->first();
-                    if ($row) {
-                        $track = trim((string) ($row->tracking_number ?? ''));
-                        $reply = 'Order ' . $row->order_no . ' status: ' . $this->statusLabel((int) ($row->od_status ?? 0), (int) ($row->od_claim_status ?? 0)) . '. Tracking: ' . ($track !== '' ? $track : (string) $row->order_no) . '.';
-                    } else {
-                        $reply = 'I could not find that guest order number. You can also use the Guest Track Order page.';
-                    }
-                }
-            }
-        } elseif ($isMember) {
-            $rows = DB::table('tbl_order')
-                ->select('od_orderno', 'od_status', 'od_claim_status', 'od_date')
-                ->where('od_user', $memberId)
-                ->orderByDesc('od_id')
-                ->limit(3)
-                ->get();
-            if ($rows->isNotEmpty()) {
-                $items = [];
-                foreach ($rows as $row) {
-                    $date = $row->od_date ? date('M j, Y', strtotime($row->od_date)) : '';
-                    $items[] = $row->od_orderno . ' (' . $this->statusLabel((int) $row->od_status, (int) $row->od_claim_status) . ($date !== '' ? ', ' . $date : '') . ')';
-                }
-                $reply = 'Your recent orders: ' . implode('; ', $items) . '.';
-            } else {
-                $reply = 'No recent orders found in your account.';
-            }
-        } else {
-            $reply = 'Please share your order number (e.g., 2026020-639297319632) so I can check your status.';
+        if (!Schema::hasTable('tbl_checkout_history')) {
+            return [
+                'reply' => 'Order tracking is temporarily unavailable right now. Please try again in a moment.',
+            ];
         }
+
+        $query = DB::table('tbl_checkout_history')
+            ->where(function ($q) use ($orderRef) {
+                $q->where('ch_checkout_id', $orderRef)
+                    ->orWhere('ch_tracking_no', $orderRef);
+            })
+            ->orderByDesc('ch_id');
+
+        if ($isMember && $memberId > 0) {
+            $query->where('ch_customer_id', $memberId);
+        } else {
+            if ($contact === '') {
+                return [
+                    'reply' => 'Thanks! I found the reference format. Please also share the email or phone used on checkout so I can verify and pull the exact status.',
+                ];
+            }
+
+            $normalizedContact = $this->normalizeContactForTracking($contact);
+            $query->where(function ($q) use ($normalizedContact) {
+                $q->whereRaw('LOWER(ch_customer_email) = ?', [$normalizedContact])
+                    ->orWhereRaw('LOWER(ch_customer_phone) = ?', [$normalizedContact]);
+            });
+        }
+
+        $row = $query->first();
+        if (! $row) {
+            return [
+                'reply' => 'I could not find a matching order yet. Please double-check the reference and the email/phone used at checkout.',
+            ];
+        }
+
+        $statusLabel = $this->checkoutStatusLabel(
+            (string) ($row->ch_fulfillment_status ?? ''),
+            (string) ($row->ch_shipment_status ?? ''),
+            (string) ($row->ch_status ?? '')
+        );
+        $eta = $this->estimateDeliveryDate($row->ch_shipped_at ?? null);
+        $trackingNo = trim((string) ($row->ch_tracking_no ?? ''));
+        $frontend = rtrim((string) env('FRONTEND_URL', ''), '/');
+        $trackLink = $frontend !== ''
+            ? ($frontend . '/track-order')
+            : '/track-order';
+
+        $reply = "Thanks! Let me check that for you...\n\n";
+        $reply .= "Alright! Here's your order status:\n";
+        $reply .= "Order: " . (string) ($row->ch_checkout_id ?? $orderRef) . "\n";
+        $reply .= "Status: " . $statusLabel . "\n";
+        if ($eta !== '') {
+            $reply .= "Expected delivery: " . $eta . "\n";
+        }
+        if ($trackingNo !== '') {
+            $reply .= "Tracking no: " . $trackingNo . "\n";
+        }
+        $reply .= "Track here: " . $trackLink . "\n\n";
+        $reply .= "Anything else I can help you with?";
 
         return ['reply' => $reply];
     }
 
-    private function findGuestTable(): string
+    private function extractOrderReference(string $question): string
     {
-        $candidates = ['tbl_guest-order', 'tbl_guest_order'];
-        foreach ($candidates as $tbl) {
-            try {
-                DB::select('SELECT 1 FROM "' . $tbl . '" LIMIT 1');
-                return $tbl;
-            } catch (\Throwable) {
-                continue;
+        $text = trim($question);
+        if ($text === '') {
+            return '';
+        }
+
+        $patterns = [
+            '/\b(CS_[A-Z0-9_-]+)\b/i',
+            '/\b([A-Z]{2,6}-\d{4,})\b/i',
+            '/\b(\d{5,}-\d{5,})\b/',
+            '/\b(?:order\s*#?\s*|tracking\s*#?\s*)([A-Z0-9_-]{5,})\b/i',
+        ];
+
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $text, $m)) {
+                return trim((string) ($m[1] ?? $m[0] ?? ''));
             }
         }
+
         return '';
     }
 
-    private function statusLabel(int $odStatus, int $claimStatus): string
+    private function isOrderTrackingIntent(string $qLower): bool
     {
-        if ($odStatus === 0) {
-            return 'To Pay';
+        return preg_match('/\b(track|tracking|track my order|order status|shipping status|delivery status|where.*order|where.*package|where.*parcel|nasaan na order|nasaan order|order ko)\b/i', $qLower) === 1;
+    }
+
+    private function looksLikeTrackingFollowUp(string $question): bool
+    {
+        $orderRef = $this->extractOrderReference($question);
+        $contact = $this->extractContactReference($question);
+
+        if ($orderRef !== '' && $contact !== '') {
+            return true;
         }
-        if ($odStatus === 1 && $claimStatus === 0) {
-            return 'Supplier to Pack';
+
+        // Also treat standalone checkout/tracking-like references as tracking follow-up.
+        return $orderRef !== '';
+    }
+
+    private function extractContactReference(string $question): string
+    {
+        if (preg_match('/([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i', $question, $m)) {
+            return trim((string) $m[1]);
         }
-        if ($odStatus === 1 && $claimStatus === 1) {
-            return 'Packed';
+
+        if (preg_match('/(\+?\d[\d\s\-()]{7,}\d)/', $question, $m)) {
+            return preg_replace('/\s+/', '', trim((string) $m[1])) ?? '';
         }
-        if ($odStatus === 1 && $claimStatus === 2) {
-            return 'In Transit';
-        }
-        if ($odStatus === 1 && $claimStatus === 3) {
-            return 'Delivered / Completed';
-        }
-        if ($odStatus === 1 && $claimStatus === 4) {
-            return 'Cancelled';
-        }
-        if ($odStatus === 1 && $claimStatus === 5) {
-            return 'Return / Refund';
-        }
+
+        return '';
+    }
+
+    private function normalizeContactForTracking(string $value): string
+    {
+        return strtolower(trim($value));
+    }
+
+    private function checkoutStatusLabel(string $fulfillmentStatus, string $shipmentStatus, string $checkoutStatus): string
+    {
+        $f = strtolower(trim($fulfillmentStatus));
+        $s = strtolower(trim($shipmentStatus));
+        $c = strtolower(trim($checkoutStatus));
+
+        if ($f === 'delivered' || $s === 'delivered') return 'Delivered';
+        if ($f === 'out_for_delivery' || $s === 'out_for_delivery') return 'Out for delivery';
+        if ($f === 'shipped' || $s === 'shipped' || $s === 'in_transit') return 'Shipped - on the way';
+        if ($f === 'approved' || $f === 'processing') return 'Processing';
+        if ($f === 'cancelled' || $s === 'cancelled' || $c === 'failed') return 'Cancelled';
+        if ($c === 'paid') return 'Paid - preparing for shipment';
+        if ($c === 'pending') return 'Pending payment/approval';
+
         return 'Processing';
+    }
+
+    private function estimateDeliveryDate(mixed $shippedAt): string
+    {
+        $raw = trim((string) $shippedAt);
+        if ($raw === '') {
+            return '';
+        }
+
+        $ts = strtotime($raw);
+        if ($ts === false) {
+            return '';
+        }
+
+        // Basic estimate: 2 days after shipped_at.
+        return date('F j, Y', strtotime('+2 days', $ts));
     }
 
     private function extractTopicTerms(string $qLower): array
