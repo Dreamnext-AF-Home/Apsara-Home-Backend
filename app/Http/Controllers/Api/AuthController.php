@@ -21,6 +21,7 @@ use Illuminate\Validation\ValidationException;
 use Illuminate\Support\Str;
 use App\Support\MemberMonthlyActivation;
 use App\Support\MemberActivityLogger;
+use App\Support\TierEvaluator;
 use App\Mail\Auth\RegistrationOtpMail;
 use App\Mail\Auth\PortalLoginOtpMail;
 use App\Mail\Auth\PortalLoginApprovalMail;
@@ -224,6 +225,7 @@ class AuthController extends Controller
         $referrer = Customer::query()->where('c_userid', $referrerUserId)->first();
         if ($referrer instanceof Customer) {
             $this->notifyReferrerAboutRegistration($referrer, $customer);
+            TierEvaluator::evaluate($referrer);
         }
         $this->notifyAdminsAboutNewRegistration($customer);
 
@@ -817,6 +819,8 @@ class AuthController extends Controller
         $customer = $request->user();
 
         if ($customer instanceof Customer) {
+            TierEvaluator::evaluate($customer);
+            $customer->refresh();
             $customer->loadMissing('sponsor:c_userid,c_username,c_fname,c_mname,c_lname');
         }
 

@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use App\Models\Customer;
+use App\Models\CustomerNotification;
 use App\Models\MemberTier;
 use Illuminate\Support\Facades\DB;
 
@@ -10,18 +11,29 @@ class TierEvaluator
 {
     public static function evaluate(Customer $customer): void
     {
-        $currentRank = (int) ($customer->c_rank ?? 1);
+        $storedRank = (int) ($customer->c_rank ?? 0);
+        $currentRank = max(1, $storedRank);
         $qualifiedRank = self::resolveQualifiedRank($customer);
 
         if ($qualifiedRank > $currentRank) {
             $customer->c_rank = $qualifiedRank;
+            $customer->save();
+            self::storeUpgradeNotification($customer, $currentRank, $qualifiedRank);
+            return;
+        }
+
+        if ($storedRank < 1) {
+            $customer->c_rank = 1;
             $customer->save();
         }
     }
 
     private static function resolveQualifiedRank(Customer $customer): int
     {
-        $tiers = MemberTier::active()->orderByDesc('mt_rank')->get();
+        $tiers = MemberTier::query()
+            ->where('mt_is_active', true)
+            ->orderByDesc('mt_rank')
+            ->get();
         $customerId = (int) $customer->c_userid;
 
         $personalPv       = self::getPersonalPv($customerId);
@@ -153,5 +165,37 @@ class TierEvaluator
             ->where('c_sponsor', $customerId)
             ->where('c_rank', '>=', $minRank)
             ->count();
+    }
+
+    private static function storeUpgradeNotification(Customer $customer, int $previousRank, int $newRank): void
+    {
+        $newTier = MemberTier::getTierNameByRank($newRank);
+        $previousTier = MemberTier::getTierNameByRank($previousRank);
+
+        CustomerNotification::query()->firstOrCreate(
+            [
+                'cn_customer_id' => (int) $customer->c_userid,
+                'cn_type' => 'tier_upgrade',
+                'cn_source_type' => 'member_tier',
+                'cn_source_id' => $newRank,
+            ],
+            [
+                'cn_severity' => 'success',
+                'cn_title' => 'Level Up Unlocked',
+                'cn_message' => sprintf(
+                    'Congratulations! You advanced from %s to %s. Your new badge is now active.',
+                    $previousTier,
+                    $newTier
+                ),
+                'cn_href' => '/profile/level-up?rank=' . $newRank,
+                'cn_payload' => [
+                    'previous_rank' => $previousRank,
+                    'previous_tier' => $previousTier,
+                    'new_rank' => $newRank,
+                    'new_tier' => $newTier,
+                ],
+                'cn_created_at' => now(),
+            ]
+        );
     }
 }
