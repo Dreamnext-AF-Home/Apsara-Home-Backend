@@ -272,6 +272,7 @@ class AdminAuthController extends Controller
             'id' => (int) $admin->id,
             'name' => (string) ($admin->fname ?: $admin->username),
             'email' => (string) $admin->user_email,
+            'username' => (string) $admin->username,
             'role' => AdminAccess::roleFromLevel((int) $admin->user_level_id),
             'user_level_id' => (int) $admin->user_level_id,
             'supplier_id' => $admin->supplier_id ? (int) $admin->supplier_id : null,
