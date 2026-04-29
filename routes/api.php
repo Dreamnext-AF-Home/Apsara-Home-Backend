@@ -76,9 +76,11 @@ Route::prefix('auth')->group(function () {
     // Simplified Google login endpoints
     Route::post('/google/login', [AuthController::class, 'googleLogin']);
     Route::post('/callback/google', [AuthController::class, 'googleCallback']);
+    Route::post('/callback/facebook', [AuthController::class, 'facebookCallback']);
 
     // Facebook data deletion callback (required by Facebook Platform Policy)
     Route::post('/facebook/data-deletion', [AuthController::class, 'facebookDataDeletion']);
+    Route::get('/facebook/data-deletion/status', [AuthController::class, 'facebookDataDeletionStatus']);
 
     // Authenticated routes for social account management
     Route::middleware(['auth:sanctum', 'throttle:auth'])->group(function () {
