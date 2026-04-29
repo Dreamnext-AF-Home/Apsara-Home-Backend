@@ -9,16 +9,13 @@ use App\Models\AdminNotification;
 use App\Models\AdminNotificationRead;
 use App\Models\CheckoutHistory;
 use App\Models\Customer;
-use App\Models\CustomerWalletLedger;
 use App\Services\Payments\PaymongoPaymentSyncService;
 use App\Services\Shipping\JntShippingService;
 use App\Services\Shipping\XdeShippingService;
 use App\Services\Zq\ZqApiService;
 use App\Support\AdminAccess;
-use App\Support\DirectAffiliatePerformanceBonus;
 use App\Support\DirectReferralCommission;
-use App\Support\GroupPurchaseBonus;
-use App\Support\TierEvaluator;
+use App\Support\OrderPvPosting;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -531,9 +528,8 @@ class AdminOrderController extends Controller
                 'ch_approved_at' => now(),
                 'ch_fulfillment_status' => $order->ch_fulfillment_status === 'pending' ? 'processing' : $order->ch_fulfillment_status,
             ])->save();
-
-            $this->postPvIfNeeded($order, $admin);
         });
+        OrderPvPosting::postIfNeeded($order, (int) $admin->id);
 
         $this->sendCustomerOrderStatusEmail($order, 'approval_approved');
 
@@ -1394,93 +1390,6 @@ class AdminOrderController extends Controller
             'remaining_minutes' => max(0, $remaining),
             'overdue_minutes' => max(0, $overdue),
         ];
-    }
-
-    private function postPvIfNeeded(CheckoutHistory $order, Admin $admin): void
-    {
-        $earnedPv = (float) ($order->ch_earned_pv ?? 0);
-        if ($earnedPv <= 0 || $order->ch_pv_posted_at) {
-            return;
-        }
-
-        $alreadyPosted = CustomerWalletLedger::query()
-            ->where('wl_wallet_type', 'pv')
-            ->where('wl_entry_type', 'credit')
-            ->where('wl_source_type', 'order')
-            ->where('wl_source_id', (int) $order->ch_id)
-            ->exists();
-        if ($alreadyPosted) {
-            $order->ch_pv_posted_at = now();
-            $order->save();
-            return;
-        }
-
-        $customer = $this->resolvePvRecipient($order);
-        if (!$customer) {
-            return;
-        }
-
-        $customer->c_gpv = (float) ($customer->c_gpv ?? 0) + $earnedPv;
-        $customer->save();
-
-        CustomerWalletLedger::create([
-            'wl_customer_id' => (int) $customer->c_userid,
-            'wl_wallet_type' => 'pv',
-            'wl_entry_type' => 'credit',
-            'wl_amount' => $earnedPv,
-            'wl_source_type' => 'order',
-            'wl_source_id' => (int) $order->ch_id,
-            'wl_reference_no' => $order->ch_checkout_id,
-            'wl_notes' => $this->buildPvPostingNote($order),
-            'wl_created_by' => (int) $admin->id,
-        ]);
-
-        $order->ch_pv_posted_at = now();
-        $order->save();
-
-        DirectAffiliatePerformanceBonus::awardEligibleMilestonesForBuyer($customer, $order, (int) $admin->id);
-        GroupPurchaseBonus::awardForBuyer($customer, $order, (int) $admin->id);
-        TierEvaluator::evaluate($customer);
-
-        // Re-evaluate the sponsor's tier too since their group PV and active member counts may have changed
-        if ((int) ($customer->c_sponsor ?? 0) > 0) {
-            $sponsor = Customer::query()->where('c_userid', (int) $customer->c_sponsor)->first();
-            if ($sponsor) {
-                TierEvaluator::evaluate($sponsor);
-            }
-        }
-    }
-
-    private function resolvePvRecipient(CheckoutHistory $order): ?Customer
-    {
-        $sourceSlug = trim((string) ($order->ch_source_slug ?? ''));
-        $referrerCustomerId = (int) ($order->ch_referrer_customer_id ?? 0);
-
-        if ($sourceSlug !== '' && $referrerCustomerId > 0) {
-            $referrer = Customer::query()->where('c_userid', $referrerCustomerId)->lockForUpdate()->first();
-            if ($referrer) {
-                return $referrer;
-            }
-        }
-
-        $buyerCustomerId = (int) ($order->ch_customer_id ?? 0);
-        if ($buyerCustomerId <= 0) {
-            return null;
-        }
-
-        return Customer::query()->where('c_userid', $buyerCustomerId)->lockForUpdate()->first();
-    }
-
-    private function buildPvPostingNote(CheckoutHistory $order): string
-    {
-        $sourceSlug = trim((string) ($order->ch_source_slug ?? ''));
-        $referrerCustomerId = (int) ($order->ch_referrer_customer_id ?? 0);
-
-        if ($sourceSlug !== '' && $referrerCustomerId > 0) {
-            return 'PV credit posted on order approval to the partner storefront referral account.';
-        }
-
-        return 'PV credit posted on order approval.';
     }
 
     private function sendCustomerOrderStatusEmail(CheckoutHistory $order, string $eventType): void

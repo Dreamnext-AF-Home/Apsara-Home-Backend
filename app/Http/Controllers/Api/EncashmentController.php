@@ -17,6 +17,7 @@ use App\Support\AdminAccess;
 use App\Support\CustomerCashWallet;
 use App\Support\DirectReferralCommission;
 use App\Support\MemberMonthlyActivation;
+use App\Support\OrderPvPosting;
 use App\Support\PersonalPurchaseCashback;
 use Illuminate\Http\Request;
 use Illuminate\Http\Exceptions\HttpResponseException;
@@ -35,6 +36,7 @@ class EncashmentController extends Controller
             return response()->json(['message' => 'Only customer accounts can view wallet data.'], 403);
         }
 
+        $this->backfillApprovedPvForCustomer($customer);
         DirectReferralCommission::releasePendingForDeliveredOrders((int) $customer->c_userid);
 
         $validated = $request->validate([
@@ -89,6 +91,10 @@ class EncashmentController extends Controller
             ->where('ch_customer_id', (int) $customer->c_userid)
             ->where('ch_earned_pv', '>', 0)
             ->whereNull('ch_pv_posted_at')
+            ->where(function ($query) {
+                $query->whereNull('ch_approval_status')
+                    ->orWhere('ch_approval_status', 'pending_approval');
+            })
             ->whereNotIn('ch_status', ['failed', 'cancelled', 'expired'])
             ->sum('ch_earned_pv');
 
@@ -299,6 +305,22 @@ class EncashmentController extends Controller
                 ];
             })->values(),
         ]);
+    }
+
+    private function backfillApprovedPvForCustomer(Customer $customer): void
+    {
+        CheckoutHistory::query()
+            ->where('ch_customer_id', (int) $customer->c_userid)
+            ->where('ch_earned_pv', '>', 0)
+            ->whereNull('ch_pv_posted_at')
+            ->where('ch_approval_status', 'approved')
+            ->whereNotIn('ch_status', ['failed', 'cancelled', 'expired'])
+            ->orderBy('ch_id')
+            ->limit(50)
+            ->get()
+            ->each(function (CheckoutHistory $order) {
+                OrderPvPosting::postIfNeeded($order);
+            });
     }
 
     public function createAffiliateVoucher(Request $request)
