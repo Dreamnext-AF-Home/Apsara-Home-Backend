@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Models\AdminNotification;
 use App\Models\Customer;
 use App\Models\CustomerWalletLedger;
+use App\Support\TierEvaluator;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -998,6 +999,8 @@ class MemberController extends Controller
             $memberName = (string) ($customer->c_username ?: ('Member #' . $customer->c_userid));
         }
 
+        $previousSponsorId = (int) ($customer->c_sponsor ?? 0);
+
         // Count direct downlines before deletion. Their own downlines remain connected under them.
         $orphanedCount = Customer::query()->where('c_sponsor', $id)->count();
 
@@ -1020,6 +1023,13 @@ class MemberController extends Controller
         }
 
         $this->bustMembersCache();
+
+        if ($previousSponsorId > 0) {
+            $previousSponsor = Customer::query()->where('c_userid', $previousSponsorId)->first();
+            if ($previousSponsor instanceof Customer) {
+                TierEvaluator::evaluate($previousSponsor);
+            }
+        }
 
         // Notify admin if there are orphaned members
         if ($orphanedCount > 0) {
@@ -1117,10 +1127,20 @@ class MemberController extends Controller
             $pendingDownlineIds = array_merge($pendingDownlineIds, $childIds);
         }
 
+        $previousSponsorId = (int) ($customer->c_sponsor ?? 0);
         $customer->c_sponsor = (int) $sponsor->c_userid;
         $customer->save();
 
         $this->bustMembersCache();
+
+        if ($previousSponsorId > 0 && $previousSponsorId !== (int) $sponsor->c_userid) {
+            $previousSponsor = Customer::query()->where('c_userid', $previousSponsorId)->first();
+            if ($previousSponsor instanceof Customer) {
+                TierEvaluator::evaluate($previousSponsor);
+            }
+        }
+
+        TierEvaluator::evaluate($sponsor);
 
         return response()->json([
             'message' => "Sponsor assigned successfully. {$customer->c_username} is now under {$sponsor->c_username}.",
