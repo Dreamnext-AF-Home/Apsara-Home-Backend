@@ -3488,6 +3488,31 @@ class AuthController extends Controller
             $directReferralMembers = collect($referralMembersBySponsor->get($customerId, []))
                 ->sortByDesc('c_userid')
                 ->values();
+
+            $personalPv = (float) DB::table('tbl_checkout_history')
+                ->where('ch_customer_id', $customerId)
+                ->whereNotNull('ch_pv_posted_at')
+                ->sum('ch_earned_pv');
+
+            $directIds = $directReferralMembers->pluck('c_userid')->map(fn ($id) => (int) $id)->toArray();
+            $activeMembersCount = 0;
+            if (!empty($directIds)) {
+                $directPvSums = DB::table('tbl_checkout_history')
+                    ->whereIn('ch_customer_id', $directIds)
+                    ->whereNotNull('ch_pv_posted_at')
+                    ->groupBy('ch_customer_id')
+                    ->selectRaw('ch_customer_id, SUM(ch_earned_pv) as total_pv')
+                    ->get()
+                    ->keyBy('ch_customer_id');
+                foreach ($directIds as $directId) {
+                    if ((float) ($directPvSums->get($directId)?->total_pv ?? 0) >= 300) {
+                        $activeMembersCount++;
+                    }
+                }
+            }
+            $activeBuildersCount = $directReferralMembers->filter(fn (Customer $m) => (int) ($m->c_rank ?? 0) >= 2)->count();
+            $activeLeadersCount  = $directReferralMembers->filter(fn (Customer $m) => (int) ($m->c_rank ?? 0) >= 3)->count();
+
             $loyaltyInfo = [
                 'tier' => $tier,
                 'rank' => (int) ($customer->c_rank ?? 0),
@@ -3497,6 +3522,10 @@ class AuthController extends Controller
                 'total_earnings' => (float) ($customer->c_totalincome ?? 0),
                 'pv_balance' => (float) ($customer->c_gpv ?? 0),
                 'cash_balance' => (float) ($customer->c_totalincome ?? 0),
+                'personal_pv' => $personalPv,
+                'active_members_count' => $activeMembersCount,
+                'active_builders_count' => $activeBuildersCount,
+                'active_leaders_count' => $activeLeadersCount,
                 'referral_count' => $directReferralMembers->count(),
                 'direct_referrals' => $directReferralMembers
                     ->map(fn (Customer $member): array => $buildReferralSnapshotNode($member))
