@@ -40,9 +40,21 @@ class AuthController extends Controller
 
     public function register(Request $request)
     {
-        $turnstileToken = trim((string) $request->input('cf_turnstile_response', ''));
-        if (!(new \App\Services\TurnstileService())->verifySignup($turnstileToken, (string) $request->ip())) {
-            return response()->json(['message' => 'Bot verification failed.'], 422);
+        return $this->handleRegistration($request, true);
+    }
+
+    public function mobileRegister(Request $request)
+    {
+        return $this->handleRegistration($request, false);
+    }
+
+    private function handleRegistration(Request $request, bool $requireTurnstile)
+    {
+        if ($requireTurnstile) {
+            $turnstileToken = trim((string) $request->input('cf_turnstile_response', ''));
+            if (!(new \App\Services\TurnstileService())->verifySignup($turnstileToken, (string) $request->ip())) {
+                return response()->json(['message' => 'Bot verification failed.'], 422);
+            }
         }
 
         $request->merge([
@@ -393,6 +405,16 @@ class AuthController extends Controller
             return response()->json(['message' => 'Bot verification failed.'], 422);
         }
 
+        return $this->handleLogin($request);
+    }
+
+    public function mobileLogin(Request $request)
+    {
+        return $this->handleLogin($request);
+    }
+
+    private function handleLogin(Request $request)
+    {
         $otpValue = trim((string) $request->input('otp', ''));
         $challengeTokenValue = trim((string) $request->input('otp_challenge_token', ''));
         $mfaChallengeTokenValue = trim((string) $request->input('mfa_challenge_token', ''));

@@ -52,6 +52,8 @@ Route::prefix('auth')->group(function () {
     // Brute-force targets: 10 requests/min per IP
     Route::middleware('throttle:auth')->group(function () {
         Route::post('/register', [AuthController::class, 'register']);
+        Route::post('/mobile/register', [AuthController::class, 'mobileRegister']);
+        Route::post('/mobile/login', [AuthController::class, 'mobileLogin']);
         Route::post('/passkeys/login/options', [PasskeyAuthController::class, 'loginOptions']);
         Route::post('/passkeys/login/verify', [PasskeyAuthController::class, 'loginVerify']);
         Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
