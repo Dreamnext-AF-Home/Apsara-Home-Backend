@@ -11,6 +11,8 @@ use App\Http\Middleware\EnsureCustomerActor;
 use App\Http\Middleware\EnsureSupplierActor;
 use App\Http\Middleware\JsonAuthentication;
 use App\Http\Middleware\AdminTokenValidation;
+use App\Http\Middleware\RequestAbuseGuard;
+use App\Http\Middleware\SecurityHeaders;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -22,6 +24,8 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         // API-first app: unauthenticated requests should return 401 JSON, not redirect to a named "login" route.
         $middleware->redirectGuestsTo(fn (Request $request) => $request->expectsJson() ? null : null);
+        $middleware->append(RequestAbuseGuard::class);
+        $middleware->append(SecurityHeaders::class);
 
         $middleware->alias([
             'admin.actor' => EnsureAdminActor::class,

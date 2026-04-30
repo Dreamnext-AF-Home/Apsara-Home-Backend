@@ -47,10 +47,11 @@ use App\Http\Controllers\Api\TotpController;
 
 // Public auth routes
 Route::prefix('auth')->group(function () {
+    Route::middleware('throttle:member-login')->post('/login', [AuthController::class, 'login']);
+
     // Brute-force targets: 10 requests/min per IP
     Route::middleware('throttle:auth')->group(function () {
         Route::post('/register', [AuthController::class, 'register']);
-        Route::post('/login', [AuthController::class, 'login']);
         Route::post('/passkeys/login/options', [PasskeyAuthController::class, 'loginOptions']);
         Route::post('/passkeys/login/verify', [PasskeyAuthController::class, 'loginVerify']);
         Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
@@ -378,9 +379,9 @@ Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_a
 
 Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_admin,admin,web_content'])->group(function () {
     Route::get('/admin/web-pages/{type}', [WebPageController::class, 'adminIndex']);
-    Route::post('/admin/web-pages/{type}', [WebPageController::class, 'adminStore']);
-    Route::put('/admin/web-pages/{type}/{id}', [WebPageController::class, 'adminUpdate']);
-    Route::delete('/admin/web-pages/{type}/{id}', [WebPageController::class, 'adminDestroy']);
+    Route::post('/admin/web-pages/{type}', [WebPageController::class, 'adminStore'])->middleware('throttle:admin-write');
+    Route::put('/admin/web-pages/{type}/{id}', [WebPageController::class, 'adminUpdate'])->middleware('throttle:admin-write');
+    Route::delete('/admin/web-pages/{type}/{id}', [WebPageController::class, 'adminDestroy'])->middleware('throttle:admin-write');
 });
 
 Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_admin,admin,web_content'])->group(function () {
@@ -391,7 +392,7 @@ Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_a
 });
 
 Route::prefix('admin/auth')->group(function () {
-    Route::middleware('throttle:auth')->post('/login', [AdminAuthController::class, 'login']);
+    Route::middleware('throttle:admin-login')->post('/login', [AdminAuthController::class, 'login']);
     Route::middleware('throttle:otp')->post('/login/2fa/resend', [AdminAuthController::class, 'resendLoginOtp']);
 });
 
