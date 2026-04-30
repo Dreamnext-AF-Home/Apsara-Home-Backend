@@ -439,6 +439,8 @@ class WebPageController extends Controller
             'home', 'homepage', 'home_page' => 'home',
             'banner', 'banners' => 'banner',
             'announcement', 'announcements' => 'announcement',
+            'photo-gallery', 'photo_gallery', 'photos', 'photo' => 'photo-gallery',
+            'video-gallery', 'video_gallery', 'videos', 'video' => 'video-gallery',
             'assembly', 'assembly-guide', 'assembly-guides', 'assembly_guides' => 'assembly-guides',
             'shop-builder', 'shop_builder', 'shop', 'shop-page', 'shop_page' => 'shop-builder',
             'partner-storefront', 'partner-storefronts', 'partner_storefront', 'partner_storefronts', 'storefront', 'storefronts' => 'partner-storefront',
