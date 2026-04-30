@@ -391,6 +391,16 @@ class AuthController extends Controller
             return response()->json(['message' => 'Bot verification failed.'], 422);
         }
 
+        return $this->handleLogin($request);
+    }
+
+    public function mobileLogin(Request $request)
+    {
+        return $this->handleLogin($request);
+    }
+
+    private function handleLogin(Request $request)
+    {
         $otpValue = trim((string) $request->input('otp', ''));
         $challengeTokenValue = trim((string) $request->input('otp_challenge_token', ''));
         $mfaChallengeTokenValue = trim((string) $request->input('mfa_challenge_token', ''));
