@@ -61,12 +61,12 @@ Route::prefix('auth')->group(function () {
     Route::post('/login/mfa/respond', [AuthController::class, 'respondLoginMfa']);
 });
 
-    // OTP resend: 5 requests/min per IP to prevent flooding
-    Route::middleware('throttle:otp')->group(function () {
-        Route::post('/register/resend-otp', [AuthController::class, 'resendRegistrationOtp']);
-        Route::post('/login/2fa/resend', [AuthController::class, 'resendLoginOtp']);
-        Route::post('/login/mfa/resend', [AuthController::class, 'resendLoginOtp']);
-    });
+// OTP resend: 5 requests/min per IP to prevent flooding
+Route::middleware('throttle:otp')->group(function () {
+    Route::post('/register/resend-otp', [AuthController::class, 'resendRegistrationOtp']);
+    Route::post('/login/2fa/resend', [AuthController::class, 'resendLoginOtp']);
+    Route::post('/login/mfa/resend', [AuthController::class, 'resendLoginOtp']);
+});
     // Low-risk read/check endpoints
     Route::get('/register/check-email', [AuthController::class, 'checkEmailAvailability']);
     Route::get('/register/check-username', [AuthController::class, 'checkUsernameAvailability']);
