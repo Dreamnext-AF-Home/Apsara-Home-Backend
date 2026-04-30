@@ -39,9 +39,21 @@ class AuthController extends Controller
 
     public function register(Request $request)
     {
-        $turnstileToken = trim((string) $request->input('cf_turnstile_response', ''));
-        if (!(new \App\Services\TurnstileService())->verifySignup($turnstileToken, (string) $request->ip())) {
-            return response()->json(['message' => 'Bot verification failed.'], 422);
+        return $this->handleRegistration($request, true);
+    }
+
+    public function mobileRegister(Request $request)
+    {
+        return $this->handleRegistration($request, false);
+    }
+
+    private function handleRegistration(Request $request, bool $requireTurnstile)
+    {
+        if ($requireTurnstile) {
+            $turnstileToken = trim((string) $request->input('cf_turnstile_response', ''));
+            if (!(new \App\Services\TurnstileService())->verifySignup($turnstileToken, (string) $request->ip())) {
+                return response()->json(['message' => 'Bot verification failed.'], 422);
+            }
         }
 
         $request->merge([
