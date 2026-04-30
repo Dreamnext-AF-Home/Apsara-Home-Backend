@@ -1008,7 +1008,7 @@ class AuthController extends Controller
 
         $descendantsBySponsor = $descendants
             ->filter(fn (Customer $member) => (int) ($member->c_sponsor ?? 0) > 0)
-            ->groupBy('c_sponsor');
+            ->groupBy(fn (Customer $member) => (int) ($member->c_sponsor ?? 0));
 
         $buildNode = function (Customer $member, array $path = []) use (&$buildNode, $descendantsBySponsor): array {
             $memberId = (int) $member->c_userid;
@@ -1026,15 +1026,35 @@ class AuthController extends Controller
             return $node;
         };
 
-        $levelOneMembers = $descendants
-            ->where('c_sponsor', (int) $customer->c_userid)
-            ->values();
+        $customerId = (int) $customer->c_userid;
 
-        $inferredDirectIds = $this->inferredDirectReferralIdsFromCheckouts((int) $customer->c_userid);
+        $customerColumns = [
+            'c_userid',
+            'c_username',
+            'c_fname',
+            'c_mname',
+            'c_lname',
+            'c_email',
+            'c_accnt_status',
+            'c_lockstatus',
+            'c_totalincome',
+            'c_gpv',
+            'c_date_started',
+            'c_sponsor',
+        ];
+
+        $levelOneMembers = Customer::query()
+            ->select($customerColumns)
+            ->where('c_sponsor', $customerId)
+            ->orderByDesc('c_userid')
+            ->get();
+
+        $inferredDirectIds = $this->inferredDirectReferralIdsFromCheckouts($customerId);
         if (! empty($inferredDirectIds)) {
-            $inferredMembers = $descendants
+            $inferredMembers = Customer::query()
+                ->select($customerColumns)
                 ->whereIn('c_userid', $inferredDirectIds)
-                ->values();
+                ->get();
 
             $levelOneMembers = $levelOneMembers
                 ->concat($inferredMembers)
@@ -1051,7 +1071,7 @@ class AuthController extends Controller
         $levelTwoMembers = empty($levelOneIds)
             ? collect()
             : $descendants
-                ->whereIn('c_sponsor', $levelOneIds)
+                ->filter(fn (Customer $member) => in_array((int) ($member->c_sponsor ?? 0), array_map('intval', $levelOneIds), true))
                 ->values();
 
         $secondLevelCount = $levelTwoMembers->count();
@@ -3406,6 +3426,46 @@ class AuthController extends Controller
 
             // Get Loyalty/Tier Information
             $tier = $this->mapCustomerTier((int) ($customer->c_rank ?? 0));
+            $referralColumns = [
+                'c_userid',
+                'c_username',
+                'c_fname',
+                'c_mname',
+                'c_lname',
+                'c_email',
+                'c_accnt_status',
+                'c_lockstatus',
+                'c_totalincome',
+                'c_gpv',
+                'c_date_started',
+                'c_sponsor',
+            ];
+            $referralMembers = Customer::query()
+                ->select($referralColumns)
+                ->orderBy('c_userid')
+                ->get();
+            $referralMembersBySponsor = $referralMembers
+                ->filter(fn (Customer $member) => (int) ($member->c_sponsor ?? 0) > 0)
+                ->groupBy(fn (Customer $member) => (int) ($member->c_sponsor ?? 0));
+            $buildReferralSnapshotNode = function (Customer $member, array $path = []) use (&$buildReferralSnapshotNode, $referralMembersBySponsor): array {
+                $memberId = (int) $member->c_userid;
+                $nextPath = [...$path, $memberId];
+
+                $children = collect($referralMembersBySponsor->get($memberId, []))
+                    ->reject(fn (Customer $child) => in_array((int) $child->c_userid, $nextPath, true))
+                    ->sortByDesc('c_userid')
+                    ->map(fn (Customer $child): array => $buildReferralSnapshotNode($child, $nextPath))
+                    ->values();
+
+                $node = $this->transformReferralNode($member);
+                $node['children_count'] = $children->count();
+                $node['children'] = $children->all();
+
+                return $node;
+            };
+            $directReferralMembers = collect($referralMembersBySponsor->get($customerId, []))
+                ->sortByDesc('c_userid')
+                ->values();
             $loyaltyInfo = [
                 'tier' => $tier,
                 'rank' => (int) ($customer->c_rank ?? 0),
@@ -3415,7 +3475,11 @@ class AuthController extends Controller
                 'total_earnings' => (float) ($customer->c_totalincome ?? 0),
                 'pv_balance' => (float) ($customer->c_gpv ?? 0),
                 'cash_balance' => (float) ($customer->c_totalincome ?? 0),
-                'referral_count' => DB::table('tbl_customer')->where('c_sponsor', $customerId)->count(),
+                'referral_count' => $directReferralMembers->count(),
+                'direct_referrals' => $directReferralMembers
+                    ->map(fn (Customer $member): array => $buildReferralSnapshotNode($member))
+                    ->values()
+                    ->all(),
                 'join_date' => $customer->c_date_started ? (is_string($customer->c_date_started) ? $customer->c_date_started : $customer->c_date_started->format('Y-m-d')) : null,
                 'last_login' => $customer->c_last_logindate ? (is_string($customer->c_last_logindate) ? $customer->c_last_logindate : $customer->c_last_logindate->format('Y-m-d H:i:s')) : null,
             ];

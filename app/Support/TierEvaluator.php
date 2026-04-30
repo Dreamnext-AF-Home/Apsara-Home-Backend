@@ -15,10 +15,14 @@ class TierEvaluator
         $currentRank = max(1, $storedRank);
         $qualifiedRank = self::resolveQualifiedRank($customer);
 
-        if ($qualifiedRank > $currentRank) {
+        if ($qualifiedRank !== $currentRank) {
             $customer->c_rank = $qualifiedRank;
             $customer->save();
-            self::storeUpgradeNotification($customer, $currentRank, $qualifiedRank);
+
+            if ($qualifiedRank > $currentRank) {
+                self::storeUpgradeNotification($customer, $currentRank, $qualifiedRank);
+            }
+
             return;
         }
 
