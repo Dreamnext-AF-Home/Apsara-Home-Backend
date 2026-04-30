@@ -305,34 +305,14 @@ class MemberController extends Controller
                     }
                 })
                 ->when($sort === 'referrals_high_low', function ($query) {
+                    // Avoid expensive self-join + full GROUP BY on large customer tables.
+                    // Correlated subquery performs better for paginated sorting in PostgreSQL.
                     $query
-                        ->leftJoin('tbl_customer as referrals', 'referrals.c_sponsor', '=', 'tbl_customer.c_userid')
-                        ->groupBy(
-                            'tbl_customer.c_userid',
-                            'tbl_customer.c_username',
-                            'tbl_customer.c_fname',
-                            'tbl_customer.c_mname',
-                            'tbl_customer.c_lname',
-                            'tbl_customer.c_email',
-                            'tbl_customer.c_mobile',
-                            'tbl_customer.c_address',
-                            'tbl_customer.c_barangay',
-                            'tbl_customer.c_city',
-                            'tbl_customer.c_province',
-                            'tbl_customer.c_region',
-                            'tbl_customer.c_zipcode',
-                            'tbl_customer.c_avatar_url',
-                            'tbl_customer.c_lockstatus',
-                            'tbl_customer.c_accnt_status',
-                            'tbl_customer.c_rank',
-                            'tbl_customer.c_totalpair',
-                            'tbl_customer.c_gpv',
-                            'tbl_customer.c_totalincome',
-                            'tbl_customer.c_sponsor',
-                            'tbl_customer.c_date_started',
-                            'tbl_customer.c_last_logindate',
-                        )
-                        ->selectRaw('COUNT(referrals.c_userid) as referral_sort_total')
+                        ->selectRaw('(
+                            SELECT COUNT(*)
+                            FROM tbl_customer AS referrals
+                            WHERE referrals.c_sponsor = tbl_customer.c_userid
+                        ) AS referral_sort_total')
                         ->orderByDesc('referral_sort_total')
                         ->orderByDesc('tbl_customer.c_userid');
                 }, function ($query) use ($sort) {
