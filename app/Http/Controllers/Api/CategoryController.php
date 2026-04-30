@@ -35,6 +35,26 @@ class CategoryController extends Controller
             ->groupBy('pd_catid')
             ->pluck('total', 'category_id');
 
+        $productImages = DB::table('tbl_product')
+            ->select(['pd_catid as category_id', 'pd_image'])
+            ->whereIn('pd_status', [1, 2])
+            ->when($supplierId > 0, function ($query) use ($supplierId) {
+                $query->where('pd_supplier', $supplierId);
+            })
+            ->orderByDesc('pd_id')
+            ->get()
+            ->groupBy('category_id')
+            ->map(function ($rows) {
+                return collect($rows)
+                    ->pluck('pd_image')
+                    ->filter(fn ($image) => is_string($image) && trim($image) !== '')
+                    ->map(fn ($image) => $this->normalizeCategoryImage($image))
+                    ->filter()
+                    ->take(5)
+                    ->values()
+                    ->all();
+            });
+
         $categories = Category::select([
                 'cat_id', 'cat_name', 'cat_description',
                 'cat_url', 'cat_image', 'cat_order',
@@ -63,6 +83,7 @@ class CategoryController extends Controller
                 'description' => $this->normalizeText((string) ($c->cat_description ?? '')),
                 'url'         => (string) ($c->cat_url ?? ''),
                 'image'       => $this->normalizeCategoryImage($c->cat_image),
+                'images'      => $productImages[(int) $c->cat_id] ?? [],
                 'order'       => (int)    $c->cat_order,
                 'product_count' => (int) ($productCounts[(int) $c->cat_id] ?? 0),
             ])
