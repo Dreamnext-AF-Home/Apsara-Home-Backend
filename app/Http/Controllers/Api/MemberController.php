@@ -330,6 +330,20 @@ class MemberController extends Controller
                         return;
                     }
 
+                    if ($sort === 'earnings_high_low') {
+                        $query
+                            ->orderByDesc('tbl_customer.c_totalincome')
+                            ->orderByDesc('tbl_customer.c_userid');
+                        return;
+                    }
+
+                    if ($sort === 'earnings_low_high') {
+                        $query
+                            ->orderBy('tbl_customer.c_totalincome')
+                            ->orderByDesc('tbl_customer.c_userid');
+                        return;
+                    }
+
                     $query->orderByDesc('tbl_customer.c_userid');
                 })
                 ->paginate($perPage);
