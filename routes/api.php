@@ -51,6 +51,7 @@ Route::prefix('auth')->group(function () {
     Route::middleware('throttle:auth')->group(function () {
         Route::post('/register', [AuthController::class, 'register']);
         Route::post('/login', [AuthController::class, 'login']);
+        Route::post('/mobile/login', [AuthController::class, 'mobileLogin']);
         Route::post('/passkeys/login/options', [PasskeyAuthController::class, 'loginOptions']);
         Route::post('/passkeys/login/verify', [PasskeyAuthController::class, 'loginVerify']);
         Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
