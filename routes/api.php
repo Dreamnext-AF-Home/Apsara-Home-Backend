@@ -117,6 +117,7 @@ Route::middleware('throttle:webhooks')->group(function () {
 
 // Public read endpoints: 120 requests/min per IP
 Route::middleware('throttle:public')->group(function () {
+    Route::get('/rooms', [ProductController::class, 'rooms']);
     Route::get('/categories', [CategoryController::class, 'index']);
     Route::get('/products/slug/{slug}', [ProductController::class, 'showBySlug']);
     Route::get('/products/{id}/reviews', [ProductController::class, 'reviews']);

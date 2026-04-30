@@ -46,6 +46,23 @@ class ProductController extends Controller
         return $query->whereIn('pd_status', [1, 2]);
     }
 
+    public function rooms(): JsonResponse
+    {
+        return response()->json([
+            'rooms' => [
+                ['id' => 1, 'name' => 'Bedroom'],
+                ['id' => 2, 'name' => 'Kitchen'],
+                ['id' => 3, 'name' => 'Living Room'],
+                ['id' => 4, 'name' => 'Outdoor'],
+                ['id' => 5, 'name' => 'Study & Office Room'],
+                ['id' => 6, 'name' => 'Dining Room'],
+                ['id' => 7, 'name' => 'Laundry Room'],
+                ['id' => 8, 'name' => 'Bath Room'],
+            ],
+            'total' => 8,
+        ]);
+    }
+
     public function saveSearchHistory(Request $request): JsonResponse
     {
         $validator = Validator::make($request->all(), [
