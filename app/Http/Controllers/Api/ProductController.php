@@ -1398,6 +1398,123 @@ class ProductController extends Controller
         ]);
     }
 
+    public function showSummary(int $id): JsonResponse
+    {
+        $product = Product::query()
+            ->select([
+                'pd_id', 'pd_name', 'pd_image',
+                'pd_price_srp', 'pd_price_dp',
+                'pd_prodpv', 'pd_brand_type',
+                'pd_musthave', 'pd_bestseller', 'pd_salespromo',
+                'pd_qty',
+            ])
+            ->with([
+                'photos:pp_id,pp_pdid,pp_filename',
+                'brand:pb_id,pb_name',
+            ])
+            ->tap(fn ($query) => $this->applyPublicVisibility($query))
+            ->where('pd_id', $id)
+            ->first();
+
+        if (! $product) {
+            return response()->json(['message' => 'Product not found.'], 404);
+        }
+
+        $soldCount = (int) DB::table('tbl_checkout_history')
+            ->where('ch_product_id', $id)
+            ->whereIn('ch_status', ['paid', 'completed', 'shipped'])
+            ->sum('ch_quantity');
+
+        return response()->json([
+            'product' => $this->mapProductSummary($product, $soldCount),
+        ]);
+    }
+
+    private function mapProductSummary(Product $p, int $soldCount = 0): array
+    {
+        $primaryImage = $p->photos->first()?->pp_filename ?? $p->pd_image ?? null;
+
+        return [
+            'id'             => (int)    $p->pd_id,
+            'name'           => (string) ($p->pd_name ?? ''),
+            'image'          => $primaryImage ? (string) $primaryImage : null,
+            'soldCount'      => $soldCount,
+            'originalPrice'  => $this->toNumber($p->pd_price_srp),
+            'discountedPrice'=> $this->toNumber($p->pd_price_dp),
+            'pv'             => $this->toNumber($p->pd_prodpv),
+            'brandName'      => $p->brand?->pb_name ? (string) $p->brand->pb_name : null,
+            'variantCount'   => (int) ($p->variants_count ?? 0),
+            'badges'         => [
+                'musthave'   => (bool) $p->pd_musthave,
+                'bestseller' => (bool) $p->pd_bestseller,
+                'salespromo' => (bool) $p->pd_salespromo,
+            ],
+        ];
+    }
+
+    public function indexCards(Request $request): JsonResponse
+    {
+        try {
+            $perPageParam = $request->query('per_page', 25);
+            $perPage = strtolower(trim((string) $perPageParam)) === 'all'
+                ? PHP_INT_MAX
+                : max(1, (int) $perPageParam);
+
+            $search    = trim((string) $request->query('q', ''));
+            $catId     = $request->query('cat_id', '');
+            $roomType  = $request->query('room_type', '');
+            $brandType = $request->query('brand_type', '');
+
+            $query = Product::query()
+                ->select([
+                    'pd_id', 'pd_name', 'pd_image',
+                    'pd_price_srp', 'pd_price_dp',
+                    'pd_prodpv', 'pd_brand_type',
+                    'pd_musthave', 'pd_bestseller', 'pd_salespromo',
+                ])
+                ->with([
+                    'photos:pp_id,pp_pdid,pp_filename',
+                    'brand:pb_id,pb_name',
+                ])
+                ->withCount('variants')
+                ->tap(fn ($q) => $this->applyPublicVisibility($q))
+                ->when($search !== '', fn ($q) => $this->applyKeywordSearch($q, $search))
+                ->when($catId !== '', fn ($q) => $q->where('pd_catid', (int) $catId))
+                ->when($roomType !== '', fn ($q) => $q->where('pd_room_type', (int) $roomType))
+                ->when($brandType !== '', fn ($q) => $q->where('pd_brand_type', (int) $brandType))
+                ->orderByDesc('pd_id');
+
+            $paginator = $query->paginate($perPage);
+
+            $productIds = collect($paginator->items())->pluck('pd_id')->toArray();
+
+            $soldCounts = DB::table('tbl_checkout_history')
+                ->whereIn('ch_product_id', $productIds)
+                ->whereIn('ch_status', ['paid', 'completed', 'shipped'])
+                ->groupBy('ch_product_id')
+                ->selectRaw('ch_product_id as product_id, SUM(ch_quantity) as sold_count')
+                ->pluck('sold_count', 'product_id');
+
+            $products = collect($paginator->items())
+                ->map(fn (Product $p) => $this->mapProductSummary($p, (int) $soldCounts->get($p->pd_id, 0)))
+                ->values();
+
+            return response()->json([
+                'products' => $products,
+                'meta' => [
+                    'current_page' => $paginator->currentPage(),
+                    'last_page'    => $paginator->lastPage(),
+                    'per_page'     => $paginator->perPage(),
+                    'total'        => $paginator->total(),
+                    'from'         => $paginator->firstItem(),
+                    'to'           => $paginator->lastItem(),
+                ],
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['message' => 'Failed to fetch products.'], 500);
+        }
+    }
+
     public function brand(int $id): JsonResponse
     {
         $product = Product::query()

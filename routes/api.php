@@ -121,7 +121,9 @@ Route::middleware('throttle:public')->group(function () {
     Route::get('/rooms', [ProductController::class, 'rooms']);
     Route::get('/categories', [CategoryController::class, 'index']);
     Route::get('/products/slug/{slug}', [ProductController::class, 'showBySlug']);
+    Route::get('/products/cards', [ProductController::class, 'indexCards']);
     Route::get('/products/{id}/reviews', [ProductController::class, 'reviews']);
+    Route::get('/products/{id}/summary', [ProductController::class, 'showSummary']);
     Route::get('/products/{id}', [ProductController::class, 'show']);
     Route::get('/products/{id}/brand', [ProductController::class, 'brand']);
     Route::get('/products', [ProductController::class, 'index']);
