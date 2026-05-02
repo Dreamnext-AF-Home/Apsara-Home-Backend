@@ -42,6 +42,7 @@ use App\Http\Controllers\Api\LeadController;
 use App\Http\Controllers\Api\ShippingRateController;
 use App\Http\Controllers\Api\PasskeyAuthController;
 use App\Http\Controllers\Api\ProductViewerController;
+use App\Http\Controllers\Api\SearchController;
 use App\Http\Controllers\Api\TotpController;
 
 
@@ -121,7 +122,9 @@ Route::middleware('throttle:public')->group(function () {
     Route::get('/rooms', [ProductController::class, 'rooms']);
     Route::get('/categories', [CategoryController::class, 'index']);
     Route::get('/products/slug/{slug}', [ProductController::class, 'showBySlug']);
+    Route::get('/products/cards', [ProductController::class, 'indexCards']);
     Route::get('/products/{id}/reviews', [ProductController::class, 'reviews']);
+    Route::get('/products/{id}/summary', [ProductController::class, 'showSummary']);
     Route::get('/products/{id}', [ProductController::class, 'show']);
     Route::get('/products/{id}/brand', [ProductController::class, 'brand']);
     Route::get('/products', [ProductController::class, 'index']);
@@ -148,6 +151,7 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::post('/auth/change-password', [AuthController::class, 'changePassword']);
     Route::get('/me', [AuthController::class, 'me']);
     Route::put('/me', [AuthController::class, 'updateMe']);
+    Route::post('/me/avatar', [AuthController::class, 'uploadAvatar'])->middleware('throttle:uploads');
     Route::get('/referral-tree', [AuthController::class, 'referralTree']);
     Route::get('/sessions', [AuthController::class, 'sessions']);
     Route::delete('/sessions/{tokenId}', [AuthController::class, 'revokeSession']);
@@ -179,6 +183,15 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::put('/cart/{id}', [CartController::class, 'updateCartItem']);
     Route::delete('/cart/{id}', [CartController::class, 'removeCartItem']);
     Route::delete('/cart', [CartController::class, 'clearCart']);
+    // Search endpoints
+    Route::get('/search/live', [SearchController::class, 'liveSearch']);
+    Route::get('/search/recommendations', [SearchController::class, 'recommendations']);
+    Route::get('/search', [SearchController::class, 'search']);
+    
+    // Room types endpoint
+    Route::get('/room-types', [SearchController::class, 'roomTypes']);
+    
+    // Search history endpoints (legacy)
     Route::post('/search/history', [ProductController::class, 'saveSearchHistory']);
     Route::get('/search/history', [ProductController::class, 'getSearchHistory']);
     Route::delete('/search/history', [ProductController::class, 'clearSearchHistory']);

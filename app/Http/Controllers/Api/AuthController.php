@@ -8,6 +8,7 @@ use App\Models\Customer;
 use App\Models\CustomerLoginSession;
 use App\Models\CustomerAddress;
 use App\Models\MemberActivityLog;
+use App\Models\MemberTier;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
@@ -22,6 +23,7 @@ use Illuminate\Support\Str;
 use App\Support\MemberMonthlyActivation;
 use App\Support\MemberActivityLogger;
 use App\Support\TierEvaluator;
+use App\Services\CloudinaryUploadService;
 use App\Mail\Auth\RegistrationOtpMail;
 use App\Mail\Auth\PortalLoginOtpMail;
 use App\Mail\Auth\PortalLoginApprovalMail;
@@ -1018,6 +1020,7 @@ class AuthController extends Controller
                 'c_mname',
                 'c_lname',
                 'c_email',
+                'c_avatar_url',
                 'c_accnt_status',
                 'c_lockstatus',
                 'c_totalincome',
@@ -1057,6 +1060,7 @@ class AuthController extends Controller
             'c_mname',
             'c_lname',
             'c_email',
+            'c_avatar_url',
             'c_accnt_status',
             'c_lockstatus',
             'c_totalincome',
@@ -1103,6 +1107,16 @@ class AuthController extends Controller
             ->map(fn (Customer $member): array => $buildNode($member))
             ->values();
 
+        $countNodes = function (array $nodes) use (&$countNodes): int {
+            $count = count($nodes);
+            foreach ($nodes as $node) {
+                $count += $countNodes($node['children'] ?? []);
+            }
+            return $count;
+        };
+
+        $totalNetwork = $countNodes($children->all());
+
         $networkIds = collect($children)
             ->flatMap(function (array $node) {
                 $collectIds = function (array $current) use (&$collectIds): array {
@@ -1121,7 +1135,6 @@ class AuthController extends Controller
         $networkMembers = $networkIds->isEmpty()
             ? collect()
             : $descendants->whereIn('c_userid', $networkIds->all())->values();
-        $totalNetwork = $networkMembers->count();
         $totalPv = (float) $networkMembers->sum(fn (Customer $member) => (float) ($member->c_gpv ?? 0));
 
         return response()->json([
@@ -1169,6 +1182,7 @@ class AuthController extends Controller
             'region_code' => 'nullable|string|max:20',
             'zip_code' => 'nullable|string|max:20',
             'avatar_url' => 'nullable|url|max:1200',
+            'avatar_original_url' => 'nullable|url|max:1200',
             'two_factor_enabled' => 'nullable|boolean',
         ]);
 
@@ -1270,6 +1284,10 @@ class AuthController extends Controller
             $customer->c_avatar_url = $validated['avatar_url'] ?: null;
         }
 
+        if (array_key_exists('avatar_original_url', $validated) && Schema::hasColumn('tbl_customer', 'c_avatar_original_url')) {
+            $customer->c_avatar_original_url = $validated['avatar_original_url'] ?: null;
+        }
+
         if (array_key_exists('two_factor_enabled', $validated)) {
             $customer->c_two_factor_enabled = (bool) $validated['two_factor_enabled'];
         }
@@ -1277,6 +1295,48 @@ class AuthController extends Controller
         $customer->save();
 
         return response()->json($this->transformCustomer($customer));
+    }
+
+    public function uploadAvatar(Request $request, CloudinaryUploadService $cloudinary)
+    {
+        /** @var Customer $customer */
+        $customer = $request->user();
+
+        $validated = $request->validate([
+            'file' => 'required|image|mimes:jpeg,jpg,png,webp,gif|max:5120',
+            'original_file' => 'nullable|image|mimes:jpeg,jpg,png,webp,gif|max:5120',
+        ]);
+
+        try {
+            $upload = $cloudinary->uploadImage($validated['file'], 'apsara/profile');
+            $avatarUrl = (string) ($upload['secure_url'] ?? '');
+
+            if ($avatarUrl === '') {
+                return response()->json(['message' => 'Profile photo upload returned no image URL.'], 422);
+            }
+
+            $customer->c_avatar_url = $avatarUrl;
+            $avatarOriginalUrl = null;
+            if ($request->hasFile('original_file') && Schema::hasColumn('tbl_customer', 'c_avatar_original_url')) {
+                $originalUpload = $cloudinary->uploadImage($request->file('original_file'), 'apsara/profile/originals');
+                $avatarOriginalUrl = (string) ($originalUpload['secure_url'] ?? '');
+                $customer->c_avatar_original_url = $avatarOriginalUrl !== '' ? $avatarOriginalUrl : null;
+            }
+            $customer->save();
+
+            return response()->json([
+                'message' => 'Profile photo updated successfully.',
+                'avatar_url' => $avatarUrl,
+                'avatar_original_url' => $avatarOriginalUrl ?: (string) ($customer->c_avatar_original_url ?? $avatarUrl),
+                'user' => $this->transformCustomer($customer),
+            ]);
+        } catch (\Throwable $exception) {
+            report($exception);
+
+            return response()->json([
+                'message' => $exception->getMessage() ?: 'Failed to upload profile photo.',
+            ], 422);
+        }
     }
 
     public function changePassword(Request $request)
@@ -1555,6 +1615,9 @@ class AuthController extends Controller
                 default => 'not_verified',
             };
 
+        $rank = (int) ($customer->c_rank ?? 0);
+        $badgeName = MemberTier::getTierNameByRank($rank);
+
         return [
             'id' => (int) $customer->c_userid,
             'name' => $fullName,
@@ -1583,7 +1646,12 @@ class AuthController extends Controller
             'work_location' => $this->inferWorkLocation($customer->c_country ?? null),
             'country' => ($country = trim((string) ($customer->c_country ?? ''))) !== '' ? $country : null,
             'avatar_url' => $customer->c_avatar_url,
-            'rank' => (int) ($customer->c_rank ?? 0),
+            'avatar_original_url' => Schema::hasColumn('tbl_customer', 'c_avatar_original_url')
+                ? ($customer->c_avatar_original_url ?: $customer->c_avatar_url)
+                : $customer->c_avatar_url,
+            'rank' => $rank,
+            'badge' => $rank,
+            'badge_name' => $badgeName,
             'account_status' => $accountStatus,
             'lock_status' => $lockStatus,
             'verification_status' => $verificationStatus,
@@ -2008,8 +2076,10 @@ class AuthController extends Controller
             'name' => $this->fullName($customer),
             'username' => (string) ($customer->c_username ?? ''),
             'email' => (string) ($customer->c_email ?? ''),
+            'avatar_url' => (string) ($customer->c_avatar_url ?? ''),
             'joined_at' => (string) ($customer->c_date_started ?? ''),
             'total_earnings' => (float) ($customer->c_totalincome ?? 0),
+            'total_pv' => (float) ($customer->c_gpv ?? 0),
             'verification_status' => $this->verificationStatus($accountStatus, $lockStatus),
         ];
     }
@@ -3455,6 +3525,7 @@ class AuthController extends Controller
                 'c_mname',
                 'c_lname',
                 'c_email',
+                'c_avatar_url',
                 'c_accnt_status',
                 'c_lockstatus',
                 'c_totalincome',
