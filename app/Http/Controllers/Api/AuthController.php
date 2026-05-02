@@ -8,6 +8,7 @@ use App\Models\Customer;
 use App\Models\CustomerLoginSession;
 use App\Models\CustomerAddress;
 use App\Models\MemberActivityLog;
+use App\Models\MemberTier;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
@@ -1614,6 +1615,9 @@ class AuthController extends Controller
                 default => 'not_verified',
             };
 
+        $rank = (int) ($customer->c_rank ?? 0);
+        $badgeName = MemberTier::getTierNameByRank($rank);
+
         return [
             'id' => (int) $customer->c_userid,
             'name' => $fullName,
@@ -1645,7 +1649,9 @@ class AuthController extends Controller
             'avatar_original_url' => Schema::hasColumn('tbl_customer', 'c_avatar_original_url')
                 ? ($customer->c_avatar_original_url ?: $customer->c_avatar_url)
                 : $customer->c_avatar_url,
-            'rank' => (int) ($customer->c_rank ?? 0),
+            'rank' => $rank,
+            'badge' => $rank,
+            'badge_name' => $badgeName,
             'account_status' => $accountStatus,
             'lock_status' => $lockStatus,
             'verification_status' => $verificationStatus,
