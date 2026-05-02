@@ -1182,6 +1182,7 @@ class AuthController extends Controller
             'region_code' => 'nullable|string|max:20',
             'zip_code' => 'nullable|string|max:20',
             'avatar_url' => 'nullable|url|max:1200',
+            'avatar_original_url' => 'nullable|url|max:1200',
             'two_factor_enabled' => 'nullable|boolean',
         ]);
 
@@ -1283,6 +1284,10 @@ class AuthController extends Controller
             $customer->c_avatar_url = $validated['avatar_url'] ?: null;
         }
 
+        if (array_key_exists('avatar_original_url', $validated) && Schema::hasColumn('tbl_customer', 'c_avatar_original_url')) {
+            $customer->c_avatar_original_url = $validated['avatar_original_url'] ?: null;
+        }
+
         if (array_key_exists('two_factor_enabled', $validated)) {
             $customer->c_two_factor_enabled = (bool) $validated['two_factor_enabled'];
         }
@@ -1299,6 +1304,7 @@ class AuthController extends Controller
 
         $validated = $request->validate([
             'file' => 'required|image|mimes:jpeg,jpg,png,webp,gif|max:5120',
+            'original_file' => 'nullable|image|mimes:jpeg,jpg,png,webp,gif|max:5120',
         ]);
 
         try {
@@ -1310,11 +1316,18 @@ class AuthController extends Controller
             }
 
             $customer->c_avatar_url = $avatarUrl;
+            $avatarOriginalUrl = null;
+            if ($request->hasFile('original_file') && Schema::hasColumn('tbl_customer', 'c_avatar_original_url')) {
+                $originalUpload = $cloudinary->uploadImage($request->file('original_file'), 'apsara/profile/originals');
+                $avatarOriginalUrl = (string) ($originalUpload['secure_url'] ?? '');
+                $customer->c_avatar_original_url = $avatarOriginalUrl !== '' ? $avatarOriginalUrl : null;
+            }
             $customer->save();
 
             return response()->json([
                 'message' => 'Profile photo updated successfully.',
                 'avatar_url' => $avatarUrl,
+                'avatar_original_url' => $avatarOriginalUrl ?: (string) ($customer->c_avatar_original_url ?? $avatarUrl),
                 'user' => $this->transformCustomer($customer),
             ]);
         } catch (\Throwable $exception) {
@@ -1633,6 +1646,9 @@ class AuthController extends Controller
             'work_location' => $this->inferWorkLocation($customer->c_country ?? null),
             'country' => ($country = trim((string) ($customer->c_country ?? ''))) !== '' ? $country : null,
             'avatar_url' => $customer->c_avatar_url,
+            'avatar_original_url' => Schema::hasColumn('tbl_customer', 'c_avatar_original_url')
+                ? ($customer->c_avatar_original_url ?: $customer->c_avatar_url)
+                : $customer->c_avatar_url,
             'rank' => $rank,
             'badge' => $rank,
             'badge_name' => $badgeName,
