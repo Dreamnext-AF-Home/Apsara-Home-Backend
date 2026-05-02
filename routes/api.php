@@ -150,6 +150,7 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::post('/auth/change-password', [AuthController::class, 'changePassword']);
     Route::get('/me', [AuthController::class, 'me']);
     Route::put('/me', [AuthController::class, 'updateMe']);
+    Route::post('/me/avatar', [AuthController::class, 'uploadAvatar'])->middleware('throttle:uploads');
     Route::get('/referral-tree', [AuthController::class, 'referralTree']);
     Route::get('/sessions', [AuthController::class, 'sessions']);
     Route::delete('/sessions/{tokenId}', [AuthController::class, 'revokeSession']);
