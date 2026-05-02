@@ -196,50 +196,47 @@ class ProductBrandController extends Controller
         ]);
     }
 
-    public function showAllWithProducts(): JsonResponse
+    public function showAllWithProducts(Request $request): JsonResponse
     {
         $hasBrandImageColumn = $this->hasBrandImageColumn();
         
-        // Get all brands (remove status filter to include all brands for debugging)
+        // Get max images per brand from request (default 6, max 12)
+        $maxImages = min(12, max(1, (int) $request->input('max_images', 6)));
+        
+        // Get all active brands
         $brands = ProductBrand::query()
             ->select(['pb_id', 'pb_name', 'pb_status'])
             ->when($hasBrandImageColumn, function ($query) {
                 $query->addSelect('pb_image');
             })
+            ->where('pb_status', 0) // Only active brands
             ->orderBy('pb_name')
             ->get();
 
-        // Get product counts for all brands (include all product statuses for debugging)
+        // Get product counts for all brands (only active products)
         $brandProductCounts = Product::query()
             ->select('pd_brand_type', Product::raw('COUNT(*) as total_products'))
+            ->whereIn('pd_status', [1, 2]) // Only active products
             ->whereNotNull('pd_brand_type')
             ->groupBy('pd_brand_type')
             ->pluck('total_products', 'pd_brand_type')
             ->toArray();
 
-        // Get sample images for each brand (up to 6 per brand)
-        $brandsWithImages = $brands->map(function ($brand) use ($brandProductCounts, $hasBrandImageColumn) {
+        // Get sample images for each brand
+        $brandsWithImages = $brands->map(function ($brand) use ($brandProductCounts, $hasBrandImageColumn, $maxImages) {
             $brandId = (int) $brand->pb_id;
             
-            // Keep getting products until we have 6 images or run out of products
+            // Keep getting products until we have max_images or run out of products
             $brandImages = [];
-            $debugInfo = [
-                'products_checked' => 0,
-                'products_with_main_image' => 0,
-                'products_with_photos' => 0,
-                'total_photos_found' => 0,
-                'target_images' => 6,
-                'images_collected' => 0,
-            ];
-
             $offset = 0;
             $batchSize = 10; // Check 10 products at a time for efficiency
             
-            while (count($brandImages) < 6 && $offset < 100) { // Safety limit of 100 products checked
+            while (count($brandImages) < $maxImages && $offset < 100) { // Safety limit of 100 products checked
                 $products = Product::query()
                     ->select(['pd_id', 'pd_image', 'pd_status'])
                     ->with(['photos:pp_id,pp_pdid,pp_filename'])
                     ->where('pd_brand_type', $brandId)
+                    ->whereIn('pd_status', [1, 2]) // Only active products
                     ->orderBy('pd_date', 'desc')
                     ->offset($offset)
                     ->limit($batchSize)
@@ -249,11 +246,9 @@ class ProductBrandController extends Controller
                     break; // No more products to check
                 }
 
-                $debugInfo['products_checked'] += $products->count();
-
                 foreach ($products as $product) {
-                    // Stop if we already have 6 images
-                    if (count($brandImages) >= 6) {
+                    // Stop if we already have max_images
+                    if (count($brandImages) >= $maxImages) {
                         break;
                     }
 
@@ -261,10 +256,9 @@ class ProductBrandController extends Controller
                     if ($product->pd_image && !empty(trim($product->pd_image))) {
                         if (!in_array($product->pd_image, $brandImages)) {
                             $brandImages[] = $product->pd_image;
-                            $debugInfo['products_with_main_image']++;
                             
-                            // Stop if we reached 6 images
-                            if (count($brandImages) >= 6) {
+                            // Stop if we reached max_images
+                            if (count($brandImages) >= $maxImages) {
                                 break;
                             }
                         }
@@ -272,15 +266,13 @@ class ProductBrandController extends Controller
                     
                     // Add additional photos (only if we still need more images)
                     if ($product->photos && $product->photos->isNotEmpty()) {
-                        $debugInfo['products_with_photos']++;
                         foreach ($product->photos as $photo) {
                             if ($photo->pp_filename && !empty(trim($photo->pp_filename))) {
                                 if (!in_array($photo->pp_filename, $brandImages)) {
                                     $brandImages[] = $photo->pp_filename;
-                                    $debugInfo['total_photos_found']++;
                                     
-                                    // Stop if we reached 6 images
-                                    if (count($brandImages) >= 6) {
+                                    // Stop if we reached max_images
+                                    if (count($brandImages) >= $maxImages) {
                                         break 2; // Break out of both loops
                                     }
                                 }
@@ -292,9 +284,8 @@ class ProductBrandController extends Controller
                 $offset += $batchSize;
             }
 
-            // Limit to exactly 6 images
-            $brandImages = array_slice($brandImages, 0, 6);
-            $debugInfo['images_collected'] = count($brandImages);
+            // Limit to exactly max_images
+            $brandImages = array_slice($brandImages, 0, $maxImages);
 
             $brandData = [
                 'id' => $brandId,
@@ -302,7 +293,7 @@ class ProductBrandController extends Controller
                 'status' => (int) ($brand->pb_status ?? 0),
                 'total_products' => $brandProductCounts[$brandId] ?? 0,
                 'images' => $brandImages,
-                'debug' => $debugInfo, // Include debug info for troubleshooting
+                'images_count' => count($brandImages),
             ];
 
             if ($hasBrandImageColumn) {
@@ -315,6 +306,7 @@ class ProductBrandController extends Controller
         return response()->json([
             'brands' => $brandsWithImages,
             'total_brands' => $brandsWithImages->count(),
+            'max_images_per_brand' => $maxImages,
         ]);
     }
 
