@@ -101,6 +101,56 @@ class SearchController extends Controller
     }
 
     /**
+     * Get products by room types - 5 images per room
+     */
+    public function roomTypes(Request $request): JsonResponse
+    {
+        $customerId = auth('sanctum')->id();
+        
+        // Room types mapping
+        $roomTypes = [
+            1 => 'Bedroom',
+            2 => 'Kitchen',
+            3 => 'Living Room',
+            4 => 'Outdoor',
+            5 => 'Study & Office Room',
+            6 => 'Dining Room',
+            7 => 'Laundry Room',
+            8 => 'Bath Room',
+        ];
+
+        try {
+            $result = [];
+            
+            foreach ($roomTypes as $roomId => $roomName) {
+                $images = $this->getProductImagesByRoomType($roomId, 5);
+                
+                $result[] = [
+                    'room_id' => $roomId,
+                    'room_name' => $roomName,
+                    'images' => $images,
+                    'count' => count($images),
+                ];
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => $result,
+                'total_rooms' => count($roomTypes),
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Room types error: ' . $e->getMessage(), [
+                'customer_id' => $customerId,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to get room types.',
+            ], 500);
+        }
+    }
+
+    /**
      * Full search endpoint
      */
     public function search(Request $request): JsonResponse
@@ -154,6 +204,31 @@ class SearchController extends Controller
                 'message' => 'Search failed. Please try again.',
             ], 500);
         }
+    }
+
+    /**
+     * Get product images by room type
+     */
+    private function getProductImagesByRoomType(int $roomTypeId, int $limit): array
+    {
+        $products = DB::table('tbl_product as p')
+            ->select([
+                'p.pd_id as id',
+                'p.pd_image as image',
+            ])
+            ->where('p.pd_room_type', $roomTypeId)
+            ->where('p.pd_status', 1)
+            ->whereNotNull('p.pd_image')
+            ->where('p.pd_image', '!=', '')
+            ->orderBy('p.pd_bestseller', 'desc')
+            ->orderBy('p.pd_musthave', 'desc')
+            ->orderBy('p.pd_name')
+            ->limit($limit)
+            ->get();
+
+        return $products->map(function ($product) {
+            return $this->formatImageUrl($product->image);
+        })->toArray();
     }
 
     /**

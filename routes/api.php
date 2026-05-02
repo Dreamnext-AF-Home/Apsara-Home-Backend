@@ -186,6 +186,9 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::get('/search/recommendations', [SearchController::class, 'recommendations']);
     Route::get('/search', [SearchController::class, 'search']);
     
+    // Room types endpoint
+    Route::get('/room-types', [SearchController::class, 'roomTypes']);
+    
     // Search history endpoints (legacy)
     Route::post('/search/history', [ProductController::class, 'saveSearchHistory']);
     Route::get('/search/history', [ProductController::class, 'getSearchHistory']);
