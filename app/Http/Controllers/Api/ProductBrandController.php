@@ -196,58 +196,79 @@ class ProductBrandController extends Controller
         ]);
     }
 
-    public function showWithProducts(int $id): JsonResponse
+    public function showAllWithProducts(): JsonResponse
     {
-        $brand = ProductBrand::query()->find($id);
-        if (! $brand) {
-            return response()->json(['message' => 'Brand not found.'], 404);
-        }
-
-        // Get 6 products from this brand with their photos for display
-        $products = Product::query()
-            ->select(['pd_id', 'pd_image'])
-            ->with(['photos:pp_id,pp_pdid,pp_filename'])
-            ->where('pd_brand_type', $id)
-            ->whereIn('pd_status', [1, 2]) // Only active products
-            ->orderBy('pd_date', 'desc')
-            ->limit(6)
+        $hasBrandImageColumn = $this->hasBrandImageColumn();
+        
+        // Get all brands with their product counts
+        $brands = ProductBrand::query()
+            ->select(['pb_id', 'pb_name', 'pb_status'])
+            ->when($hasBrandImageColumn, function ($query) {
+                $query->addSelect('pb_image');
+            })
+            ->where('pb_status', 0) // Only active brands
+            ->orderBy('pb_name')
             ->get();
 
-        // Collect all images from the 6 products
-        $brandImages = [];
-        foreach ($products as $product) {
-            // Add main product image if exists
-            if ($product->pd_image && !in_array($product->pd_image, $brandImages)) {
-                $brandImages[] = $product->pd_image;
-            }
+        // Get product counts for all brands
+        $brandProductCounts = Product::query()
+            ->select('pd_brand_type', Product::raw('COUNT(*) as total_products'))
+            ->whereIn('pd_status', [1, 2]) // Only active products
+            ->whereNotNull('pd_brand_type')
+            ->groupBy('pd_brand_type')
+            ->pluck('total_products', 'pd_brand_type')
+            ->toArray();
+
+        // Get sample images for each brand (up to 6 per brand)
+        $brandsWithImages = $brands->map(function ($brand) use ($brandProductCounts, $hasBrandImageColumn) {
+            $brandId = (int) $brand->pb_id;
             
-            // Add additional photos
-            if ($product->photos && $product->photos->isNotEmpty()) {
-                foreach ($product->photos as $photo) {
-                    if ($photo->pp_filename && !in_array($photo->pp_filename, $brandImages)) {
-                        $brandImages[] = $photo->pp_filename;
+            // Get 6 products from this brand with their photos
+            $products = Product::query()
+                ->select(['pd_id', 'pd_image'])
+                ->with(['photos:pp_id,pp_pdid,pp_filename'])
+                ->where('pd_brand_type', $brandId)
+                ->whereIn('pd_status', [1, 2])
+                ->orderBy('pd_date', 'desc')
+                ->limit(6)
+                ->get();
+
+            // Collect all images from the 6 products
+            $brandImages = [];
+            foreach ($products as $product) {
+                // Add main product image if exists
+                if ($product->pd_image && !in_array($product->pd_image, $brandImages)) {
+                    $brandImages[] = $product->pd_image;
+                }
+                
+                // Add additional photos
+                if ($product->photos && $product->photos->isNotEmpty()) {
+                    foreach ($product->photos as $photo) {
+                        if ($photo->pp_filename && !in_array($photo->pp_filename, $brandImages)) {
+                            $brandImages[] = $photo->pp_filename;
+                        }
                     }
                 }
             }
-        }
 
-        // Get total product count for this brand
-        $totalProducts = Product::query()
-            ->where('pd_brand_type', $id)
-            ->whereIn('pd_status', [1, 2])
-            ->count();
+            $brandData = [
+                'id' => $brandId,
+                'name' => (string) $brand->pb_name,
+                'status' => (int) ($brand->pb_status ?? 0),
+                'total_products' => $brandProductCounts[$brandId] ?? 0,
+                'images' => $brandImages,
+            ];
 
-        $hasBrandImageColumn = $this->hasBrandImageColumn();
+            if ($hasBrandImageColumn) {
+                $brandData['brand_image'] = $brand->pb_image ? (string) $brand->pb_image : null;
+            }
+
+            return $brandData;
+        });
 
         return response()->json([
-            'brand' => [
-                'id' => (int) $brand->pb_id,
-                'name' => (string) $brand->pb_name,
-                'image' => $hasBrandImageColumn && $brand->pb_image ? (string) $brand->pb_image : null,
-                'status' => (int) ($brand->pb_status ?? 0),
-            ],
-            'images' => $brandImages,
-            'total_products' => $totalProducts,
+            'brands' => $brandsWithImages,
+            'total_brands' => $brandsWithImages->count(),
         ]);
     }
 }
