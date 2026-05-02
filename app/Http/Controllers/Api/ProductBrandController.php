@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Product;
 use App\Models\ProductBrand;
+use App\Models\ProductPhoto;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Schema;
@@ -192,6 +193,61 @@ class ProductBrandController extends Controller
 
         return response()->json([
             'message' => 'Brand deleted successfully.',
+        ]);
+    }
+
+    public function showWithProducts(int $id): JsonResponse
+    {
+        $brand = ProductBrand::query()->find($id);
+        if (! $brand) {
+            return response()->json(['message' => 'Brand not found.'], 404);
+        }
+
+        // Get 6 products from this brand with their photos for display
+        $products = Product::query()
+            ->select(['pd_id', 'pd_image'])
+            ->with(['photos:pp_id,pp_pdid,pp_filename'])
+            ->where('pd_brand_type', $id)
+            ->whereIn('pd_status', [1, 2]) // Only active products
+            ->orderBy('pd_date', 'desc')
+            ->limit(6)
+            ->get();
+
+        // Collect all images from the 6 products
+        $brandImages = [];
+        foreach ($products as $product) {
+            // Add main product image if exists
+            if ($product->pd_image && !in_array($product->pd_image, $brandImages)) {
+                $brandImages[] = $product->pd_image;
+            }
+            
+            // Add additional photos
+            if ($product->photos && $product->photos->isNotEmpty()) {
+                foreach ($product->photos as $photo) {
+                    if ($photo->pp_filename && !in_array($photo->pp_filename, $brandImages)) {
+                        $brandImages[] = $photo->pp_filename;
+                    }
+                }
+            }
+        }
+
+        // Get total product count for this brand
+        $totalProducts = Product::query()
+            ->where('pd_brand_type', $id)
+            ->whereIn('pd_status', [1, 2])
+            ->count();
+
+        $hasBrandImageColumn = $this->hasBrandImageColumn();
+
+        return response()->json([
+            'brand' => [
+                'id' => (int) $brand->pb_id,
+                'name' => (string) $brand->pb_name,
+                'image' => $hasBrandImageColumn && $brand->pb_image ? (string) $brand->pb_image : null,
+                'status' => (int) ($brand->pb_status ?? 0),
+            ],
+            'images' => $brandImages,
+            'total_products' => $totalProducts,
         ]);
     }
 }
