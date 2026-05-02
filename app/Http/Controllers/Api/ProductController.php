@@ -1456,6 +1456,11 @@ class ProductController extends Controller
     public function indexCards(Request $request): JsonResponse
     {
         try {
+            \Log::info('indexCards: Starting request', [
+                'query_params' => $request->all(),
+                'timestamp' => now()
+            ]);
+
             $perPageParam = $request->query('per_page', 25);
             $perPage = strtolower(trim((string) $perPageParam)) === 'all'
                 ? PHP_INT_MAX
@@ -1465,6 +1470,14 @@ class ProductController extends Controller
             $catId     = $request->query('cat_id', '');
             $roomType  = $request->query('room_type', '');
             $brandType = $request->query('brand_type', '');
+
+            \Log::info('indexCards: Building query', [
+                'perPage' => $perPage,
+                'search' => $search,
+                'catId' => $catId,
+                'roomType' => $roomType,
+                'brandType' => $brandType
+            ]);
 
             $query = Product::query()
                 ->select([
@@ -1485,9 +1498,15 @@ class ProductController extends Controller
                 ->when($brandType !== '', fn ($q) => $q->where('pd_brand_type', (int) $brandType))
                 ->orderByDesc('pd_id');
 
+            \Log::info('indexCards: Executing query');
             $paginator = $query->paginate($perPage);
+            \Log::info('indexCards: Query executed', [
+                'total_results' => $paginator->total(),
+                'current_page' => $paginator->currentPage()
+            ]);
 
             $productIds = collect($paginator->items())->pluck('pd_id')->toArray();
+            \Log::info('indexCards: Got product IDs', ['count' => count($productIds)]);
 
             $soldCounts = DB::table('tbl_checkout_history')
                 ->whereIn('ch_product_id', $productIds)
@@ -1496,12 +1515,16 @@ class ProductController extends Controller
                 ->selectRaw('ch_product_id as product_id, SUM(ch_quantity) as sold_count')
                 ->pluck('sold_count', 'product_id');
 
+            \Log::info('indexCards: Got sold counts', ['sold_counts' => $soldCounts]);
+
             $products = collect($paginator->items())
                 ->map(function (Product $p) use ($soldCounts) {
                     $soldCount = (int) ($soldCounts->get($p->pd_id, 0));
                     return $this->mapProductSummary($p, $soldCount);
                 })
                 ->values();
+
+            \Log::info('indexCards: Products mapped successfully', ['product_count' => $products->count()]);
 
             return response()->json([
                 'products' => $products,
@@ -1515,7 +1538,19 @@ class ProductController extends Controller
                 ],
             ]);
         } catch (\Exception $e) {
-            return response()->json(['message' => 'Failed to fetch products.'], 500);
+            \Log::error('indexCards: Exception occurred', [
+                'error' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            return response()->json([
+                'message' => 'Failed to fetch products.',
+                'error' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine()
+            ], 500);
         }
     }
 
