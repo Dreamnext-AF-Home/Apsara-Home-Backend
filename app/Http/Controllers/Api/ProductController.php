@@ -1469,7 +1469,7 @@ class ProductController extends Controller
             $query = Product::query()
                 ->select([
                     'pd_id', 'pd_name', 'pd_image',
-                    'pd_price_srp', 'pd_price_dp',
+                    'pd_price_srp', 'pd_price_member',
                     'pd_prodpv', 'pd_brand_type',
                     'pd_musthave', 'pd_bestseller', 'pd_salespromo',
                 ])
