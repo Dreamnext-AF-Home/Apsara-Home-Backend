@@ -1440,7 +1440,7 @@ class ProductController extends Controller
             'image'          => $primaryImage ? (string) $primaryImage : null,
             'soldCount'      => $soldCount,
             'originalPrice'  => $this->toNumber($p->pd_price_srp),
-            'discountedPrice'=> $this->toNumber($p->pd_price_dp),
+            'discountedPrice'=> $this->toNumber($p->pd_price_member),
             'pv'             => $this->toNumber($p->pd_prodpv),
             'brandName'      => $p->brand?->pb_name ? (string) $p->brand->pb_name : null,
             'variantCount'   => (int) ($p->variants_count ?? 0),
