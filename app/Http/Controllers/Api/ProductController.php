@@ -1434,16 +1434,7 @@ class ProductController extends Controller
     {
         $primaryImage = $p->photos->first()?->pp_filename ?? $p->pd_image ?? null;
 
-        // Calculate discount percentage
-        $originalPrice = $this->toNumber($p->pd_price_srp);
-        $memberPrice = $this->toNumber($p->pd_price_member);
-        $discountPercentage = 0;
         
-        if ($originalPrice > 0 && $memberPrice > 0 && $memberPrice < $originalPrice) {
-            $discountAmount = $originalPrice - $memberPrice;
-            $discountPercentage = round(($discountAmount / $originalPrice) * 100, 1);
-        }
-
         return [
             'id'             => (int)    $p->pd_id,
             'name'           => (string) ($p->pd_name ?? ''),
@@ -1451,7 +1442,6 @@ class ProductController extends Controller
             'soldCount'      => $soldCount,
             'originalPrice'  => $originalPrice,
             'discountedPrice'=> $memberPrice,
-            'discountPercentage' => $discountPercentage,
             'pv'             => $this->toNumber($p->pd_prodpv),
             'brandName'      => $p->brand?->pb_name ? (string) $p->brand->pb_name : null,
             'variantCount'   => (int) ($p->variants_count ?? 0),
@@ -1459,7 +1449,6 @@ class ProductController extends Controller
                 'musthave'   => (bool) $p->pd_musthave,
                 'bestseller' => (bool) $p->pd_bestseller,
                 'salespromo' => (bool) $p->pd_salespromo,
-                'saveDiscount' => $discountPercentage > 0,
             ],
         ];
     }
