@@ -174,6 +174,8 @@ class SearchController extends Controller
                 'p.pd_status as status'
             ])
             ->where('p.pd_status', 1) // Only active products
+            ->whereNotNull('p.pd_image') // Only products with photos
+            ->where('p.pd_image', '!=', '') // Only products with non-empty photos
             ->where(function ($builder) use ($query) {
                 $builder->where('p.pd_name', 'LIKE', '%' . $query . '%')
                       ->orWhere('p.pd_description', 'LIKE', '%' . $query . '%');
@@ -281,6 +283,8 @@ class SearchController extends Controller
             ->leftJoin('tbl_category as c', 'p.pd_catid', '=', 'c.cat_id')
             ->where('p.pd_catid', $categoryId)
             ->where('p.pd_status', 1)
+            ->whereNotNull('p.pd_image') // Only products with photos
+            ->where('p.pd_image', '!=', '') // Only products with non-empty photos
             ->orderBy('p.pd_bestseller', 'desc')
             ->orderBy('p.pd_musthave', 'desc')
             ->orderBy('p.pd_name')
@@ -315,6 +319,8 @@ class SearchController extends Controller
             ])
             ->leftJoin('tbl_category as c', 'p.pd_catid', '=', 'c.cat_id')
             ->where('p.pd_status', 1)
+            ->whereNotNull('p.pd_image') // Only products with photos
+            ->where('p.pd_image', '!=', '') // Only products with non-empty photos
             ->orderBy('p.pd_bestseller', 'desc')
             ->orderBy('p.pd_musthave', 'desc')
             ->orderBy('p.pd_date', 'desc')
@@ -357,6 +363,8 @@ class SearchController extends Controller
             ->leftJoin('tbl_product_brand as pb', 'p.pd_brand_type', '=', 'pb.pb_id')
             ->leftJoin('tbl_category as c', 'p.pd_catid', '=', 'c.cat_id')
             ->where('p.pd_status', 1)
+            ->whereNotNull('p.pd_image') // Only products with photos
+            ->where('p.pd_image', '!=', '') // Only products with non-empty photos
             ->where(function ($builder) use ($query) {
                 $builder->where('p.pd_name', 'LIKE', '%' . $query . '%')
                       ->orWhere('p.pd_description', 'LIKE', '%' . $query . '%');
