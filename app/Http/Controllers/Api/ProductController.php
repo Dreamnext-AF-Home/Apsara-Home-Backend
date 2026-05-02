@@ -1439,7 +1439,7 @@ class ProductController extends Controller
         $memberPrice = $this->toNumber($p->pd_price_member);
         $discountPercentage = 0;
         
-        if ($originalPrice > 0 && $memberPrice > 0) {
+        if ($originalPrice > 0 && $memberPrice > 0 && $memberPrice < $originalPrice) {
             $discountAmount = $originalPrice - $memberPrice;
             $discountPercentage = round(($discountAmount / $originalPrice) * 100, 1);
         }
