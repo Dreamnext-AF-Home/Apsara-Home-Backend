@@ -8,6 +8,7 @@ use App\Models\ProductBrand;
 use App\Models\ProductPhoto;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
 
@@ -356,5 +357,64 @@ class ProductBrandController extends Controller
         }
 
         return response()->json($debugData);
+    }
+
+    public function profile(int $id): JsonResponse
+    {
+        $brand = ProductBrand::query()->find($id);
+        if (! $brand) {
+            return response()->json(['message' => 'Brand not found.'], 404);
+        }
+
+        $hasBrandImageColumn = $this->hasBrandImageColumn();
+
+        // Get total products for this brand
+        $totalProducts = Product::query()
+            ->where('pd_brand_type', $id)
+            ->whereIn('pd_status', [1, 2]) // Only active products
+            ->count();
+
+        // Get brand rating from all products of this brand
+        $ratingData = DB::table('tbl_product_reviews as r')
+            ->join('tbl_product as p', 'p.pd_id', '=', 'r.pr_product_id')
+            ->where('p.pd_brand_type', $id)
+            ->where('p.pd_status', [1, 2]) // Only active products
+            ->selectRaw('COALESCE(SUM(r.pr_rating), 0) as total_stars, COUNT(*) as review_count')
+            ->first();
+
+        $overallRating = $ratingData && (int) ($ratingData->review_count ?? 0) > 0
+            ? round(((float) ($ratingData->total_stars ?? 0)) / (int) $ratingData->review_count, 2)
+            : null;
+
+        $totalReviews = $ratingData ? (int) $ratingData->review_count : 0;
+
+        // Get supplier information and joined date
+        $supplierInfo = DB::table('tbl_product as p')
+            ->join('tbl_supplier as s', 's.s_id', '=', 'p.pd_supplier')
+            ->leftJoin('tbl_supplier_user as su', 'su.su_supplier', '=', 's.s_id')
+            ->where('p.pd_brand_type', $id)
+            ->select('s.s_name as supplier_name', 'su.su_date_created as joined_date')
+            ->first();
+
+        // Calculate chat performance (mock calculation - you may need to adjust based on your business logic)
+        $chatPerformance = 95; // Default value, you can calculate this based on actual chat metrics
+
+        $brandData = [
+            'id' => (int) $brand->pb_id,
+            'name' => (string) $brand->pb_name,
+            'profile_picture' => $hasBrandImageColumn && $brand->pb_image ? (string) $brand->pb_image : null,
+            'status' => (int) ($brand->pb_status ?? 0),
+            'is_online' => true, // You may want to implement actual online status logic
+            'chat_performance' => $chatPerformance,
+            'overall_rating' => $overallRating,
+            'total_reviews' => $totalReviews,
+            'total_products' => $totalProducts,
+            'joined_date' => $supplierInfo?->joined_date ? $supplierInfo->joined_date : null,
+            'supplier_name' => $supplierInfo?->supplier_name ? (string) $supplierInfo->supplier_name : null,
+        ];
+
+        return response()->json([
+            'brand' => $brandData,
+        ]);
     }
 }
