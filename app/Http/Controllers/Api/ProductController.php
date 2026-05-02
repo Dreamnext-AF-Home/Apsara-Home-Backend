@@ -1434,13 +1434,24 @@ class ProductController extends Controller
     {
         $primaryImage = $p->photos->first()?->pp_filename ?? $p->pd_image ?? null;
 
+        // Calculate discount percentage
+        $originalPrice = $this->toNumber($p->pd_price_srp);
+        $memberPrice = $this->toNumber($p->pd_price_member);
+        $discountPercentage = 0;
+        
+        if ($originalPrice > 0 && $memberPrice > 0) {
+            $discountAmount = $originalPrice - $memberPrice;
+            $discountPercentage = round(($discountAmount / $originalPrice) * 100, 1);
+        }
+
         return [
             'id'             => (int)    $p->pd_id,
             'name'           => (string) ($p->pd_name ?? ''),
             'image'          => $primaryImage ? (string) $primaryImage : null,
             'soldCount'      => $soldCount,
-            'originalPrice'  => $this->toNumber($p->pd_price_srp),
-            'discountedPrice'=> $this->toNumber($p->pd_price_member),
+            'originalPrice'  => $originalPrice,
+            'discountedPrice'=> $memberPrice,
+            'discountPercentage' => $discountPercentage,
             'pv'             => $this->toNumber($p->pd_prodpv),
             'brandName'      => $p->brand?->pb_name ? (string) $p->brand->pb_name : null,
             'variantCount'   => (int) ($p->variants_count ?? 0),
@@ -1448,6 +1459,7 @@ class ProductController extends Controller
                 'musthave'   => (bool) $p->pd_musthave,
                 'bestseller' => (bool) $p->pd_bestseller,
                 'salespromo' => (bool) $p->pd_salespromo,
+                'saveDiscount' => $discountPercentage > 0,
             ],
         ];
     }
@@ -1496,7 +1508,10 @@ class ProductController extends Controller
                 ->pluck('sold_count', 'product_id');
 
             $products = collect($paginator->items())
-                ->map(fn (Product $p) => $this->mapProductSummary($p, (int) $soldCounts->get($p->pd_id, 0)))
+                ->map(function (Product $p) use ($soldCounts) {
+                    $soldCount = (int) ($soldCounts->get($p->pd_id, 0));
+                    return $this->mapProductSummary($p, $soldCount);
+                })
                 ->values();
 
             return response()->json([
