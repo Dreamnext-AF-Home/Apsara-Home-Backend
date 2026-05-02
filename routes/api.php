@@ -130,6 +130,7 @@ Route::middleware('throttle:public')->group(function () {
     Route::get('/products', [ProductController::class, 'index']);
     Route::get('/product-brands', [ProductBrandController::class, 'publicIndex']);
     Route::get('/product-brands/with-products', [ProductBrandController::class, 'showAllWithProducts']);
+    Route::get('/product-brands/{id}/debug', [ProductBrandController::class, 'debugBrandImages']);
     Route::get('/shipping-rates', [ShippingRateController::class, 'publicIndex']);
     Route::get('/web-pages/home', [WebPageController::class, 'home']);
     Route::get('/web-pages/adds-content', [AddsContentController::class, 'publicIndex']);
