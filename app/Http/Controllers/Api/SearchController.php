@@ -243,7 +243,7 @@ class SearchController extends Controller
                 'p.pd_id as id',
                 'p.pd_name as name',
                 'p.pd_price_srp as original_price',
-                $isMember ? 'p.pd_price_member as discounted_price' : 'p.pd_price_dp as discounted_price',
+                'p.pd_price_member as discounted_price',
                 'p.pd_prodpv as pv',
                 'p.pd_image as image',
                 'p.pd_status as status'
