@@ -246,8 +246,14 @@ class SearchController extends Controller
                 'p.pd_price_member as discounted_price',
                 'p.pd_prodpv as pv',
                 'p.pd_image as image',
-                'p.pd_status as status'
+                'p.pd_status as status',
+                'p.pd_musthave',
+                'p.pd_bestseller',
+                'pb.pb_name as brand_name',
+                DB::raw('COUNT(DISTINCT pv.pv_id) as variant_count')
             ])
+            ->leftJoin('tbl_product_brand as pb', 'p.pd_brand_type', '=', 'pb.pb_id')
+            ->leftJoin('tbl_product_variant as pv', 'p.pd_id', '=', 'pv.pv_pdid')
             ->where('p.pd_status', 1) // Only active products
             ->whereNotNull('p.pd_image') // Only products with photos
             ->where('p.pd_image', '!=', '') // Only products with non-empty photos
@@ -255,6 +261,7 @@ class SearchController extends Controller
                 $builder->where('p.pd_name', 'LIKE', '%' . $query . '%')
                       ->orWhere('p.pd_description', 'LIKE', '%' . $query . '%');
             })
+            ->groupBy('p.pd_id', 'p.pd_name', 'p.pd_price_srp', 'p.pd_price_member', 'p.pd_prodpv', 'p.pd_image', 'p.pd_status', 'p.pd_musthave', 'p.pd_bestseller', 'pb.pb_name')
             ->orderBy('p.pd_bestseller', 'desc')
             ->orderBy('p.pd_musthave', 'desc')
             ->orderBy('p.pd_name')
@@ -271,6 +278,12 @@ class SearchController extends Controller
                 'image' => $this->formatImageUrl($product->image),
                 'has_discount' => $product->discounted_price < $product->original_price,
                 'discount_percentage' => $this->calculateDiscountPercentage($product->original_price, $product->discounted_price),
+                'brand_name' => $product->brand_name,
+                'badges' => [
+                    'musthave' => (bool) $product->pd_musthave,
+                    'bestseller' => (bool) $product->pd_bestseller,
+                    'variant_count' => (int) $product->variant_count,
+                ],
             ];
         })->toArray();
     }
