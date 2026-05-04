@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Customer;
 use App\Models\SystemSetting;
 use App\Models\ProductVariant;
+use App\Events\CartAdded;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -146,6 +147,21 @@ class CartController extends Controller
                 ], 'crt_id');
 
                 $cartItem = DB::table('tbl_add_to_cart')->where('crt_id', $cartId)->first();
+            }
+
+            // Get total cart items count for real-time notification
+            $totalCartItems = DB::table('tbl_add_to_cart')
+                ->where('crt_customer_id', $customer->c_userid)
+                ->sum('crt_quantity');
+
+            // Broadcast real-time event
+            try {
+                CartAdded::dispatch((int) $customer->c_userid, $product, $cartItem, $totalCartItems);
+            } catch (\Exception $e) {
+                Log::warning('Failed to broadcast cart addition event', [
+                    'customer_id' => $customer->c_userid,
+                    'error' => $e->getMessage()
+                ]);
             }
 
             return response()->json([
