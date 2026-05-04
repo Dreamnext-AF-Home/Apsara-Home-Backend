@@ -4,10 +4,12 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Product;
+use App\Events\WishlistAdded;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use App\Models\Wishlist;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Facades\Log;
 
 class WishlistController extends Controller
 {
@@ -219,21 +221,52 @@ class WishlistController extends Controller
             ]);
         }
 
-        Wishlist::firstOrCreate([
+        $wishlistItem = Wishlist::firstOrCreate([
             'cw_customer_id' => Auth::id(),
             'cw_product_id' => (int) $productId,
         ], [
             'cw_date' => now(),
         ]);
 
+        // Get product details for broadcasting
+        $product = Product::find($productId);
+
+        // Broadcast real-time event
+        try {
+            WishlistAdded::dispatch(Auth::id(), $product, $wishlistItem, 'added');
+        } catch (\Exception $e) {
+            Log::warning('Failed to broadcast wishlist addition event', [
+                'customer_id' => Auth::id(),
+                'product_id' => $productId,
+                'error' => $e->getMessage()
+            ]);
+        }
+
         return response()->json(['message' => 'Added to wishlist']);
     }
 
     public function destroy(int $productId)
     {
+        // Get product details before deletion for broadcasting
+        $product = Product::find($productId);
+        $wishlistItem = Wishlist::where('cw_customer_id', Auth::id())
+            ->where('cw_product_id', $productId)
+            ->first();
+
         Wishlist::where('cw_customer_id', Auth::id())
             ->where('cw_product_id', $productId)
             ->delete();
+
+        // Broadcast real-time event
+        try {
+            WishlistAdded::dispatch(Auth::id(), $product, $wishlistItem, 'removed');
+        } catch (\Exception $e) {
+            Log::warning('Failed to broadcast wishlist removal event', [
+                'customer_id' => Auth::id(),
+                'product_id' => $productId,
+                'error' => $e->getMessage()
+            ]);
+        }
 
         return response()->json(['message' => 'Removed from wishlist']);
     }
