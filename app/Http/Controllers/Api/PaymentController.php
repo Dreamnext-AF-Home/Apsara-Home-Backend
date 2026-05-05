@@ -189,6 +189,51 @@ class PaymentController extends Controller
         return $base . '/' . ltrim($path, '/');
     }
 
+    private function resolveFrontendBaseUrl(?string $sourceUrl = null): string
+    {
+        $fallback = rtrim((string) env('FRONTEND_URL', 'http://localhost:3000'), '/');
+        $raw = trim((string) $sourceUrl);
+        if ($raw === '') {
+            return $fallback;
+        }
+
+        $parts = parse_url($raw);
+        $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+        $host = strtolower((string) ($parts['host'] ?? ''));
+        $port = isset($parts['port']) ? (int) $parts['port'] : null;
+
+        if (!in_array($scheme, ['http', 'https'], true) || $host === '') {
+            return $fallback;
+        }
+
+        $portSegment = ($port && !in_array($port, [80, 443], true)) ? ':' . $port : '';
+        return sprintf('%s://%s%s', $scheme, $host, $portSegment);
+    }
+
+    private function resolveStorefrontSlug(?string $sourceSlug = null, ?string $sourceUrl = null, ?string $sourceLabel = null): string
+    {
+        $explicit = Str::slug(trim((string) $sourceSlug));
+        if ($explicit !== '') {
+            return $explicit;
+        }
+
+        $rawUrl = trim((string) $sourceUrl);
+        if ($rawUrl !== '') {
+            $path = trim((string) parse_url($rawUrl, PHP_URL_PATH));
+            if ($path !== '') {
+                if (preg_match('#^/shop/([^/?#]+)#i', $path, $matches)) {
+                    return Str::slug((string) ($matches[1] ?? ''));
+                }
+                if (preg_match('#^/([^/?#]+)/(product|category|checkout|track-order)(?:/|$)#i', $path, $matches)) {
+                    return Str::slug((string) ($matches[1] ?? ''));
+                }
+            }
+        }
+
+        $label = Str::slug(trim((string) $sourceLabel));
+        return $label;
+    }
+
     public function createCheckoutSession(Request $request)
     {
         $validated = $request->validate([
@@ -200,6 +245,7 @@ class PaymentController extends Controller
             'voucher_code' => 'nullable|string|max:80',
             'source_label' => 'nullable|string|max:255',
             'source_slug' => 'nullable|string|max:255',
+            'storefront_partner' => 'nullable|string|max:255',
             'source_host' => 'nullable|string|max:255',
             'source_url' => 'nullable|string|max:2000',
 
@@ -281,11 +327,19 @@ class PaymentController extends Controller
             return response()->json(['message' => sprintf('PayMongo %s secret key is missing.', $paymongoConfig['mode'])], 500);
         }
 
-        $frontend = env('FRONTEND_URL', 'http://localhost:3000');
         $sourceLabel = trim((string) ($validated['source_label'] ?? ''));
         $sourceSlug = trim((string) ($validated['source_slug'] ?? ''));
+        $storefrontPartner = trim((string) ($validated['storefront_partner'] ?? ''));
         $sourceHost = trim((string) ($validated['source_host'] ?? ''));
         $sourceUrl = trim((string) ($validated['source_url'] ?? ''));
+        $frontendBase = $this->resolveFrontendBaseUrl($sourceUrl);
+        $normalizedSourceSlug = $this->resolveStorefrontSlug($storefrontPartner !== '' ? $storefrontPartner : $sourceSlug, $sourceUrl, $sourceLabel);
+        $successPath = $normalizedSourceSlug !== ''
+            ? "/{$normalizedSourceSlug}/checkout/success"
+            : '/checkout/success';
+        $cancelPath = $normalizedSourceSlug !== ''
+            ? "/{$normalizedSourceSlug}/checkout/failed"
+            : '/checkout/failed';
 
         $voucherCode = trim((string) ($validated['voucher_code'] ?? ''));
         $resolvedOrderSnapshot = $this->resolveOrderSnapshot(is_array($validated['order'] ?? null) ? $validated['order'] : []);
@@ -326,8 +380,8 @@ class PaymentController extends Controller
                         $validated['online_banking_provider'] ?? null,
                         $paymongoConfig['mode']
                     ),
-                    'success_url' => $frontend . '/checkout/success',
-                    'cancel_url' => $frontend . '/checkout/failed',
+                    'success_url' => $frontendBase . $successPath,
+                    'cancel_url' => $frontendBase . $cancelPath,
                     'description' => $validated['description'],
                 ],
             ],
@@ -346,6 +400,35 @@ class PaymentController extends Controller
 
         $data = $res->json('data');
         $checkoutId = $data['id'] ?? null;
+        if (is_string($checkoutId) && trim($checkoutId) !== '') {
+            $successBase = $normalizedSourceSlug !== ''
+                ? "{$frontendBase}/{$normalizedSourceSlug}/checkout/success"
+                : "{$frontendBase}/checkout/success";
+            $cancelBase = $normalizedSourceSlug !== ''
+                ? "{$frontendBase}/{$normalizedSourceSlug}/checkout/failed"
+                : "{$frontendBase}/checkout/failed";
+
+            $patchedSuccessUrl = $successBase . '?checkout_id=' . urlencode($checkoutId);
+            $patchedCancelUrl = $cancelBase . '?checkout_id=' . urlencode($checkoutId);
+
+            try {
+                Http::withBasicAuth($secretKey, '')
+                    ->put($this->paymongoApiUrl("/v1/checkout_sessions/{$checkoutId}", $paymongoConfig['mode']), [
+                        'data' => [
+                            'attributes' => [
+                                'success_url' => $patchedSuccessUrl,
+                                'cancel_url' => $patchedCancelUrl,
+                            ],
+                        ],
+                    ]);
+                data_set($data, 'attributes.success_url', $patchedSuccessUrl);
+            } catch (\Throwable $e) {
+                Log::warning('Failed to patch checkout session redirect URLs with checkout_id.', [
+                    'checkout_id' => $checkoutId,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
         if ($checkoutId) {
             Cache::put("checkout_customer:{$checkoutId}", [
                 'customer_id' => $customerId ? (int) $customerId : null,
@@ -573,63 +656,65 @@ class PaymentController extends Controller
     private function sendCheckoutCompletedEmailIfNeeded(string $checkoutId, array $attrs): void
     {
         $customer = Cache::get("checkout_customer:{$checkoutId}");
-        $cachedEmail = is_array($customer) ? trim((string) ($customer['email'] ?? '')) : '';
-        $recipient = $cachedEmail;
+        $order = CheckoutHistory::query()
+            ->where('ch_checkout_id', $checkoutId)
+            ->first();
 
-        $order = null;
-        if ($recipient === '') {
-            $order = CheckoutHistory::query()
-                ->where('ch_checkout_id', $checkoutId)
-                ->first();
-            $recipient = $order ? trim((string) ($order->ch_customer_email ?? '')) : '';
+        $cachedEmail = is_array($customer) ? trim((string) ($customer['email'] ?? '')) : '';
+        $orderEmail = $order ? trim((string) ($order->ch_customer_email ?? '')) : '';
+        $resolvedRecipient = $cachedEmail !== '' ? $cachedEmail : $orderEmail;
+
+        $orderDetails = is_array($customer['order'] ?? null) ? $customer['order'] : [];
+        if ($order) {
+            $orderDetails = [
+                'product_name' => $order->ch_product_name ?? null,
+                'product_sku' => $order->ch_product_sku ?? null,
+                'quantity' => $order->ch_quantity ?? 1,
+                'selected_color' => $order->ch_selected_color ?? null,
+                'selected_size' => $order->ch_selected_size ?? null,
+                'selected_type' => $order->ch_selected_type ?? null,
+            ];
         }
 
-        if ($recipient === '') {
+        $mailPayload = $this->buildCheckoutCompletedMailPayload($checkoutId, $attrs, is_array($customer) ? $customer : [], $order, $orderDetails);
+
+        if ($resolvedRecipient === '') {
             Log::warning('Checkout email skipped: missing customer email', [
                 'checkout_id' => $checkoutId,
                 'has_cached_customer' => (bool) $customer,
                 'has_order_record' => (bool) $order,
             ]);
-            return;
-        }
+        } else {
+            $recipient = env('MAIL_TEST_TO') ?: $resolvedRecipient;
+            $notifiedKey = "checkout_email_sent:{$checkoutId}";
+            if (!Cache::add($notifiedKey, true, now()->addDays(7))) {
+                Log::info('Checkout email skipped: already sent', ['checkout_id' => $checkoutId]);
+            } else {
+                try {
+                    Mail::mailer('resend')->to($recipient)->send(new CheckoutCompletedMail($mailPayload));
 
-        $recipient = env('MAIL_TEST_TO') ?: $recipient;
-
-        $notifiedKey = "checkout_email_sent:{$checkoutId}";
-        if (!Cache::add($notifiedKey, true, now()->addDays(7))) {
-            Log::info('Checkout email skipped: already sent', ['checkout_id' => $checkoutId]);
-            return;
+                    Log::info('Checkout email sent', [
+                        'checkout_id' => $checkoutId,
+                        'recipient' => $recipient,
+                        'mailer' => 'resend',
+                    ]);
+                } catch (\Throwable $e) {
+                    Cache::forget($notifiedKey);
+                    Log::error('Checkout email send failed', [
+                        'checkout_id' => $checkoutId,
+                        'recipient' => $recipient,
+                        'error' => $e->getMessage(),
+                    ]);
+                    report($e);
+                }
+            }
         }
 
         try {
-            $orderDetails = is_array($customer['order'] ?? null) ? $customer['order'] : [];
-            if ($order) {
-                $orderDetails = [
-                    'product_name' => $order->ch_product_name ?? null,
-                    'product_sku' => $order->ch_product_sku ?? null,
-                    'quantity' => $order->ch_quantity ?? 1,
-                    'selected_color' => $order->ch_selected_color ?? null,
-                    'selected_size' => $order->ch_selected_size ?? null,
-                    'selected_type' => $order->ch_selected_type ?? null,
-                ];
-            }
-
-            $mailPayload = $this->buildCheckoutCompletedMailPayload($checkoutId, $attrs, is_array($customer) ? $customer : [], $order, $orderDetails);
-
-            Mail::mailer('resend')->to($recipient)->send(new CheckoutCompletedMail($mailPayload));
-
-            Log::info('Checkout email sent', [
-                'checkout_id' => $checkoutId,
-                'recipient' => $recipient,
-                'mailer' => 'resend',
-            ]);
-
             $this->sendPartnerStorefrontOrderEmailIfNeeded($checkoutId, $mailPayload, is_array($customer) ? $customer : [], $order);
         } catch (\Throwable $e) {
-            Cache::forget($notifiedKey);
-            Log::error('Checkout email send failed', [
+            Log::error('Partner storefront order email pipeline failed', [
                 'checkout_id' => $checkoutId,
-                'recipient' => $recipient,
                 'error' => $e->getMessage(),
             ]);
             report($e);
