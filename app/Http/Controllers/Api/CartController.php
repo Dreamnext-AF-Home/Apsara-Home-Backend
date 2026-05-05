@@ -197,6 +197,7 @@ class CartController extends Controller
         $cartItems = DB::table('tbl_add_to_cart')
             ->leftJoin('tbl_product', 'tbl_add_to_cart.crt_product_id', '=', 'tbl_product.pd_id')
             ->leftJoin('tbl_product_brand', 'tbl_product.pd_brand_type', '=', 'tbl_product_brand.pb_id')
+            ->leftJoin('tbl_product_variant', 'tbl_add_to_cart.crt_variant_id', '=', 'tbl_product_variant.pv_id')
             ->where('tbl_add_to_cart.crt_customer_id', $customer->c_userid)
             ->where('tbl_add_to_cart.crt_status', 'active')
             ->select(
@@ -207,7 +208,16 @@ class CartController extends Controller
                 'tbl_product.pd_price_dp as product_price_dp',
                 'tbl_product.pd_price_member as product_price_member',
                 'tbl_product.pd_prodpv as product_prodpv',
-                'tbl_product_brand.pb_name as brand_name'
+                'tbl_product_brand.pb_name as brand_name',
+                'tbl_product_variant.pv_id as variant_id',
+                'tbl_product_variant.pv_name as variant_name',
+                'tbl_product_variant.pv_price_srp as variant_price',
+                'tbl_product_variant.pv_price_dp as variant_price_dp',
+                'tbl_product_variant.pv_price_member as variant_price_member',
+                'tbl_product_variant.pv_prodpv as variant_prodpv',
+                'tbl_product_variant.pv_color as variant_color',
+                'tbl_product_variant.pv_size as variant_size',
+                'tbl_product_variant.pv_status as variant_status'
             )
             ->get();
 
