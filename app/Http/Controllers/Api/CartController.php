@@ -7,10 +7,13 @@ use App\Models\Customer;
 use App\Models\SystemSetting;
 use App\Models\ProductVariant;
 use App\Events\CartAdded;
+use App\Services\QueryOptimizerService;
+use App\Services\CacheService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache;
 
 class CartController extends Controller
 {
@@ -46,7 +49,7 @@ class CartController extends Controller
                 return response()->json(['message' => 'Product not found'], 404);
             }
 
-            $manualCheckoutModeEnabled = (bool) (SystemSetting::query()->value('enable_manual_checkout_mode') ?? false);
+            $manualCheckoutModeEnabled = QueryOptimizerService::getSystemSetting('enable_manual_checkout_mode') ?? false;
             if ($manualCheckoutModeEnabled && ! (bool) ($product->pd_manual_checkout_enabled ?? false)) {
                 return response()->json([
                     'message' => 'This product is not available for checkout at the moment.',
@@ -163,6 +166,9 @@ class CartController extends Controller
                     'error' => $e->getMessage()
                 ]);
             }
+
+            // Invalidate customer-specific caches
+            QueryOptimizerService::invalidateCustomerCaches((int) $customer->c_userid);
 
             return response()->json([
                 'message' => 'Item added to cart successfully',

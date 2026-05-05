@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Product;
 use App\Events\WishlistAdded;
+use App\Services\QueryOptimizerService;
+use App\Services\CacheService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use App\Models\Wishlist;
@@ -42,23 +44,39 @@ class WishlistController extends Controller
                 return $wishlistItem->product !== null;
             });
 
+        // Pre-load sold counts for all products in single query (N+1 fix)
+        $productIds = $wishlistItems->pluck('product.pd_id')->filter()->unique();
+        $soldCounts = [];
+        $avgRatings = [];
+        
+        if ($productIds->isNotEmpty()) {
+            // Single query for all sold counts
+            $soldCountsData = DB::table('tbl_checkout_history')
+                ->whereIn('ch_product_id', $productIds)
+                ->whereIn('ch_status', ['paid', 'completed', 'shipped'])
+                ->selectRaw('ch_product_id, SUM(ch_quantity) as total_sold')
+                ->groupBy('ch_product_id')
+                ->pluck('total_sold', 'ch_product_id');
+            
+            $soldCounts = $soldCountsData->toArray();
+            
+            // Single query for all average ratings
+            $ratingsData = DB::table('tbl_product_reviews')
+                ->whereIn('pr_product_id', $productIds)
+                ->selectRaw('pr_product_id, AVG(pr_rating) as avg_rating')
+                ->groupBy('pr_product_id')
+                ->pluck('avg_rating', 'pr_product_id');
+            
+            $avgRatings = $ratingsData->map(fn($rating) => (float) $rating)->toArray();
+        }
+
         return response()->json([
-            'data' => $wishlistItems->map(function ($wishlistItem) {
+            'data' => $wishlistItems->map(function ($wishlistItem) use ($soldCounts, $avgRatings) {
                 $product = $wishlistItem->product;
                 
-                // Calculate sold count for this product
-                $soldCount = \DB::table('tbl_checkout_history')
-                    ->where('ch_product_id', $product->pd_id)
-                    ->whereIn('ch_status', ['paid', 'completed', 'shipped'])
-                    ->sum('ch_quantity');
-                
-                // Calculate average rating for this product
-                $rating = \DB::table('tbl_product_reviews')
-                    ->where('pr_product_id', $product->pd_id)
-                    ->selectRaw('AVG(pr_rating) as avg_rating')
-                    ->first();
-                
-                $avgRating = $rating ? (float) $rating->avg_rating : 0.0;
+                // Use pre-loaded data instead of individual queries
+                $soldCount = $soldCounts[$product->pd_id] ?? 0;
+                $avgRating = $avgRatings[$product->pd_id] ?? 0.0;
                 
                 $mappedProduct = $this->mapProduct($product, $soldCount, $avgRating);
                 
@@ -69,7 +87,7 @@ class WishlistController extends Controller
                     'date_added' => $wishlistItem->cw_date ? (is_string($wishlistItem->cw_date) ? $wishlistItem->cw_date : $wishlistItem->cw_date->format('Y-m-d H:i:s')) : null,
                     'product' => $mappedProduct,
                 ];
-            })->values()
+            }),
         ]);
     }
 
@@ -242,6 +260,9 @@ class WishlistController extends Controller
             ]);
         }
 
+        // Invalidate customer-specific caches
+        QueryOptimizerService::invalidateCustomerCaches(Auth::id());
+
         return response()->json(['message' => 'Added to wishlist']);
     }
 
@@ -267,6 +288,9 @@ class WishlistController extends Controller
                 'error' => $e->getMessage()
             ]);
         }
+
+        // Invalidate customer-specific caches
+        QueryOptimizerService::invalidateCustomerCaches(Auth::id());
 
         return response()->json(['message' => 'Removed from wishlist']);
     }

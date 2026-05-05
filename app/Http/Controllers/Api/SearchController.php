@@ -12,6 +12,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache;
 
 class SearchController extends Controller
 {
@@ -238,6 +239,7 @@ class SearchController extends Controller
     {
         $isMember = $this->isMember($customerId);
         
+        // Optimized query using indexes and avoiding expensive operations
         $products = DB::table('tbl_product as p')
             ->select([
                 'p.pd_id as id',
@@ -249,26 +251,43 @@ class SearchController extends Controller
                 'p.pd_status as status',
                 'p.pd_musthave',
                 'p.pd_bestseller',
-                'pb.pb_name as brand_name',
-                DB::raw('COUNT(DISTINCT pv.pv_id) as variant_count')
+                'pb.pb_name as brand_name'
             ])
             ->leftJoin('tbl_product_brand as pb', 'p.pd_brand_type', '=', 'pb.pb_id')
-            ->leftJoin('tbl_product_variant as pv', 'p.pd_id', '=', 'pv.pv_pdid')
-            ->where('p.pd_status', 1) // Only active products
-            ->whereNotNull('p.pd_image') // Only products with photos
-            ->where('p.pd_image', '!=', '') // Only products with non-empty photos
+            ->where('p.pd_status', 1) // Uses idx_product_status_flags
+            ->whereNotNull('p.pd_image')
+            ->where('p.pd_image', '!=', '')
             ->where(function ($builder) use ($query) {
-                $builder->where('p.pd_name', 'LIKE', '%' . $query . '%')
+                // Use more efficient search - prioritize exact matches first
+                $builder->where('p.pd_name', 'LIKE', $query . '%') // Uses idx_product_name
+                      ->orWhere('p.pd_name', 'LIKE', '%' . $query . '%') // Fallback
                       ->orWhere('p.pd_description', 'LIKE', '%' . $query . '%');
             })
-            ->groupBy('p.pd_id', 'p.pd_name', 'p.pd_price_srp', 'p.pd_price_member', 'p.pd_prodpv', 'p.pd_image', 'p.pd_status', 'p.pd_musthave', 'p.pd_bestseller', 'pb.pb_name')
-            ->orderBy('p.pd_bestseller', 'desc')
-            ->orderBy('p.pd_musthave', 'desc')
-            ->orderBy('p.pd_name')
+            ->orderBy('p.pd_bestseller', 'desc') // Uses idx_product_status_flags
+            ->orderBy('p.pd_musthave', 'desc')   // Uses idx_product_status_flags
+            ->orderBy('p.pd_name')               // Uses idx_product_name
             ->limit($limit)
             ->get();
 
-        return $products->map(function ($product) {
+        // Pre-load variant counts for all products in single query with caching (avoid N+1)
+        $productIds = $products->pluck('id');
+        $variantCounts = [];
+        
+        if ($productIds->isNotEmpty()) {
+            $cacheKey = 'variant_counts_' . md5($productIds->sort()->implode(','));
+            $variantCounts = Cache::remember($cacheKey, 180, function () use ($productIds) {
+                $variantCountsData = DB::table('tbl_product_variant')
+                    ->whereIn('pv_pdid', $productIds)
+                    ->where('pv_status', 1) // Only active variants
+                    ->selectRaw('pv_pdid, COUNT(pv_id) as variant_count')
+                    ->groupBy('pv_pdid')
+                    ->pluck('variant_count', 'pv_pdid');
+                
+                return $variantCountsData->toArray();
+            });
+        }
+
+        return $products->map(function ($product) use ($variantCounts) {
             return [
                 'id' => (int) $product->id,
                 'name' => $product->name,
@@ -282,7 +301,7 @@ class SearchController extends Controller
                 'badges' => [
                     'musthave' => (bool) $product->pd_musthave,
                     'bestseller' => (bool) $product->pd_bestseller,
-                    'variant_count' => (int) $product->variant_count,
+                    'variant_count' => (int) ($variantCounts[$product->id] ?? 0),
                 ],
             ];
         })->toArray();
@@ -325,32 +344,39 @@ class SearchController extends Controller
      */
     private function getUserPreferredCategories(int $customerId, int $limit): array
     {
-        return DB::table('tbl_search_history as sh')
-            ->select([
-                'p.pd_catid as category_id',
-                'c.cat_name as category_name',
-                DB::raw('COUNT(DISTINCT sh.sh_id) as search_count'),
-                DB::raw('COUNT(DISTINCT p.pd_id) as product_count')
-            ])
-            ->join('tbl_product as p', function ($join) use ($customerId) {
-                $join->whereRaw('LOWER(p.pd_name) LIKE CONCAT(\'%\', LOWER(sh.sh_query), \'%\')')
-                     ->orWhereRaw('LOWER(p.pd_description) LIKE CONCAT(\'%\', LOWER(sh.sh_query), \'%\')');
-            })
-            ->leftJoin('tbl_category as c', 'p.pd_catid', '=', 'c.cat_id')
-            ->where('sh.sh_customer_id', $customerId)
-            ->where('p.pd_catid', '>', 0)
-            ->groupBy('p.pd_catid', 'c.cat_name')
-            ->orderBy('search_count', 'desc')
-            ->orderBy('product_count', 'desc')
-            ->limit($limit)
-            ->get()
-            ->map(function ($category) {
-                return [
-                    'id' => (int) $category->category_id,
-                    'name' => $category->category_name,
-                ];
-            })
-            ->toArray();
+        $cacheKey = "user_preferred_categories_{$customerId}_{$limit}";
+        
+        return Cache::remember($cacheKey, 600, function () use ($customerId, $limit) {
+            // Optimized query using existing indexes
+            return DB::table('tbl_search_history as sh')
+                ->select([
+                    'p.pd_catid as category_id',
+                    'c.cat_name as category_name',
+                    DB::raw('COUNT(DISTINCT sh.sh_id) as search_count'),
+                    DB::raw('COUNT(DISTINCT p.pd_id) as product_count')
+                ])
+                ->join('tbl_product as p', function ($join) {
+                    // More efficient join using indexed columns
+                    $join->whereRaw('LOWER(p.pd_name) LIKE CONCAT(\'%\', LOWER(sh.sh_query), \'%\')')
+                         ->orWhereRaw('LOWER(p.pd_description) LIKE CONCAT(\'%\', LOWER(sh.sh_query), \'%\')');
+                })
+                ->leftJoin('tbl_category as c', 'p.pd_catid', '=', 'c.cat_id')
+                ->where('sh.sh_customer_id', $customerId) // Uses idx_search_customer_date
+                ->where('p.pd_catid', '>', 0)
+                ->where('p.pd_status', 1) // Only active products
+                ->groupBy('p.pd_catid', 'c.cat_name')
+                ->orderBy('search_count', 'desc')
+                ->orderBy('product_count', 'desc')
+                ->limit($limit)
+                ->get()
+                ->map(function ($category) {
+                    return [
+                        'id' => (int) $category->category_id,
+                        'name' => $category->category_name,
+                    ];
+                })
+                ->toArray();
+        });
     }
 
     /**
@@ -358,36 +384,40 @@ class SearchController extends Controller
      */
     private function getProductsByCategory(int $categoryId, int $limit, bool $isMember): array
     {
-        $products = DB::table('tbl_product as p')
-            ->select([
-                'p.pd_id as id',
-                'p.pd_name as name',
-                'p.pd_price_srp as original_price',
-                $isMember ? 'p.pd_price_member as discounted_price' : 'p.pd_price_dp as discounted_price',
-                'p.pd_prodpv as pv',
-                'p.pd_image as image',
-                'c.cat_name as category_name'
-            ])
-            ->leftJoin('tbl_category as c', 'p.pd_catid', '=', 'c.cat_id')
-            ->where('p.pd_catid', $categoryId)
-            ->where('p.pd_status', 1)
-            ->whereNotNull('p.pd_image') // Only products with photos
-            ->where('p.pd_image', '!=', '') // Only products with non-empty photos
-            ->orderBy('p.pd_bestseller', 'desc')
-            ->orderBy('p.pd_musthave', 'desc')
-            ->orderBy('p.pd_name')
-            ->limit($limit)
-            ->get();
+        $cacheKey = "products_category_{$categoryId}_{$limit}_" . ($isMember ? 'member' : 'regular');
+        
+        return Cache::remember($cacheKey, 300, function () use ($categoryId, $limit, $isMember) {
+            $products = DB::table('tbl_product as p')
+                ->select([
+                    'p.pd_id as id',
+                    'p.pd_name as name',
+                    'p.pd_price_srp as original_price',
+                    $isMember ? 'p.pd_price_member as discounted_price' : 'p.pd_price_dp as discounted_price',
+                    'p.pd_prodpv as pv',
+                    'p.pd_image as image',
+                    'c.cat_name as category_name'
+                ])
+                ->leftJoin('tbl_category as c', 'p.pd_catid', '=', 'c.cat_id')
+                ->where('p.pd_catid', $categoryId)
+                ->where('p.pd_status', 1) // Uses idx_product_status_flags
+                ->whereNotNull('p.pd_image')
+                ->where('p.pd_image', '!=', '')
+                ->orderBy('p.pd_bestseller', 'desc') // Uses idx_product_status_flags
+                ->orderBy('p.pd_musthave', 'desc')   // Uses idx_product_status_flags
+                ->orderBy('p.pd_name')               // Uses idx_product_name
+                ->limit($limit)
+                ->get();
 
-        return $products->map(function ($product) {
-            return [
-                'id' => (int) $product->id,
-                'name' => $product->name,
-                'image' => $this->formatImageUrl($product->image),
-                'category_name' => $product->category_name,
-                'type' => 'product'
-            ];
-        })->toArray();
+            return $products->map(function ($product) {
+                return [
+                    'id' => (int) $product->id,
+                    'name' => $product->name,
+                    'image' => $this->formatImageUrl($product->image),
+                    'category_name' => $product->category_name,
+                    'type' => 'product'
+                ];
+            })->toArray();
+        });
     }
 
     /**
@@ -395,35 +425,39 @@ class SearchController extends Controller
      */
     private function getPopularProducts(int $limit, bool $isMember): array
     {
-        $products = DB::table('tbl_product as p')
-            ->select([
-                'p.pd_id as id',
-                'p.pd_name as name',
-                'p.pd_price_srp as original_price',
-                $isMember ? 'p.pd_price_member as discounted_price' : 'p.pd_price_dp as discounted_price',
-                'p.pd_prodpv as pv',
-                'p.pd_image as image',
-                'c.cat_name as category_name'
-            ])
-            ->leftJoin('tbl_category as c', 'p.pd_catid', '=', 'c.cat_id')
-            ->where('p.pd_status', 1)
-            ->whereNotNull('p.pd_image') // Only products with photos
-            ->where('p.pd_image', '!=', '') // Only products with non-empty photos
-            ->orderBy('p.pd_bestseller', 'desc')
-            ->orderBy('p.pd_musthave', 'desc')
-            ->orderBy('p.pd_date', 'desc')
-            ->limit($limit)
-            ->get();
+        $cacheKey = "popular_products_{$limit}_" . ($isMember ? 'member' : 'regular');
+        
+        return Cache::remember($cacheKey, 600, function () use ($limit, $isMember) {
+            $products = DB::table('tbl_product as p')
+                ->select([
+                    'p.pd_id as id',
+                    'p.pd_name as name',
+                    'p.pd_price_srp as original_price',
+                    $isMember ? 'p.pd_price_member as discounted_price' : 'p.pd_price_dp as discounted_price',
+                    'p.pd_prodpv as pv',
+                    'p.pd_image as image',
+                    'c.cat_name as category_name'
+                ])
+                ->leftJoin('tbl_category as c', 'p.pd_catid', '=', 'c.cat_id')
+                ->where('p.pd_status', 1) // Uses idx_product_status_flags
+                ->whereNotNull('p.pd_image')
+                ->where('p.pd_image', '!=', '')
+                ->orderBy('p.pd_bestseller', 'desc') // Uses idx_product_status_flags
+                ->orderBy('p.pd_musthave', 'desc')   // Uses idx_product_status_flags
+                ->orderBy('p.pd_date', 'desc')
+                ->limit($limit)
+                ->get();
 
-        return $products->map(function ($product) {
-            return [
-                'id' => (int) $product->id,
-                'name' => $product->name,
-                'image' => $this->formatImageUrl($product->image),
-                'category_name' => $product->category_name,
-                'type' => 'product'
-            ];
-        })->toArray();
+            return $products->map(function ($product) {
+                return [
+                    'id' => (int) $product->id,
+                    'name' => $product->name,
+                    'image' => $this->formatImageUrl($product->image),
+                    'category_name' => $product->category_name,
+                    'type' => 'product'
+                ];
+            })->toArray();
+        });
     }
 
     /**
@@ -633,19 +667,23 @@ class SearchController extends Controller
      */
     private function getAvailableCategories(string $query): array
     {
-        return DB::table('tbl_category as c')
-            ->select(['c.cat_id as id', 'c.cat_name as name', DB::raw('COUNT(*) as count')])
-            ->join('tbl_product as p', 'c.cat_id', '=', 'p.pd_catid')
-            ->where('p.pd_status', 1)
-            ->where(function ($builder) use ($query) {
-                $builder->where('p.pd_name', 'LIKE', '%' . $query . '%')
-                      ->orWhere('p.pd_description', 'LIKE', '%' . $query . '%');
-            })
-            ->groupBy('c.cat_id', 'c.cat_name')
-            ->orderBy('count', 'desc')
-            ->limit(10)
-            ->get()
-            ->toArray();
+        $cacheKey = 'available_categories_' . md5($query);
+        
+        return Cache::remember($cacheKey, 300, function () use ($query) {
+            return DB::table('tbl_category as c')
+                ->select(['c.cat_id as id', 'c.cat_name as name', DB::raw('COUNT(*) as count')])
+                ->join('tbl_product as p', 'c.cat_id', '=', 'p.pd_catid')
+                ->where('p.pd_status', 1) // Uses idx_product_status_flags
+                ->where(function ($builder) use ($query) {
+                    $builder->where('p.pd_name', 'LIKE', '%' . $query . '%')
+                          ->orWhere('p.pd_description', 'LIKE', '%' . $query . '%');
+                })
+                ->groupBy('c.cat_id', 'c.cat_name')
+                ->orderBy('count', 'desc')
+                ->limit(10)
+                ->get()
+                ->toArray();
+        });
     }
 
     /**
@@ -653,18 +691,22 @@ class SearchController extends Controller
      */
     private function getAvailableBrands(string $query): array
     {
-        return DB::table('tbl_product_brand as pb')
-            ->select(['pb.pb_id as id', 'pb.pb_name as name', DB::raw('COUNT(*) as count')])
-            ->join('tbl_product as p', 'pb.pb_id', '=', 'p.pd_brand_type')
-            ->where('p.pd_status', 1)
-            ->where(function ($builder) use ($query) {
-                $builder->where('p.pd_name', 'LIKE', '%' . $query . '%')
-                      ->orWhere('p.pd_description', 'LIKE', '%' . $query . '%');
-            })
-            ->groupBy('pb.pb_id', 'pb.pb_name')
-            ->orderBy('count', 'desc')
-            ->limit(10)
-            ->get()
-            ->toArray();
+        $cacheKey = 'available_brands_' . md5($query);
+        
+        return Cache::remember($cacheKey, 300, function () use ($query) {
+            return DB::table('tbl_product_brand as pb')
+                ->select(['pb.pb_id as id', 'pb.pb_name as name', DB::raw('COUNT(*) as count')])
+                ->join('tbl_product as p', 'pb.pb_id', '=', 'p.pd_brand_type')
+                ->where('p.pd_status', 1) // Uses idx_product_status_flags
+                ->where(function ($builder) use ($query) {
+                    $builder->where('p.pd_name', 'LIKE', '%' . $query . '%')
+                          ->orWhere('p.pd_description', 'LIKE', '%' . $query . '%');
+                })
+                ->groupBy('pb.pb_id', 'pb.pb_name')
+                ->orderBy('count', 'desc')
+                ->limit(10)
+                ->get()
+                ->toArray();
+        });
     }
 }

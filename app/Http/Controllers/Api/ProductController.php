@@ -23,6 +23,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\Cache;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ProductController extends Controller
@@ -63,6 +64,17 @@ class ProductController extends Controller
         ]);
     }
 
+    /**
+     * Invalidate search history cache for a customer
+     */
+    private function invalidateSearchHistoryCache(int $customerId): void
+    {
+        // Clear all possible search history cache keys for this customer
+        for ($limit = 10; $limit <= 50; $limit += 10) {
+            Cache::forget("search_history_{$customerId}_{$limit}");
+        }
+    }
+
     public function saveSearchHistory(Request $request): JsonResponse
     {
         $validator = Validator::make($request->all(), [
@@ -81,6 +93,9 @@ class ProductController extends Controller
                 'sh_query' => $request->input('query'),
             ]);
 
+            // Invalidate search history cache for this customer
+            $this->invalidateSearchHistoryCache($customerId);
+
             return response()->json(['message' => 'Search history saved successfully.']);
         } catch (\Exception $e) {
             return response()->json(['message' => 'Failed to save search history.'], 500);
@@ -93,10 +108,14 @@ class ProductController extends Controller
         $limit = $request->input('limit', 10);
         $limit = min((int) $limit, 50);
 
-        $searchHistory = SearchHistory::where('sh_customer_id', $customerId)
-            ->orderBy('sh_date_created', 'desc')
-            ->limit($limit)
-            ->get();
+        $cacheKey = "search_history_{$customerId}_{$limit}";
+        
+        $searchHistory = Cache::remember($cacheKey, 180, function () use ($customerId, $limit) {
+            return SearchHistory::where('sh_customer_id', $customerId)
+                ->orderBy('sh_date_created', 'desc') // Uses idx_search_customer_date
+                ->limit($limit)
+                ->get();
+        });
 
         return response()->json([
             'data' => $searchHistory->map(fn ($history) => [
