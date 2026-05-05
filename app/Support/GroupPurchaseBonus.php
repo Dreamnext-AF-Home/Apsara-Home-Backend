@@ -6,7 +6,6 @@ use App\Models\CheckoutHistory;
 use App\Models\Customer;
 use App\Models\CustomerWalletLedger;
 use App\Models\GroupPurchaseBonusAward;
-use App\Models\MemberTier;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -23,7 +22,7 @@ class GroupPurchaseBonus
             return;
         }
 
-        $uplineChain = self::resolveUplineChain($buyer, 10);
+        $uplineChain = self::resolveEligibleUplineChain($buyer, self::maxPaidLevels());
         if ($uplineChain->isEmpty()) {
             return;
         }
@@ -33,17 +32,6 @@ class GroupPurchaseBonus
                 /** @var Customer $upline */
                 $upline = $entry['customer'];
                 $levelNo = (int) $entry['level'];
-                $unlockedMaxLevel = self::unlockedMaxLevel($upline);
-
-                if ($levelNo > $unlockedMaxLevel) {
-                    continue;
-                }
-
-                $activation = MemberMonthlyActivation::summary($upline);
-                if (($activation['status'] ?? 'inactive') !== 'active') {
-                    continue;
-                }
-
                 $rate = self::rateForLevel($levelNo);
                 if ($rate <= 0) {
                     continue;
@@ -73,11 +61,11 @@ class GroupPurchaseBonus
                     'gpba_earned_pv' => $earnedPv,
                     'gpba_bonus_rate' => $rate,
                     'gpba_bonus_amount' => $bonusAmount,
-                    'gpba_unlocked_max_level' => $unlockedMaxLevel,
+                    'gpba_unlocked_max_level' => self::maxPaidLevels(),
                     'gpba_awarded_by' => $awardedBy,
                     'gpba_awarded_at' => now(),
                     'gpba_notes' => sprintf(
-                        'Group purchase bonus awarded from level %d downline PV.',
+                        'Unilevel bonus awarded from compressed level %d downline PV.',
                         $levelNo
                     ),
                 ]);
@@ -102,7 +90,7 @@ class GroupPurchaseBonus
                         'wl_source_id' => (int) $award->gpba_id,
                         'wl_reference_no' => (string) ($referenceOrder?->ch_checkout_id ?? ('GPB-' . $levelNo)),
                         'wl_notes' => sprintf(
-                            'Group purchase bonus credited from level %d downline order.',
+                            'Unilevel bonus credited from compressed level %d downline order.',
                             $levelNo
                         ),
                         'wl_created_by' => $awardedBy,
@@ -112,53 +100,44 @@ class GroupPurchaseBonus
         });
     }
 
-    public static function unlockedMaxLevel(Customer $member): int
+    public static function maxPaidLevels(): int
     {
-        $rank = (int) ($member->c_rank ?? 1);
-        $tier = MemberTier::getByRank($rank);
-        return (int) ($tier?->mt_max_group_levels ?? 0);
+        return max(1, min(10, (int) env('UNILEVEL_BONUS_MAX_LEVELS', 10)));
     }
 
     public static function rateForLevel(int $levelNo): float
     {
-        $rates = self::rates();
-        if ($levelNo < 1 || $levelNo > 10) {
+        if ($levelNo < 1 || $levelNo > self::maxPaidLevels()) {
             return 0.0;
         }
 
-        return max(0, (float) ($rates[$levelNo - 1] ?? 0));
+        return max(0, (float) env('UNILEVEL_BONUS_RATE', 0.06));
     }
 
-    private static function rates(): array
-    {
-        $raw = trim((string) env('GROUP_PURCHASE_BONUS_RATES', '0,0,0,0,0,0,0,0,0,0'));
-        $parts = array_map('trim', explode(',', $raw));
-        $parts = array_pad($parts, 10, '0');
-
-        return array_map(fn ($value) => max(0, (float) $value), array_slice($parts, 0, 10));
-    }
-
-    private static function resolveUplineChain(Customer $buyer, int $maxLevels = 10)
+    private static function resolveEligibleUplineChain(Customer $buyer, int $maxPaidLevels = 10)
     {
         $chain = collect();
         $visited = [];
         $currentSponsorId = (int) ($buyer->c_sponsor ?? 0);
-        $level = 1;
+        $paidLevel = 1;
 
-        while ($currentSponsorId > 0 && $level <= $maxLevels && !in_array($currentSponsorId, $visited, true)) {
+        while ($currentSponsorId > 0 && $paidLevel <= $maxPaidLevels && !in_array($currentSponsorId, $visited, true)) {
             $visited[] = $currentSponsorId;
             $customer = Customer::query()->where('c_userid', $currentSponsorId)->first();
             if (!$customer) {
                 break;
             }
 
-            $chain->push([
-                'level' => $level,
-                'customer' => $customer,
-            ]);
+            $activation = MemberMonthlyActivation::summary($customer);
+            if (($activation['status'] ?? 'inactive') === 'active') {
+                $chain->push([
+                    'level' => $paidLevel,
+                    'customer' => $customer,
+                ]);
+                $paidLevel++;
+            }
 
             $currentSponsorId = (int) ($customer->c_sponsor ?? 0);
-            $level++;
         }
 
         return $chain;

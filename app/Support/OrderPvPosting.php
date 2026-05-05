@@ -22,6 +22,10 @@ class OrderPvPosting
                 return false;
             }
 
+            if (!self::isDelivered($lockedOrder)) {
+                return false;
+            }
+
             $earnedPv = (float) ($lockedOrder->ch_earned_pv ?? 0);
             if ($earnedPv <= 0 || $lockedOrder->ch_pv_posted_at) {
                 return false;
@@ -105,9 +109,15 @@ class OrderPvPosting
         $referrerCustomerId = (int) ($order->ch_referrer_customer_id ?? 0);
 
         if ($sourceSlug !== '' && $referrerCustomerId > 0) {
-            return 'PV credit posted on order approval to the partner storefront referral account.';
+            return 'PV credit posted on delivered order to the partner storefront referral account.';
         }
 
-        return 'PV credit posted on order approval.';
+        return 'PV credit posted on delivered order.';
+    }
+
+    private static function isDelivered(CheckoutHistory $order): bool
+    {
+        return in_array((string) ($order->ch_fulfillment_status ?? ''), ['delivered', 'completed'], true)
+            || (string) ($order->ch_shipment_status ?? '') === 'delivered';
     }
 }

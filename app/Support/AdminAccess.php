@@ -18,6 +18,12 @@ class AdminAccess
         'settings_users',
     ];
 
+    public const WEB_CONTENT_SECTION_PERMISSIONS = [
+        'wc:shop-builder',
+        'wc:dreambuild',
+        'wc:partner-storefronts',
+    ];
+
     public static function roleFromLevel(int $level): string
     {
         return match ($level) {
@@ -38,6 +44,11 @@ class AdminAccess
         return self::PERMISSIONS;
     }
 
+    public static function availableWebContentSectionPermissions(): array
+    {
+        return self::WEB_CONTENT_SECTION_PERMISSIONS;
+    }
+
     public static function normalizePermissions(mixed $permissions): array
     {
         if (! is_array($permissions)) {
@@ -45,6 +56,20 @@ class AdminAccess
         }
 
         $valid = array_flip(self::PERMISSIONS);
+
+        return array_values(array_unique(array_filter(
+            array_map(static fn ($item) => is_string($item) ? trim($item) : '', $permissions),
+            static fn ($item) => $item !== '' && isset($valid[$item]),
+        )));
+    }
+
+    public static function normalizeWebContentSectionPermissions(mixed $permissions): array
+    {
+        if (! is_array($permissions)) {
+            return [];
+        }
+
+        $valid = array_flip(self::WEB_CONTENT_SECTION_PERMISSIONS);
 
         return array_values(array_unique(array_filter(
             array_map(static fn ($item) => is_string($item) ? trim($item) : '', $permissions),
@@ -76,11 +101,36 @@ class AdminAccess
         return array_values(array_unique(array_merge(['dashboard'], $normalized)));
     }
 
+    public static function sanitizeWebContentPermissionsForLevel(int $level, mixed $permissions, mixed $storefrontIds = []): array
+    {
+        if ($level !== 4) {
+            return [];
+        }
+
+        $sections = self::normalizeWebContentSectionPermissions($permissions);
+        $ids = [];
+        if (is_array($storefrontIds)) {
+            $ids = array_values(array_unique(array_filter(array_map(
+                static fn ($id) => is_numeric($id) ? (int) $id : null,
+                $storefrontIds,
+            ), static fn ($id) => is_int($id) && $id > 0)));
+        }
+
+        return array_values(array_merge($sections, $ids));
+    }
+
     public static function permissionsForAdmin(Admin $admin): array
     {
         $level = (int) $admin->user_level_id;
         if ($level === 1) {
             return self::PERMISSIONS;
+        }
+
+        if ($level === 4) {
+            return array_values(array_unique(array_merge(
+                self::defaultPermissionsForLevel($level),
+                self::normalizeWebContentSectionPermissions($admin->admin_permissions ?? []),
+            )));
         }
 
         $custom = self::sanitizePermissionsForLevel($level, $admin->admin_permissions ?? []);

@@ -13,6 +13,7 @@ use App\Models\SystemSetting;
 use App\Models\WebPageContent;
 use App\Services\CloudinaryUploadService;
 use App\Support\DirectReferralCommission;
+use App\Support\OrderPvPosting;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -991,6 +992,7 @@ class PaymentController extends Controller
             }
             $order->save();
 
+            OrderPvPosting::postIfNeeded($order, (int) $customer->getAuthIdentifier());
             DirectReferralCommission::releaseAvailableForOrder($order, (int) $customer->getAuthIdentifier());
         });
 
@@ -1129,11 +1131,6 @@ class PaymentController extends Controller
 
         if ($isNowPaid) {
             $this->markAffiliateVoucherUsedIfNeeded($checkoutId, is_array($cached) ? $cached : []);
-            DirectReferralCommission::createPendingIfEligible(
-                $history,
-                !empty($cached['referrer_user_id']) ? (int) $cached['referrer_user_id'] : null,
-                (string) ($cached['referral_source_type'] ?? '')
-            );
         }
     }
 

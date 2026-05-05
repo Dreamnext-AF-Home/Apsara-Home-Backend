@@ -92,8 +92,8 @@ class EncashmentController extends Controller
             ->where('ch_earned_pv', '>', 0)
             ->whereNull('ch_pv_posted_at')
             ->where(function ($query) {
-                $query->whereNull('ch_approval_status')
-                    ->orWhere('ch_approval_status', 'pending_approval');
+                $query->whereNull('ch_fulfillment_status')
+                    ->orWhereNotIn('ch_fulfillment_status', ['delivered', 'completed', 'cancelled', 'refunded']);
             })
             ->whereNotIn('ch_status', ['failed', 'cancelled', 'expired'])
             ->sum('ch_earned_pv');
@@ -314,6 +314,10 @@ class EncashmentController extends Controller
             ->where('ch_earned_pv', '>', 0)
             ->whereNull('ch_pv_posted_at')
             ->where('ch_approval_status', 'approved')
+            ->where(function ($query) {
+                $query->whereIn('ch_fulfillment_status', ['delivered', 'completed'])
+                    ->orWhere('ch_shipment_status', 'delivered');
+            })
             ->whereNotIn('ch_status', ['failed', 'cancelled', 'expired'])
             ->orderBy('ch_id')
             ->limit(50)
@@ -905,6 +909,8 @@ class EncashmentController extends Controller
 
     private function transform(EncashmentRequest $row, Customer $customer): array
     {
+        $amount = (float) $row->er_amount;
+        $breakdown = $this->encashmentBreakdown($amount);
         $name = trim(implode(' ', array_filter([
             $customer->c_fname ?? null,
             $customer->c_mname ?? null,
@@ -915,7 +921,10 @@ class EncashmentController extends Controller
             'id' => (int) $row->er_id,
             'reference_no' => $row->er_reference_no,
             'invoice_no' => $row->er_invoice_no,
-            'amount' => (float) $row->er_amount,
+            'amount' => $amount,
+            'withholding_tax' => $breakdown['withholding_tax'],
+            'processing_fee' => $breakdown['processing_fee'],
+            'net_amount' => $breakdown['net_amount'],
             'channel' => $row->er_channel,
             'account_name' => $row->er_account_name,
             'account_number' => $row->er_account_number,
@@ -987,10 +996,12 @@ class EncashmentController extends Controller
     private function rules(): array
     {
         return [
-            'min_amount' => max(1, (float) env('ENCASHMENT_MIN_AMOUNT', 500)),
+            'min_amount' => max(1, (float) env('ENCASHMENT_MIN_AMOUNT', 1000)),
             'min_points' => max(0, (float) env('ENCASHMENT_MIN_POINTS', 0)),
             'cooldown_hours' => max(0, (int) env('ENCASHMENT_COOLDOWN_HOURS', 24)),
             'require_active_account' => filter_var(env('ENCASHMENT_REQUIRE_ACTIVE_ACCOUNT', true), FILTER_VALIDATE_BOOL),
+            'withholding_tax_rate' => max(0, (float) env('ENCASHMENT_WITHHOLDING_TAX_RATE', 0.10)),
+            'processing_fee' => max(0, (float) env('ENCASHMENT_PROCESSING_FEE', 150)),
         ];
     }
 
@@ -1052,6 +1063,22 @@ class EncashmentController extends Controller
             'min_points' => round((float) $rules['min_points'], 2),
             'cooldown_hours' => (int) $rules['cooldown_hours'],
             'require_active_account' => (bool) $rules['require_active_account'],
+            'withholding_tax_rate' => round((float) $rules['withholding_tax_rate'], 4),
+            'processing_fee' => round((float) $rules['processing_fee'], 2),
+        ];
+    }
+
+    private function encashmentBreakdown(float $amount): array
+    {
+        $rules = $this->rules();
+        $withholdingTax = round($amount * (float) $rules['withholding_tax_rate'], 2);
+        $processingFee = round((float) $rules['processing_fee'], 2);
+        $netAmount = round(max(0, $amount - $withholdingTax - $processingFee), 2);
+
+        return [
+            'withholding_tax' => $withholdingTax,
+            'processing_fee' => $processingFee,
+            'net_amount' => $netAmount,
         ];
     }
 }
