@@ -136,8 +136,7 @@ class QueryOptimizerService
             CacheService::VERY_LONG_TERM,
             function () use ($key) {
                 return DB::table('tbl_system_settings')
-                    ->where('ss_key', $key)
-                    ->value('ss_value');
+                    ->value($key);
             }
         );
     }
