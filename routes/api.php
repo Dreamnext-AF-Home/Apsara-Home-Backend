@@ -332,11 +332,14 @@ Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_a
     Route::delete('/admin/member-tiers/{id}', [MemberTierController::class, 'destroy']);
 });
 
+Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_admin,admin,csr,merchant_admin,web_content'])->group(function () {
+    Route::get('/admin/orders', [AdminOrderController::class, 'index']);
+});
+
 Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_admin,admin,csr,merchant_admin'])->group(function () {
     Route::get('/admin/interior-requests', [InteriorRequestController::class, 'adminIndex']);
     Route::patch('/admin/interior-requests/{id}', [InteriorRequestController::class, 'adminUpdate']);
     Route::post('/admin/interior-requests/{id}/updates', [InteriorRequestController::class, 'adminStoreUpdate']);
-    Route::get('/admin/orders', [AdminOrderController::class, 'index']);
     Route::get('/admin/orders/notifications', [AdminOrderController::class, 'notifications']);
     Route::post('/admin/orders/notifications/read-all', [AdminOrderController::class, 'markAllNotificationsRead']);
     Route::post('/admin/orders/notifications/{id}/read', [AdminOrderController::class, 'markNotificationRead']);
@@ -440,6 +443,11 @@ Route::middleware(['auth:sanctum', 'admin.actor', 'admin.token.validation'])->pr
     Route::post('/logout', [AdminAuthController::class, 'logout']);
     Route::get('/me', [AdminAuthController::class, 'me']);
     Route::put('/me', [AdminAuthController::class, 'updateMe']);
+});
+
+Route::middleware(['auth:sanctum', 'admin.actor', 'admin.token.validation'])->group(function () {
+    // Read-only storefront orders endpoint for partner storefront dashboards.
+    Route::get('/admin/storefront-orders', [AdminOrderController::class, 'index']);
 });
 
 Route::middleware(['auth:sanctum', 'supplier.actor'])->prefix('supplier/auth')->group(function () {
