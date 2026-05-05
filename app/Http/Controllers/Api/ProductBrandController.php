@@ -201,9 +201,6 @@ class ProductBrandController extends Controller
     {
         $hasBrandImageColumn = $this->hasBrandImageColumn();
         
-        // Get max images per brand from request (default 6, max 12)
-        $maxImages = min(12, max(1, (int) $request->input('max_images', 6)));
-        
         // Get all active brands
         $brands = ProductBrand::query()
             ->select(['pb_id', 'pb_name', 'pb_status'])
@@ -223,91 +220,25 @@ class ProductBrandController extends Controller
             ->pluck('total_products', 'pd_brand_type')
             ->toArray();
 
-        // Get sample images for each brand
-        $brandsWithImages = $brands->map(function ($brand) use ($brandProductCounts, $hasBrandImageColumn, $maxImages) {
-            $brandId = (int) $brand->pb_id;
-            
-            // Keep getting products until we have max_images or run out of products
-            $brandImages = [];
-            $offset = 0;
-            $batchSize = 10; // Check 10 products at a time for efficiency
-            
-            while (count($brandImages) < $maxImages && $offset < 100) { // Safety limit of 100 products checked
-                $products = Product::query()
-                    ->select(['pd_id', 'pd_image', 'pd_status'])
-                    ->with(['photos:pp_id,pp_pdid,pp_filename'])
-                    ->where('pd_brand_type', $brandId)
-                    ->whereIn('pd_status', [1, 2]) // Only active products
-                    ->orderBy('pd_date', 'desc')
-                    ->offset($offset)
-                    ->limit($batchSize)
-                    ->get();
-
-                if ($products->isEmpty()) {
-                    break; // No more products to check
-                }
-
-                foreach ($products as $product) {
-                    // Stop if we already have max_images
-                    if (count($brandImages) >= $maxImages) {
-                        break;
-                    }
-
-                    // Add main product image if exists
-                    if ($product->pd_image && !empty(trim($product->pd_image))) {
-                        if (!in_array($product->pd_image, $brandImages)) {
-                            $brandImages[] = $product->pd_image;
-                            
-                            // Stop if we reached max_images
-                            if (count($brandImages) >= $maxImages) {
-                                break;
-                            }
-                        }
-                    }
-                    
-                    // Add additional photos (only if we still need more images)
-                    if ($product->photos && $product->photos->isNotEmpty()) {
-                        foreach ($product->photos as $photo) {
-                            if ($photo->pp_filename && !empty(trim($photo->pp_filename))) {
-                                if (!in_array($photo->pp_filename, $brandImages)) {
-                                    $brandImages[] = $photo->pp_filename;
-                                    
-                                    // Stop if we reached max_images
-                                    if (count($brandImages) >= $maxImages) {
-                                        break 2; // Break out of both loops
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                $offset += $batchSize;
-            }
-
-            // Limit to exactly max_images
-            $brandImages = array_slice($brandImages, 0, $maxImages);
-
+        // Simplified brand data with only logo, brand name, and total products
+        $brandsData = $brands->map(function ($brand) use ($brandProductCounts, $hasBrandImageColumn) {
             $brandData = [
-                'id' => $brandId,
+                'id' => (int) $brand->pb_id,
                 'name' => (string) $brand->pb_name,
-                'status' => (int) ($brand->pb_status ?? 0),
-                'total_products' => $brandProductCounts[$brandId] ?? 0,
-                'images' => $brandImages,
-                'images_count' => count($brandImages),
+                'total_products' => $brandProductCounts[$brand->pb_id] ?? 0,
             ];
 
+            // Add brand logo if the column exists
             if ($hasBrandImageColumn) {
-                $brandData['brand_image'] = $brand->pb_image ? (string) $brand->pb_image : null;
+                $brandData['logo'] = $brand->pb_image ? (string) $brand->pb_image : null;
             }
 
             return $brandData;
         });
 
         return response()->json([
-            'brands' => $brandsWithImages,
-            'total_brands' => $brandsWithImages->count(),
-            'max_images_per_brand' => $maxImages,
+            'brands' => $brandsData,
+            'total_brands' => $brandsData->count(),
         ]);
     }
 

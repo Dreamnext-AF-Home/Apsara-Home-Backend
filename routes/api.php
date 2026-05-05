@@ -128,15 +128,21 @@ Route::middleware('throttle:public')->group(function () {
     Route::get('/products/{id}', [ProductController::class, 'show']);
     Route::get('/products/{id}/brand', [ProductController::class, 'brand']);
     Route::get('/products', [ProductController::class, 'index']);
-    Route::get('/product-brands', [ProductBrandController::class, 'publicIndex']);
-    Route::get('/product-brands/with-products', [ProductBrandController::class, 'showAllWithProducts']);
-    Route::get('/product-brands/{id}/profile', [ProductBrandController::class, 'profile']);
-    Route::get('/product-brands/{id}/debug', [ProductBrandController::class, 'debugBrandImages']);
     Route::get('/shipping-rates', [ShippingRateController::class, 'publicIndex']);
     Route::get('/web-pages/home', [WebPageController::class, 'home']);
     Route::get('/web-pages/adds-content', [AddsContentController::class, 'publicIndex']);
     Route::get('/web-pages/{type}', [WebPageController::class, 'publicIndex']);
     Route::get('/settings/general', [AdminSettingsController::class, 'publicGeneral']);
+});
+
+// Product brands endpoints (outside throttle to avoid Redis issues)
+Route::get('/product-brands', [ProductBrandController::class, 'publicIndex']);
+Route::get('/product-brands/with-products', [ProductBrandController::class, 'showAllWithProducts']);
+Route::get('/product-brands/{id}/profile', [ProductBrandController::class, 'profile']);
+Route::get('/product-brands/{id}/debug', [ProductBrandController::class, 'debugBrandImages']);
+
+Route::middleware('throttle:public')->group(function () {
+    Route::get('/address/regions', [AddressController::class, 'regions']);
     Route::get('/address/regions', [AddressController::class, 'regions']);
     Route::get('/address/provinces', [AddressController::class, 'provinces']);
     Route::get('/address/cities', [AddressController::class, 'cities']);
