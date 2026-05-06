@@ -402,9 +402,14 @@ class AuthController extends Controller
 
     public function login(Request $request)
     {
-        $turnstileToken = trim((string) $request->input('cf_turnstile_response', ''));
-        if (!(new \App\Services\TurnstileService())->verifyLogin($turnstileToken, (string) $request->ip())) {
-            return response()->json(['message' => 'Bot verification failed.'], 422);
+        $mfaChallengeToken = trim((string) $request->input('mfa_challenge_token', ''));
+        $isMfaContinuation = $mfaChallengeToken !== '';
+
+        if (! $isMfaContinuation) {
+            $turnstileToken = trim((string) $request->input('cf_turnstile_response', ''));
+            if (!(new \App\Services\TurnstileService())->verifyLogin($turnstileToken, (string) $request->ip())) {
+                return response()->json(['message' => 'Bot verification failed.'], 422);
+            }
         }
 
         return $this->handleLogin($request);

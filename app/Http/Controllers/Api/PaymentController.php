@@ -447,7 +447,7 @@ class PaymentController extends Controller
                 'online_banking_provider' => $validated['online_banking_provider'] ?? null,
                 'payment_mode' => $paymongoConfig['mode'],
                 'source_label' => $sourceLabel !== '' ? $sourceLabel : null,
-                'source_slug' => $sourceSlug !== '' ? $sourceSlug : null,
+                'source_slug' => $normalizedSourceSlug !== '' ? $normalizedSourceSlug : ($sourceSlug !== '' ? $sourceSlug : null),
                 'source_host' => $sourceHost !== '' ? $sourceHost : null,
                 'source_url' => $sourceUrl !== '' ? $sourceUrl : null,
                 'order' => $resolvedOrderSnapshot,
@@ -547,11 +547,54 @@ class PaymentController extends Controller
             $this->sendCheckoutCompletedEmailIfNeeded($checkoutId, $attrs);
         }
 
+        $cachedCustomer = Cache::get("checkout_customer:{$checkoutId}");
+        $order = CheckoutHistory::query()
+            ->where('ch_checkout_id', $checkoutId)
+            ->first();
+
+        $customerPayload = [
+            'name' => is_array($cachedCustomer) ? ($cachedCustomer['name'] ?? null) : null,
+            'email' => is_array($cachedCustomer) ? ($cachedCustomer['email'] ?? null) : null,
+            'phone' => is_array($cachedCustomer) ? ($cachedCustomer['phone'] ?? null) : null,
+            'address' => is_array($cachedCustomer) ? ($cachedCustomer['address'] ?? null) : null,
+        ];
+
+        $orderSummaryPayload = [
+            'description' => is_array($cachedCustomer) ? ($cachedCustomer['description'] ?? null) : null,
+            'amount' => is_array($cachedCustomer) ? ($cachedCustomer['amount'] ?? null) : null,
+            'shipping_fee' => is_array($cachedCustomer) ? ($cachedCustomer['shipping_fee'] ?? null) : null,
+            'payment_method' => is_array($cachedCustomer) ? ($cachedCustomer['payment_method'] ?? null) : null,
+            'product_name' => is_array($cachedCustomer['order'] ?? null) ? ($cachedCustomer['order']['product_name'] ?? null) : null,
+            'product_sku' => is_array($cachedCustomer['order'] ?? null) ? ($cachedCustomer['order']['product_sku'] ?? null) : null,
+            'quantity' => is_array($cachedCustomer['order'] ?? null) ? ($cachedCustomer['order']['quantity'] ?? null) : null,
+        ];
+
+        if ($order) {
+            $customerPayload = [
+                'name' => $order->ch_customer_name ?: ($customerPayload['name'] ?? null),
+                'email' => $order->ch_customer_email ?: ($customerPayload['email'] ?? null),
+                'phone' => $order->ch_customer_phone ?: ($customerPayload['phone'] ?? null),
+                'address' => $order->ch_customer_address ?: ($customerPayload['address'] ?? null),
+            ];
+
+            $orderSummaryPayload = [
+                'description' => $order->ch_description ?: ($orderSummaryPayload['description'] ?? null),
+                'amount' => $order->ch_amount ?? ($orderSummaryPayload['amount'] ?? null),
+                'shipping_fee' => $order->ch_shipping_fee ?? ($orderSummaryPayload['shipping_fee'] ?? null),
+                'payment_method' => $order->ch_payment_method ?: ($orderSummaryPayload['payment_method'] ?? null),
+                'product_name' => $order->ch_product_name ?: ($orderSummaryPayload['product_name'] ?? null),
+                'product_sku' => $order->ch_product_sku ?: ($orderSummaryPayload['product_sku'] ?? null),
+                'quantity' => $order->ch_quantity ?: ($orderSummaryPayload['quantity'] ?? null),
+            ];
+        }
+
         return response()->json([
             'checkout_id' => $checkoutId,
             'payment_intent_id' => $attrs['payment_intent']['id'] ?? null,
             'status' => $status, // usually paid / unpaid / failed
             'payment_mode' => $paymentMode,
+            'customer' => $customerPayload,
+            'order_summary' => $orderSummaryPayload,
             'raw' => $attrs,
         ]);
     }
@@ -768,15 +811,6 @@ class PaymentController extends Controller
         array $customer,
         ?CheckoutHistory $order
     ): void {
-        $customerId = (int) ($customer['customer_id'] ?? ($order?->ch_customer_id ?? 0));
-        if ($customerId > 0) {
-            Log::info('Partner storefront order email skipped: checkout belongs to a member', [
-                'checkout_id' => $checkoutId,
-                'customer_id' => $customerId,
-            ]);
-            return;
-        }
-
         $sourceSlug = $this->resolvePartnerStorefrontSlugFromMailPayload($mailPayload);
         if ($sourceSlug === '') {
             Log::info('Partner storefront order email skipped: missing storefront source slug', [
@@ -845,7 +879,7 @@ class PaymentController extends Controller
         }
 
         $storefronts = WebPageContent::query()
-            ->where('wpc_type', 'partner-storefront')
+            ->whereIn('wpc_type', ['partner-storefront', 'partner-storefronts'])
             ->orderByDesc('wpc_status')
             ->get();
 
@@ -860,7 +894,17 @@ class PaymentController extends Controller
 
     private function extractPartnerStorefrontNotificationEmail(WebPageContent $storefront): string
     {
-        return trim((string) data_get($storefront->wpc_payload, 'fields.notification_email', ''));
+        $email = trim((string) data_get($storefront->wpc_payload, 'fields.notification_email', ''));
+        if ($email !== '') {
+            return $email;
+        }
+
+        $legacyEmail = trim((string) data_get($storefront->wpc_payload, 'notification_email', ''));
+        if ($legacyEmail !== '') {
+            return $legacyEmail;
+        }
+
+        return '';
     }
 
     private function extractPartnerStorefrontDisplayName(WebPageContent $storefront): string
