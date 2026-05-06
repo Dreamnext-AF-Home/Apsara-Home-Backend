@@ -910,6 +910,7 @@ class ProductController extends Controller
             return collect($value)
                 ->filter(fn ($item) => is_string($item) && trim($item) !== '')
                 ->map(fn ($item) => trim((string) $item))
+                ->unique(fn (string $item) => mb_strtolower($item, 'UTF-8'))
                 ->values()
                 ->all();
         }
@@ -924,6 +925,7 @@ class ProductController extends Controller
         return collect($parts)
             ->map(fn ($item) => trim((string) $item))
             ->filter(fn ($item) => $item !== '')
+            ->unique(fn (string $item) => mb_strtolower($item, 'UTF-8'))
             ->values()
             ->all();
     }
@@ -1138,6 +1140,7 @@ class ProductController extends Controller
         return $product->photos
             ->map(fn (ProductPhoto $photo) => trim((string) $photo->pp_filename))
             ->filter(fn (string $url) => $url !== '')
+            ->unique(fn (string $url) => mb_strtolower($url, 'UTF-8'))
             ->values()
             ->all();
     }
@@ -1158,8 +1161,9 @@ class ProductController extends Controller
     {
         return $product->variants->map(function (ProductVariant $variant) {
             $images = $variant->photos
-                ->map(fn (ProductVariantPhoto $photo) => (string) $photo->pvp_filename)
-                ->filter(fn (string $url) => trim($url) !== '')
+                ->map(fn (ProductVariantPhoto $photo) => trim((string) $photo->pvp_filename))
+                ->filter(fn (string $url) => $url !== '')
+                ->unique(fn (string $url) => mb_strtolower($url, 'UTF-8'))
                 ->values()
                 ->all();
 
@@ -1225,6 +1229,8 @@ class ProductController extends Controller
             $height    = isset($variant['pv_height']) && $variant['pv_height'] !== '' ? $variant['pv_height'] : null;
             $images    = collect($variant['pv_images'] ?? [])
                 ->filter(fn ($url) => is_string($url) && trim($url) !== '')
+                ->map(fn ($url) => trim((string) $url))
+                ->unique(fn (string $url) => mb_strtolower($url, 'UTF-8'))
                 ->values()
                 ->all();
 
@@ -1282,8 +1288,9 @@ class ProductController extends Controller
     private function mapProduct(Product $p, int $soldCount = 0, float $avgRating = 0.0): array
     {
         $images = $p->photos
-            ->map(fn (ProductPhoto $photo) => (string) $photo->pp_filename)
-            ->filter(fn (string $url) => trim($url) !== '')
+            ->map(fn (ProductPhoto $photo) => trim((string) $photo->pp_filename))
+            ->filter(fn (string $url) => $url !== '')
+            ->unique(fn (string $url) => mb_strtolower($url, 'UTF-8'))
             ->values()
             ->all();
 
@@ -2961,6 +2968,8 @@ class ProductController extends Controller
 
         $images = collect($request->input('pd_images', []))
             ->filter(fn ($url) => is_string($url) && trim($url) !== '')
+            ->map(fn ($url) => trim((string) $url))
+            ->unique(fn (string $url) => mb_strtolower($url, 'UTF-8'))
             ->values()
             ->all();
 
@@ -3261,6 +3270,8 @@ class ProductController extends Controller
                 if ($request->has('pd_images')) {
                     $images = collect($request->input('pd_images', []))
                         ->filter(fn ($url) => is_string($url) && trim($url) !== '')
+                        ->map(fn ($url) => trim((string) $url))
+                        ->unique(fn (string $url) => mb_strtolower($url, 'UTF-8'))
                         ->values()
                         ->all();
 
