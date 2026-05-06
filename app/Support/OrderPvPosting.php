@@ -9,9 +9,9 @@ use Illuminate\Support\Facades\DB;
 
 class OrderPvPosting
 {
-    public static function postIfNeeded(CheckoutHistory $order, ?int $actorAdminId = null): bool
+    public static function postIfNeeded(CheckoutHistory $order, ?int $actorAdminId = null, bool $runBonusEvaluation = true): bool
     {
-        return (bool) DB::transaction(function () use ($order, $actorAdminId) {
+        return (bool) DB::transaction(function () use ($order, $actorAdminId, $runBonusEvaluation) {
             /** @var CheckoutHistory|null $lockedOrder */
             $lockedOrder = CheckoutHistory::query()
                 ->where('ch_id', (int) $order->ch_id)
@@ -68,16 +68,13 @@ class OrderPvPosting
             $lockedOrder->ch_pv_posted_at = now();
             $lockedOrder->save();
 
+            if (!$runBonusEvaluation) {
+                return true;
+            }
+
             DirectAffiliatePerformanceBonus::awardEligibleMilestonesForBuyer($customer, $lockedOrder, $actorAdminId ?? 0);
             GroupPurchaseBonus::awardForBuyer($customer, $lockedOrder, $actorAdminId ?? 0);
             TierEvaluator::evaluate($customer);
-
-            if ((int) ($customer->c_sponsor ?? 0) > 0) {
-                $sponsor = Customer::query()->where('c_userid', (int) $customer->c_sponsor)->first();
-                if ($sponsor) {
-                    TierEvaluator::evaluate($sponsor);
-                }
-            }
 
             return true;
         });
