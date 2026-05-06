@@ -316,44 +316,6 @@ class SearchController extends Controller
     }
 
     /**
-     * Get brands that match the search query for live search
-     */
-    private function getLiveSearchBrands(string $query, int $limit): array
-    {
-        $brands = DB::table('tbl_product_brand as pb')
-            ->select([
-                'pb.pb_id as id',
-                'pb.pb_name as name',
-                'pb.pb_image as logo',
-                DB::raw('COUNT(DISTINCT p.pd_id) as product_count')
-            ])
-            ->leftJoin('tbl_product as p', function ($join) {
-                $join->on('pb.pb_id', '=', 'p.pd_brand_type')
-                     ->where('p.pd_status', 1);
-            })
-            ->where('pb.pb_status', 0) // Active brands only
-            ->where(function ($builder) use ($query) {
-                $builder->where('pb.pb_name', 'LIKE', $query . '%')
-                      ->orWhere('pb.pb_name', 'LIKE', '%' . $query . '%');
-            })
-            ->groupBy('pb.pb_id', 'pb.pb_name', 'pb.pb_image')
-            ->orderBy('product_count', 'desc')
-            ->orderBy('pb.pb_name')
-            ->limit($limit)
-            ->get();
-
-        return $brands->map(function ($brand) {
-            return [
-                'id' => (int) $brand->id,
-                'name' => $brand->name,
-                'logo' => $brand->logo ? $this->formatImageUrl($brand->logo) : null,
-                'product_count' => (int) $brand->product_count,
-                'type' => 'brand', // To identify this is a brand result
-            ];
-        })->toArray();
-    }
-
-    /**
      * Get search recommendations
      */
     private function getSearchRecommendations(string $query, ?int $customerId): array
