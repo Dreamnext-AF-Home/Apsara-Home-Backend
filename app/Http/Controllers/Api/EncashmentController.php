@@ -987,7 +987,7 @@ class EncashmentController extends Controller
     private function rules(): array
     {
         return [
-            'min_amount' => max(1, (float) env('ENCASHMENT_MIN_AMOUNT', 500)),
+            'min_amount' => max(1, (float) env('ENCASHMENT_MIN_AMOUNT', 1000)),
             'min_points' => max(0, (float) env('ENCASHMENT_MIN_POINTS', 0)),
             'cooldown_hours' => max(0, (int) env('ENCASHMENT_COOLDOWN_HOURS', 24)),
             'require_active_account' => filter_var(env('ENCASHMENT_REQUIRE_ACTIVE_ACCOUNT', true), FILTER_VALIDATE_BOOL),
