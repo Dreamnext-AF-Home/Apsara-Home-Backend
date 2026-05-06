@@ -774,6 +774,157 @@ class EncashmentController extends Controller
         ]);
     }
 
+    public function submitVerificationRequestWithPayout(Request $request)
+    {
+        $customer = $request->user();
+        if (!$customer instanceof Customer) {
+            return response()->json(['message' => 'Only customer accounts can submit encashment requests.'], 403);
+        }
+
+        if ((int) ($customer->c_lockstatus ?? 0) === 1) {
+            return response()->json([
+                'message' => 'Your account is currently blocked. Please contact support for encashment assistance.',
+            ], 422);
+        }
+
+        if ((int) ($customer->c_accnt_status ?? 0) === 1) {
+            return response()->json([
+                'message' => 'Your account is already verified. Please submit a standard encashment request.',
+            ], 422);
+        }
+
+        $existingPending = CustomerVerificationRequest::query()
+            ->where('cvr_customer_id', (int) $customer->c_userid)
+            ->whereIn('cvr_status', ['pending_review', 'for_review', 'on_hold'])
+            ->latest('cvr_id')
+            ->first();
+        if ($existingPending) {
+            return response()->json([
+                'message' => 'You already have a pending verification request. Please wait for admin review.',
+                'status' => 'pending_review',
+                'approval_owner' => 'admin',
+                'reference_no' => $existingPending->cvr_reference_no,
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'amount' => 'required|numeric|min:1',
+            'channel' => 'required|in:bank,gcash,maya',
+            'account_name' => 'nullable|string|max:255',
+            'account_number' => 'nullable|string|max:120',
+            'notes' => 'nullable|string|max:1000',
+            'full_name' => 'required|string|min:3|max:255',
+            'birth_date' => 'required|date',
+            'id_type' => 'required|string|max:60',
+            'id_number' => 'required|string|max:120',
+            'contact_number' => 'required|string|max:60',
+            'address_line' => 'required|string|max:255',
+            'city' => 'required|string|max:120',
+            'province' => 'required|string|max:120',
+            'postal_code' => 'required|string|max:20',
+            'country' => 'required|string|max:80',
+            'id_front_url' => 'required|url|max:1200',
+            'id_back_url' => 'required|url|max:1200',
+            'selfie_url' => 'required|url|max:1200',
+            'profile_photo_url' => 'nullable|url|max:1200',
+        ]);
+
+        $rules = $this->rules();
+        $eligibility = $this->evaluateEligibilityForVerificationPayout($customer, $rules);
+        if (!$eligibility['eligible']) {
+            return response()->json([
+                'message' => $eligibility['message'],
+                'eligibility' => $eligibility,
+                'policy' => $this->policyMeta($rules),
+            ], 422);
+        }
+
+        $amount = (float) $validated['amount'];
+        if ($amount < $rules['min_amount']) {
+            return response()->json([
+                'message' => 'Minimum encashment amount is ' . number_format($rules['min_amount'], 2) . '.',
+                'policy' => $this->policyMeta($rules),
+            ], 422);
+        }
+
+        if ($amount > $eligibility['available_amount']) {
+            return response()->json([
+                'message' => 'Requested amount exceeds your available encashment balance.',
+                'eligibility' => $eligibility,
+                'policy' => $this->policyMeta($rules),
+            ], 422);
+        }
+
+        $created = DB::transaction(function () use ($customer, $validated, $amount) {
+            $lockedCustomer = Customer::query()
+                ->where('c_userid', (int) $customer->c_userid)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $verificationReferenceNo = $this->generateVerificationReferenceNo();
+            $verificationRequest = CustomerVerificationRequest::create([
+                'cvr_customer_id' => (int) $lockedCustomer->c_userid,
+                'cvr_reference_no' => $verificationReferenceNo,
+                'cvr_status' => 'pending_review',
+                'cvr_full_name' => $validated['full_name'],
+                'cvr_birth_date' => $validated['birth_date'] ?? null,
+                'cvr_id_type' => $validated['id_type'],
+                'cvr_id_number' => $validated['id_number'] ?? null,
+                'cvr_contact_number' => $validated['contact_number'] ?? null,
+                'cvr_address_line' => $validated['address_line'] ?? null,
+                'cvr_city' => $validated['city'] ?? null,
+                'cvr_province' => $validated['province'] ?? null,
+                'cvr_postal_code' => $validated['postal_code'] ?? null,
+                'cvr_country' => $validated['country'] ?? 'Philippines',
+                'cvr_notes' => trim((string) ($validated['notes'] ?? '')) ?: null,
+                'cvr_id_front_url' => $validated['id_front_url'],
+                'cvr_id_back_url' => $validated['id_back_url'] ?? null,
+                'cvr_selfie_url' => $validated['selfie_url'],
+                'cvr_profile_photo_url' => $validated['profile_photo_url'] ?? ($lockedCustomer->c_avatar_url ?? null),
+            ]);
+
+            if ((int) ($lockedCustomer->c_accnt_status ?? 0) !== 2) {
+                $lockedCustomer->c_accnt_status = 2;
+                $lockedCustomer->save();
+            }
+
+            $requestNotes = trim(implode("\n", array_filter([
+                trim((string) ($validated['notes'] ?? '')),
+                'KYC_REFERENCE:' . $verificationReferenceNo,
+                'Combined verification and encashment request submitted by member.',
+            ])));
+
+            $encashmentRequest = EncashmentRequest::create([
+                'er_reference_no' => $this->generateReferenceNo(),
+                'er_customer_id' => (int) $lockedCustomer->c_userid,
+                'er_amount' => $amount,
+                'er_channel' => $validated['channel'],
+                'er_account_name' => $validated['account_name'] ?? null,
+                'er_account_number' => $validated['account_number'] ?? null,
+                'er_notes' => $requestNotes,
+                'er_status' => 'pending',
+            ]);
+
+            return [$lockedCustomer->fresh(), $verificationRequest, $encashmentRequest];
+        });
+
+        /** @var Customer $freshCustomer */
+        [$freshCustomer, $verificationRequest, $requestRow] = $created;
+        $this->notifyAdminKycSubmitted($freshCustomer, $verificationRequest);
+        $this->emailAdminsAboutKycSubmission($freshCustomer, $verificationRequest);
+
+        return response()->json([
+            'message' => 'Verification and encashment request submitted. Please wait for admin review.',
+            'status' => 'pending_review',
+            'approval_owner' => 'admin',
+            'reference_no' => $verificationRequest->cvr_reference_no,
+            'verification' => $this->verificationMeta($freshCustomer),
+            'request' => $this->transform($requestRow, $freshCustomer),
+            'eligibility' => $this->evaluateEligibilityForVerificationPayout($freshCustomer, $rules),
+            'policy' => $this->policyMeta($rules),
+        ], 201);
+    }
+
     private function verificationMeta(Customer $customer): array
     {
         if ((int) ($customer->c_lockstatus ?? 0) === 1) {
@@ -1076,6 +1227,57 @@ class EncashmentController extends Controller
         if ($rules['require_active_account'] && ((int) ($customer->c_lockstatus ?? 0) === 1 || (int) ($customer->c_accnt_status ?? 0) !== 1)) {
             $blocked = true;
             $message = 'Your account must be active and verified before encashment.';
+        } elseif ($points < $rules['min_points']) {
+            $blocked = true;
+            $message = 'Minimum points requirement not met for encashment.';
+        } elseif ($availableAmount < $rules['min_amount']) {
+            $blocked = true;
+            $message = 'You do not have enough available balance for minimum encashment.';
+        } elseif ($remainingCooldownMinutes > 0) {
+            $blocked = true;
+            $message = 'Please wait for cooldown period before submitting another request.';
+        }
+
+        return [
+            'eligible' => !$blocked,
+            'message' => $message,
+            'available_amount' => round($availableAmount, 2),
+            'locked_amount' => round($lockedAmount, 2),
+            'gross_earnings' => round($grossEarnings, 2),
+            'current_points' => round($points, 2),
+            'remaining_cooldown_minutes' => $remainingCooldownMinutes,
+            'has_active_account' => ((int) ($customer->c_lockstatus ?? 0) === 0) && ((int) ($customer->c_accnt_status ?? 0) === 1),
+            'is_verified' => (int) ($customer->c_accnt_status ?? 0) === 1,
+        ];
+    }
+
+    private function evaluateEligibilityForVerificationPayout(Customer $customer, array $rules): array
+    {
+        $grossEarnings = CustomerCashWallet::balance($customer);
+        $points = (float) ($customer->c_gpv ?? 0);
+
+        $lockedAmount = CustomerCashWallet::lockedEncashmentAmount((int) $customer->c_userid);
+        $availableAmount = max(0, $grossEarnings - $lockedAmount);
+
+        $lastRequest = EncashmentRequest::query()
+            ->where('er_customer_id', (int) $customer->c_userid)
+            ->latest('created_at')
+            ->first();
+
+        $remainingCooldownMinutes = 0;
+        if ($rules['cooldown_hours'] > 0 && $lastRequest?->created_at) {
+            $cooldownEndsAt = $lastRequest->created_at->copy()->addHours($rules['cooldown_hours']);
+            if ($cooldownEndsAt->isFuture()) {
+                $remainingCooldownMinutes = now()->diffInMinutes($cooldownEndsAt);
+            }
+        }
+
+        $blocked = false;
+        $message = 'Eligible for encashment verification and request.';
+
+        if ((int) ($customer->c_lockstatus ?? 0) === 1) {
+            $blocked = true;
+            $message = 'Your account is blocked. Please contact support.';
         } elseif ($points < $rules['min_points']) {
             $blocked = true;
             $message = 'Minimum points requirement not met for encashment.';

@@ -173,6 +173,7 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::get('/encashment/wallet', [EncashmentController::class, 'walletOverview']);
     Route::post('/encashment/vouchers', [EncashmentController::class, 'createAffiliateVoucher']);
     Route::post('/encashment/verification-request', [EncashmentController::class, 'submitVerificationRequest']);
+    Route::post('/encashment/verification-request-with-payout', [EncashmentController::class, 'submitVerificationRequestWithPayout']);
     Route::get('/notifications/customer', [CustomerNotificationController::class, 'index']);
     Route::post('/interior-requests', [InteriorRequestController::class, 'store']);
     Route::get('/interior-requests', [InteriorRequestController::class, 'myRequests']);
