@@ -12,7 +12,8 @@ class MemberMonthlyActivation
     {
         $timezone = 'Asia/Manila';
         $now = now($timezone);
-        $threshold = max(0, (float) env('MEMBER_ACTIVATION_PV_THRESHOLD', 100));
+        $firstWeekThreshold = max(0, (float) env('MEMBER_ACTIVATION_FIRST_WEEK_PV_THRESHOLD', 100));
+        $lateThreshold = max($firstWeekThreshold, (float) env('MEMBER_ACTIVATION_LATE_PV_THRESHOLD', 200));
         $deadlineDay = max(1, (int) env('MEMBER_ACTIVATION_DEADLINE_DAY', 7));
 
         $cycleStart = $now->copy()->startOfMonth();
@@ -30,18 +31,28 @@ class MemberMonthlyActivation
             ->whereBetween('ch_pv_posted_at', [$cycleStart->toDateTimeString(), $cycleEnd->toDateTimeString()])
             ->sum('ch_earned_pv');
 
-        $qualifyingPv = (float) (clone $baseQuery)
+        $firstWeekPv = (float) (clone $baseQuery)
             ->whereBetween('ch_pv_posted_at', [$cycleStart->toDateTimeString(), $deadlineAt->toDateTimeString()])
             ->sum('ch_earned_pv');
 
-        $isActive = $qualifyingPv >= $threshold;
+        $firstWeekQualified = $firstWeekPv >= $firstWeekThreshold;
+        $isActive = $firstWeekQualified || $currentMonthPv >= $lateThreshold;
+        $activeThreshold = $firstWeekQualified || $now->lessThanOrEqualTo($deadlineAt)
+            ? $firstWeekThreshold
+            : $lateThreshold;
+        $qualifyingPv = $firstWeekQualified || $now->lessThanOrEqualTo($deadlineAt)
+            ? $firstWeekPv
+            : $currentMonthPv;
 
         return [
             'status' => $isActive ? 'active' : 'inactive',
-            'threshold_pv' => round($threshold, 2),
+            'threshold_pv' => round($activeThreshold, 2),
+            'first_week_threshold_pv' => round($firstWeekThreshold, 2),
+            'late_threshold_pv' => round($lateThreshold, 2),
             'current_month_pv' => round($currentMonthPv, 2),
             'qualifying_pv' => round($qualifyingPv, 2),
-            'remaining_pv' => round(max(0, $threshold - $qualifyingPv), 2),
+            'first_week_pv' => round($firstWeekPv, 2),
+            'remaining_pv' => round(max(0, $activeThreshold - $qualifyingPv), 2),
             'deadline_day' => $effectiveDeadlineDay,
             'deadline_at' => $deadlineAt->toIso8601String(),
             'window_open' => $now->lessThanOrEqualTo($deadlineAt),

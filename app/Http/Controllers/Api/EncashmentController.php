@@ -92,8 +92,8 @@ class EncashmentController extends Controller
             ->where('ch_earned_pv', '>', 0)
             ->whereNull('ch_pv_posted_at')
             ->where(function ($query) {
-                $query->whereNull('ch_approval_status')
-                    ->orWhere('ch_approval_status', 'pending_approval');
+                $query->whereNull('ch_fulfillment_status')
+                    ->orWhereNotIn('ch_fulfillment_status', ['delivered', 'completed', 'cancelled', 'refunded']);
             })
             ->whereNotIn('ch_status', ['failed', 'cancelled', 'expired'])
             ->sum('ch_earned_pv');
@@ -155,6 +155,34 @@ class EncashmentController extends Controller
                 ->where('gpba_customer_id', (int) $customer->c_userid)
                 ->sum('gpba_bonus_amount');
         }
+
+        $unilevelAwards = collect();
+        if (Schema::hasTable('tbl_group_purchase_bonus_awards')) {
+            $unilevelAwards = DB::table('tbl_group_purchase_bonus_awards as awards')
+                ->leftJoin('tbl_customer as source', 'source.c_userid', '=', 'awards.gpba_source_customer_id')
+                ->leftJoin('tbl_checkout_history as orders', 'orders.ch_id', '=', 'awards.gpba_reference_order_id')
+                ->where('awards.gpba_customer_id', (int) $customer->c_userid)
+                ->orderByDesc('awards.gpba_awarded_at')
+                ->orderByDesc('awards.gpba_id')
+                ->limit(20)
+                ->get([
+                    'awards.gpba_id',
+                    'awards.gpba_source_customer_id',
+                    'awards.gpba_level_no',
+                    'awards.gpba_reference_order_id',
+                    'awards.gpba_checkout_id',
+                    'awards.gpba_earned_pv',
+                    'awards.gpba_bonus_rate',
+                    'awards.gpba_bonus_amount',
+                    'awards.gpba_awarded_at',
+                    'source.c_fname as source_first_name',
+                    'source.c_lname as source_last_name',
+                    'source.c_username as source_username',
+                    'source.c_email as source_email',
+                    'orders.ch_product_name',
+                ]);
+        }
+
         if (Schema::hasTable('tbl_direct_affiliate_performance_bonus_awards')) {
             $affiliatePerformanceBonus += (float) DB::table('tbl_direct_affiliate_performance_bonus_awards')
                 ->where('dapb_customer_id', (int) $customer->c_userid)
@@ -180,9 +208,6 @@ class EncashmentController extends Controller
         $directReferralTotalPv = (float) Customer::query()
             ->where('c_sponsor', (int) $customer->c_userid)
             ->sum('c_gpv');
-
-        $isVerifiedAffiliate = (int) ($customer->c_accnt_status ?? 0) === 1
-            && (int) ($customer->c_lockstatus ?? 0) === 0;
 
         $reservedAffiliateVoucherAmount = 0.0;
         $affiliateVouchers = collect();
@@ -258,7 +283,7 @@ class EncashmentController extends Controller
                 'personal_cashback_reserved_balance' => round($reservedAffiliateVoucherAmount, 2),
                 'personal_cashback_rate' => round($cashbackRate, 2),
                 'personal_cashback_voucher_expiry_days' => PersonalPurchaseCashback::defaultExpiryDays(),
-                'can_create_affiliate_voucher' => $isVerifiedAffiliate,
+                'can_create_affiliate_voucher' => true,
                 'referrals' => [
                     'total' => $totalReferrals,
                     'verified' => $verifiedReferrals,
@@ -304,6 +329,25 @@ class EncashmentController extends Controller
                     'updated_at' => $row->updated_at,
                 ];
             })->values(),
+            'unilevel_awards' => $unilevelAwards->map(function ($row) {
+                $sourceName = trim((string) ($row->source_first_name ?? '') . ' ' . (string) ($row->source_last_name ?? ''));
+
+                return [
+                    'id' => (int) $row->gpba_id,
+                    'source_customer_id' => $row->gpba_source_customer_id ? (int) $row->gpba_source_customer_id : null,
+                    'source_name' => $sourceName !== '' ? $sourceName : null,
+                    'source_username' => $row->source_username,
+                    'source_email' => $row->source_email,
+                    'level_no' => (int) $row->gpba_level_no,
+                    'reference_order_id' => $row->gpba_reference_order_id ? (int) $row->gpba_reference_order_id : null,
+                    'checkout_id' => $row->gpba_checkout_id,
+                    'product_name' => $row->ch_product_name,
+                    'earned_pv' => (float) $row->gpba_earned_pv,
+                    'bonus_rate' => (float) $row->gpba_bonus_rate,
+                    'bonus_amount' => (float) $row->gpba_bonus_amount,
+                    'awarded_at' => $row->gpba_awarded_at,
+                ];
+            })->values(),
         ]);
     }
 
@@ -314,12 +358,25 @@ class EncashmentController extends Controller
             ->where('ch_earned_pv', '>', 0)
             ->whereNull('ch_pv_posted_at')
             ->where('ch_approval_status', 'approved')
+            ->where(function ($query) {
+                $query->whereIn('ch_fulfillment_status', ['delivered', 'completed'])
+                    ->orWhere('ch_shipment_status', 'delivered');
+            })
             ->whereNotIn('ch_status', ['failed', 'cancelled', 'expired'])
             ->orderBy('ch_id')
             ->limit(50)
             ->get()
             ->each(function (CheckoutHistory $order) {
-                OrderPvPosting::postIfNeeded($order);
+                try {
+                    OrderPvPosting::postIfNeeded($order, null, false);
+                } catch (\Throwable $e) {
+                    Log::warning('Failed to backfill delivered order Performance Value during wallet overview.', [
+                        'order_id' => (int) $order->ch_id,
+                        'checkout_id' => (string) ($order->ch_checkout_id ?? ''),
+                        'customer_id' => (int) ($order->ch_customer_id ?? 0),
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             });
     }
 
@@ -328,15 +385,6 @@ class EncashmentController extends Controller
         $customer = $request->user();
         if (!$customer instanceof Customer) {
             return response()->json(['message' => 'Only customer accounts can create affiliate vouchers.'], 403);
-        }
-
-        $isVerifiedAffiliate = (int) ($customer->c_accnt_status ?? 0) === 1
-            && (int) ($customer->c_lockstatus ?? 0) === 0;
-
-        if (!$isVerifiedAffiliate) {
-            return response()->json([
-                'message' => 'Only verified affiliate accounts can create vouchers.',
-            ], 422);
         }
 
         $validated = $request->validate([
@@ -905,6 +953,8 @@ class EncashmentController extends Controller
 
     private function transform(EncashmentRequest $row, Customer $customer): array
     {
+        $amount = (float) $row->er_amount;
+        $breakdown = $this->encashmentBreakdown($amount);
         $name = trim(implode(' ', array_filter([
             $customer->c_fname ?? null,
             $customer->c_mname ?? null,
@@ -915,7 +965,10 @@ class EncashmentController extends Controller
             'id' => (int) $row->er_id,
             'reference_no' => $row->er_reference_no,
             'invoice_no' => $row->er_invoice_no,
-            'amount' => (float) $row->er_amount,
+            'amount' => $amount,
+            'withholding_tax' => $breakdown['withholding_tax'],
+            'processing_fee' => $breakdown['processing_fee'],
+            'net_amount' => $breakdown['net_amount'],
             'channel' => $row->er_channel,
             'account_name' => $row->er_account_name,
             'account_number' => $row->er_account_number,
@@ -987,10 +1040,12 @@ class EncashmentController extends Controller
     private function rules(): array
     {
         return [
-            'min_amount' => max(1, (float) env('ENCASHMENT_MIN_AMOUNT', 500)),
+            'min_amount' => max(1, (float) env('ENCASHMENT_MIN_AMOUNT', 1000)),
             'min_points' => max(0, (float) env('ENCASHMENT_MIN_POINTS', 0)),
             'cooldown_hours' => max(0, (int) env('ENCASHMENT_COOLDOWN_HOURS', 24)),
             'require_active_account' => filter_var(env('ENCASHMENT_REQUIRE_ACTIVE_ACCOUNT', true), FILTER_VALIDATE_BOOL),
+            'withholding_tax_rate' => max(0, (float) env('ENCASHMENT_WITHHOLDING_TAX_RATE', 0.10)),
+            'processing_fee' => max(0, (float) env('ENCASHMENT_PROCESSING_FEE', 150)),
         ];
     }
 
@@ -1052,6 +1107,22 @@ class EncashmentController extends Controller
             'min_points' => round((float) $rules['min_points'], 2),
             'cooldown_hours' => (int) $rules['cooldown_hours'],
             'require_active_account' => (bool) $rules['require_active_account'],
+            'withholding_tax_rate' => round((float) $rules['withholding_tax_rate'], 4),
+            'processing_fee' => round((float) $rules['processing_fee'], 2),
+        ];
+    }
+
+    private function encashmentBreakdown(float $amount): array
+    {
+        $rules = $this->rules();
+        $withholdingTax = round($amount * (float) $rules['withholding_tax_rate'], 2);
+        $processingFee = round((float) $rules['processing_fee'], 2);
+        $netAmount = round(max(0, $amount - $withholdingTax - $processingFee), 2);
+
+        return [
+            'withholding_tax' => $withholdingTax,
+            'processing_fee' => $processingFee,
+            'net_amount' => $netAmount,
         ];
     }
 }

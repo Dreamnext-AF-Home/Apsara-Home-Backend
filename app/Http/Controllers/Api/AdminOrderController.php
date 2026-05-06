@@ -9,6 +9,7 @@ use App\Models\AdminNotification;
 use App\Models\AdminNotificationRead;
 use App\Models\CheckoutHistory;
 use App\Models\Customer;
+use App\Models\WebPageContent;
 use App\Services\Payments\PaymongoPaymentSyncService;
 use App\Services\Shipping\JntShippingService;
 use App\Services\Shipping\XdeShippingService;
@@ -376,6 +377,7 @@ class AdminOrderController extends Controller
                 });
             });
 
+        $this->applyStorefrontScope($query, $admin);
         $this->applyFilter($query, $filter);
 
         $paginated = $query
@@ -529,7 +531,6 @@ class AdminOrderController extends Controller
                 'ch_fulfillment_status' => $order->ch_fulfillment_status === 'pending' ? 'processing' : $order->ch_fulfillment_status,
             ])->save();
         });
-        OrderPvPosting::postIfNeeded($order, (int) $admin->id);
 
         $this->sendCustomerOrderStatusEmail($order, 'approval_approved');
 
@@ -673,6 +674,7 @@ class AdminOrderController extends Controller
         $order->save();
 
         if ($validated['status'] === 'delivered') {
+            OrderPvPosting::postIfNeeded($order, (int) $admin->id);
             DirectReferralCommission::releaseAvailableForOrder($order, (int) $admin->id);
         } elseif (in_array($validated['status'], ['cancelled', 'refunded'], true)) {
             DirectReferralCommission::cancelPendingForOrder(
@@ -754,6 +756,7 @@ class AdminOrderController extends Controller
         $order->save();
 
         if ($shipmentStatus === 'delivered') {
+            OrderPvPosting::postIfNeeded($order, (int) $admin->id);
             DirectReferralCommission::releaseAvailableForOrder($order, (int) $admin->id);
         } elseif (in_array($shipmentStatus, ['failed_delivery', 'returned_to_sender', 'cancelled'], true)) {
             DirectReferralCommission::cancelPendingForOrder(
@@ -1066,7 +1069,10 @@ class AdminOrderController extends Controller
             $order->ch_fulfillment_status = $mappedStatus;
 
             if ($mappedStatus === 'delivered' && $previousStatus !== 'delivered') {
+                $order->save();
+                OrderPvPosting::postIfNeeded($order, null);
                 DirectReferralCommission::releaseAvailableForOrder($order, null);
+                return;
             } elseif (in_array($mappedStatus, ['cancelled', 'refunded'], true) && !in_array($previousStatus, ['cancelled', 'refunded'], true)) {
                 DirectReferralCommission::cancelPendingForOrder($order, null, 'Order cancelled via ZQ sync.');
             }
@@ -1325,6 +1331,66 @@ class AdminOrderController extends Controller
             'outfordelivery' => 'out_for_delivery',
             default => $normalized,
         };
+    }
+
+    private function applyStorefrontScope($query, Admin $admin): void
+    {
+        if ((int) $admin->user_level_id !== 4) {
+            return;
+        }
+
+        $storefrontIds = $this->resolveStorefrontIds($admin);
+        if (empty($storefrontIds)) {
+            $query->whereRaw('1 = 0');
+            return;
+        }
+
+        $sourceSlugs = WebPageContent::query()
+            ->where('wpc_type', 'partner-storefront')
+            ->whereIn('wpc_id', $storefrontIds)
+            ->get(['wpc_key', 'wpc_payload'])
+            ->map(function (WebPageContent $storefront) {
+                $payloadSlug = trim((string) data_get($storefront->wpc_payload, 'fields.slug', ''));
+                $fallbackKey = trim((string) ($storefront->wpc_key ?? ''));
+                $slug = strtolower($payloadSlug !== '' ? $payloadSlug : $fallbackKey);
+                return $slug !== '' ? $slug : null;
+            })
+            ->filter()
+            ->values()
+            ->all();
+
+        if (empty($sourceSlugs)) {
+            $query->whereRaw('1 = 0');
+            return;
+        }
+
+        $query->where(function ($scoped) use ($sourceSlugs) {
+            if (Schema::hasColumn('tbl_checkout_history', 'ch_source_slug')) {
+                $scoped->whereIn('ch_source_slug', $sourceSlugs);
+            }
+
+            if (Schema::hasColumn('tbl_checkout_history', 'ch_source_url')) {
+                $likeOperator = DB::connection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
+
+                foreach ($sourceSlugs as $slug) {
+                    $pattern = '%/' . $slug . '/%';
+                    $scoped->orWhere('ch_source_url', $likeOperator, $pattern);
+                }
+            }
+        });
+    }
+
+    private function resolveStorefrontIds(Admin $admin): array
+    {
+        $raw = $admin->admin_permissions ?? [];
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        return array_values(array_unique(array_filter(array_map(
+            static fn ($id) => is_numeric($id) ? (int) $id : null,
+            $raw
+        ), static fn ($id) => is_int($id) && $id > 0)));
     }
 
     private function counts(): array

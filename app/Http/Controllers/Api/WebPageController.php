@@ -9,8 +9,10 @@ use App\Services\DatabaseExportService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
+use Pusher\Pusher;
 use Throwable;
 
 class WebPageController extends Controller
@@ -167,6 +169,7 @@ class WebPageController extends Controller
                     'wpc_end_at' => $validated['end_at'] ?? null,
                 ]);
                 $existing->save();
+                $this->publishDreamBuildContentUpdated($resolvedType, $existing, 'updated');
 
                 return response()->json([
                     'message' => 'Web content item updated successfully.',
@@ -190,6 +193,7 @@ class WebPageController extends Controller
             'wpc_start_at' => $validated['start_at'] ?? null,
             'wpc_end_at' => $validated['end_at'] ?? null,
         ]);
+        $this->publishDreamBuildContentUpdated($resolvedType, $item, 'created');
 
         return response()->json([
             'message' => 'Web content item created successfully.',
@@ -244,6 +248,7 @@ class WebPageController extends Controller
         }
 
         $item->save();
+        $this->publishDreamBuildContentUpdated($resolvedType, $item, 'updated');
 
         return response()->json([
             'message' => 'Web content item updated successfully.',
@@ -272,6 +277,7 @@ class WebPageController extends Controller
         }
 
         $item->delete();
+        $this->publishDreamBuildContentUpdated($resolvedType, $item, 'deleted');
 
         return response()->json(['message' => 'Web content item deleted successfully.']);
     }
@@ -444,8 +450,57 @@ class WebPageController extends Controller
             'assembly', 'assembly-guide', 'assembly-guides', 'assembly_guides' => 'assembly-guides',
             'shop-builder', 'shop_builder', 'shop', 'shop-page', 'shop_page' => 'shop-builder',
             'partner-storefront', 'partner-storefronts', 'partner_storefront', 'partner_storefronts', 'storefront', 'storefronts' => 'partner-storefront',
+            'dreambuild-hero', 'dreambuild_hero' => 'dreambuild-hero',
+            'dreambuild-services', 'dreambuild_services' => 'dreambuild-services',
+            'dreambuild-projects', 'dreambuild_projects' => 'dreambuild-projects',
+            'dreambuild-blogs', 'dreambuild_blogs' => 'dreambuild-blogs',
+            'dreambuild-testimonials', 'dreambuild_testimonials' => 'dreambuild-testimonials',
+            'dreambuild-gallery', 'dreambuild_gallery' => 'dreambuild-gallery',
+            'dreambuild-process', 'dreambuild_process' => 'dreambuild-process',
+            'dreambuild-contact', 'dreambuild_contact' => 'dreambuild-contact',
             default => null,
         };
+    }
+
+    private function publishDreamBuildContentUpdated(string $type, ?WebPageContent $item, string $action): void
+    {
+        if (! str_starts_with($type, 'dreambuild-')) {
+            return;
+        }
+
+        $appId = (string) config('services.pusher.app_id', '');
+        $key = (string) config('services.pusher.key', '');
+        $secret = (string) config('services.pusher.secret', '');
+
+        if ($appId === '' || $key === '' || $secret === '') {
+            return;
+        }
+
+        try {
+            $pusher = new Pusher(
+                $key,
+                $secret,
+                $appId,
+                [
+                    'cluster' => (string) config('services.pusher.cluster', 'ap1'),
+                    'useTLS' => (bool) config('services.pusher.use_tls', true),
+                ],
+            );
+
+            $pusher->trigger('dreambuild-content', 'content.updated', [
+                'type' => $type,
+                'action' => $action,
+                'id' => $item ? (int) $item->wpc_id : null,
+                'updated_at' => now()->toIso8601String(),
+            ]);
+        } catch (Throwable $e) {
+            Log::warning('Failed to publish DreamBuild content update event.', [
+                'type' => $type,
+                'action' => $action,
+                'id' => $item ? (int) $item->wpc_id : null,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     private function likeOperator(): string
