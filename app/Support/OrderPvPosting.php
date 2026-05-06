@@ -9,9 +9,9 @@ use Illuminate\Support\Facades\DB;
 
 class OrderPvPosting
 {
-    public static function postIfNeeded(CheckoutHistory $order, ?int $actorAdminId = null): bool
+    public static function postIfNeeded(CheckoutHistory $order, ?int $actorAdminId = null, bool $runBonusEvaluation = true): bool
     {
-        return (bool) DB::transaction(function () use ($order, $actorAdminId) {
+        return (bool) DB::transaction(function () use ($order, $actorAdminId, $runBonusEvaluation) {
             /** @var CheckoutHistory|null $lockedOrder */
             $lockedOrder = CheckoutHistory::query()
                 ->where('ch_id', (int) $order->ch_id)
@@ -19,6 +19,10 @@ class OrderPvPosting
                 ->first();
 
             if (!$lockedOrder) {
+                return false;
+            }
+
+            if (!self::isDelivered($lockedOrder)) {
                 return false;
             }
 
@@ -64,16 +68,13 @@ class OrderPvPosting
             $lockedOrder->ch_pv_posted_at = now();
             $lockedOrder->save();
 
+            if (!$runBonusEvaluation) {
+                return true;
+            }
+
             DirectAffiliatePerformanceBonus::awardEligibleMilestonesForBuyer($customer, $lockedOrder, $actorAdminId ?? 0);
             GroupPurchaseBonus::awardForBuyer($customer, $lockedOrder, $actorAdminId ?? 0);
             TierEvaluator::evaluate($customer);
-
-            if ((int) ($customer->c_sponsor ?? 0) > 0) {
-                $sponsor = Customer::query()->where('c_userid', (int) $customer->c_sponsor)->first();
-                if ($sponsor) {
-                    TierEvaluator::evaluate($sponsor);
-                }
-            }
 
             return true;
         });
@@ -105,9 +106,15 @@ class OrderPvPosting
         $referrerCustomerId = (int) ($order->ch_referrer_customer_id ?? 0);
 
         if ($sourceSlug !== '' && $referrerCustomerId > 0) {
-            return 'PV credit posted on order approval to the partner storefront referral account.';
+            return 'PV credit posted on delivered order to the partner storefront referral account.';
         }
 
-        return 'PV credit posted on order approval.';
+        return 'PV credit posted on delivered order.';
+    }
+
+    private static function isDelivered(CheckoutHistory $order): bool
+    {
+        return in_array((string) ($order->ch_fulfillment_status ?? ''), ['delivered', 'completed'], true)
+            || (string) ($order->ch_shipment_status ?? '') === 'delivered';
     }
 }

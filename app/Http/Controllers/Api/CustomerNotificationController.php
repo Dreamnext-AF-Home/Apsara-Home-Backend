@@ -271,7 +271,7 @@ class CustomerNotificationController extends Controller
     private function encashmentRules(): array
     {
         return [
-            'min_amount' => max(1, (float) env('ENCASHMENT_MIN_AMOUNT', 500)),
+            'min_amount' => max(1, (float) env('ENCASHMENT_MIN_AMOUNT', 1000)),
             'min_points' => max(0, (float) env('ENCASHMENT_MIN_POINTS', 0)),
         ];
     }

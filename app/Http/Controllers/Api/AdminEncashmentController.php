@@ -252,6 +252,10 @@ class AdminEncashmentController extends Controller
 
     private function transform(EncashmentRequest $row, array $lockedByCustomer = []): array
     {
+        $amount = (float) $row->er_amount;
+        $withholdingTax = round($amount * max(0, (float) env('ENCASHMENT_WITHHOLDING_TAX_RATE', 0.10)), 2);
+        $processingFee = round(max(0, (float) env('ENCASHMENT_PROCESSING_FEE', 150)), 2);
+        $netAmount = round(max(0, $amount - $withholdingTax - $processingFee), 2);
         $customer = $row->customer;
         $name = $customer
             ? trim(implode(' ', array_filter([$customer->c_fname ?? null, $customer->c_mname ?? null, $customer->c_lname ?? null])))
@@ -259,7 +263,7 @@ class AdminEncashmentController extends Controller
         $cashBalance = $customer ? CustomerCashWallet::balance($customer) : 0.0;
         $lockedAmount = (float) ($lockedByCustomer[(int) $row->er_customer_id] ?? 0);
         $availableAmount = max(0, $cashBalance - $lockedAmount);
-        $shortfall = max(0, (float) $row->er_amount - $cashBalance);
+        $shortfall = max(0, $amount - $cashBalance);
 
         return [
             'id' => (int) $row->er_id,
@@ -267,7 +271,10 @@ class AdminEncashmentController extends Controller
             'invoice_no' => $row->er_invoice_no,
             'affiliate_name' => $name !== '' ? $name : ($customer->c_username ?? 'Affiliate'),
             'affiliate_email' => $customer->c_email ?? null,
-            'amount' => (float) $row->er_amount,
+            'amount' => $amount,
+            'withholding_tax' => $withholdingTax,
+            'processing_fee' => $processingFee,
+            'net_amount' => $netAmount,
             'channel' => $row->er_channel,
             'account_name' => $row->er_account_name,
             'account_number' => $row->er_account_number,
@@ -282,7 +289,7 @@ class AdminEncashmentController extends Controller
             'wallet_cash_balance' => round($cashBalance, 2),
             'wallet_locked_amount' => round($lockedAmount, 2),
             'wallet_available_amount' => round($availableAmount, 2),
-            'can_release_by_balance' => $cashBalance >= (float) $row->er_amount,
+            'can_release_by_balance' => $cashBalance >= $amount,
             'balance_shortfall' => round($shortfall, 2),
             'approved_by' => $row->er_approved_by ? (int) $row->er_approved_by : null,
             'approved_at' => optional($row->er_approved_at)->toDateTimeString(),

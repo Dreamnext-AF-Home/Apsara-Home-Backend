@@ -531,7 +531,6 @@ class AdminOrderController extends Controller
                 'ch_fulfillment_status' => $order->ch_fulfillment_status === 'pending' ? 'processing' : $order->ch_fulfillment_status,
             ])->save();
         });
-        OrderPvPosting::postIfNeeded($order, (int) $admin->id);
 
         $this->sendCustomerOrderStatusEmail($order, 'approval_approved');
 
@@ -675,6 +674,7 @@ class AdminOrderController extends Controller
         $order->save();
 
         if ($validated['status'] === 'delivered') {
+            OrderPvPosting::postIfNeeded($order, (int) $admin->id);
             DirectReferralCommission::releaseAvailableForOrder($order, (int) $admin->id);
         } elseif (in_array($validated['status'], ['cancelled', 'refunded'], true)) {
             DirectReferralCommission::cancelPendingForOrder(
@@ -756,6 +756,7 @@ class AdminOrderController extends Controller
         $order->save();
 
         if ($shipmentStatus === 'delivered') {
+            OrderPvPosting::postIfNeeded($order, (int) $admin->id);
             DirectReferralCommission::releaseAvailableForOrder($order, (int) $admin->id);
         } elseif (in_array($shipmentStatus, ['failed_delivery', 'returned_to_sender', 'cancelled'], true)) {
             DirectReferralCommission::cancelPendingForOrder(
@@ -1068,7 +1069,10 @@ class AdminOrderController extends Controller
             $order->ch_fulfillment_status = $mappedStatus;
 
             if ($mappedStatus === 'delivered' && $previousStatus !== 'delivered') {
+                $order->save();
+                OrderPvPosting::postIfNeeded($order, null);
                 DirectReferralCommission::releaseAvailableForOrder($order, null);
+                return;
             } elseif (in_array($mappedStatus, ['cancelled', 'refunded'], true) && !in_array($previousStatus, ['cancelled', 'refunded'], true)) {
                 DirectReferralCommission::cancelPendingForOrder($order, null, 'Order cancelled via ZQ sync.');
             }

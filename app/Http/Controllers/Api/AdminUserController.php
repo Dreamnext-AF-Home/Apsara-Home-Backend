@@ -205,16 +205,22 @@ class AdminUserController extends Controller
             'user_level_id' => ['required', 'integer', Rule::in($allowedLevels)],
             'supplier_id' => 'nullable|integer|exists:tbl_supplier,s_id',
             'admin_permissions' => 'nullable|array',
-            'admin_permissions.*' => ['string', Rule::in(AdminAccess::availablePermissions())],
+            'admin_permissions.*' => 'string|max:80',
             'storefront_ids' => 'nullable|array',
             'storefront_ids.*' => 'integer|min:1',
         ]);
 
-        $validated['admin_permissions'] = AdminAccess::sanitizePermissionsForLevel(
-            (int) $validated['user_level_id'],
-            $validated['admin_permissions'] ?? [],
-        );
         $validated['storefront_ids'] = $this->normalizeStorefrontIds($validated['storefront_ids'] ?? []);
+        $validated['admin_permissions'] = (int) $validated['user_level_id'] === 4
+            ? AdminAccess::sanitizeWebContentPermissionsForLevel(
+                (int) $validated['user_level_id'],
+                $validated['admin_permissions'] ?? [],
+                $validated['storefront_ids'],
+            )
+            : AdminAccess::sanitizePermissionsForLevel(
+                (int) $validated['user_level_id'],
+                $validated['admin_permissions'] ?? [],
+            );
 
         $this->ensureSupplierSelection($validated);
 
@@ -308,7 +314,11 @@ class AdminUserController extends Controller
             'user_level_id' => (int) $payload['user_level_id'],
             'supplier_id' => isset($payload['supplier_id']) ? (int) $payload['supplier_id'] : null,
             'admin_permissions' => (int) $payload['user_level_id'] === 4
-                ? $this->normalizeStorefrontIds($payload['storefront_ids'] ?? [])
+                ? AdminAccess::sanitizeWebContentPermissionsForLevel(
+                    (int) $payload['user_level_id'],
+                    $payload['admin_permissions'] ?? [],
+                    $payload['storefront_ids'] ?? [],
+                )
                 : AdminAccess::sanitizePermissionsForLevel(
                     (int) $payload['user_level_id'],
                     $payload['admin_permissions'] ?? [],
@@ -360,7 +370,7 @@ class AdminUserController extends Controller
             'user_level_id' => ['nullable', 'integer', Rule::in($allowedLevels)],
             'supplier_id' => 'nullable|integer|exists:tbl_supplier,s_id',
             'admin_permissions' => 'nullable|array',
-            'admin_permissions.*' => ['string', Rule::in(AdminAccess::availablePermissions())],
+            'admin_permissions.*' => 'string|max:80',
             'storefront_ids' => 'nullable|array',
             'storefront_ids.*' => 'integer|min:1',
         ]);
@@ -386,8 +396,12 @@ class AdminUserController extends Controller
             $admin->user_level_id = (int) $validated['user_level_id'];
         }
         if ((int) $admin->user_level_id === 4) {
-            if (array_key_exists('storefront_ids', $validated)) {
-                $admin->admin_permissions = $this->normalizeStorefrontIds($validated['storefront_ids'] ?? []);
+            if (array_key_exists('admin_permissions', $validated) || array_key_exists('storefront_ids', $validated)) {
+                $admin->admin_permissions = AdminAccess::sanitizeWebContentPermissionsForLevel(
+                    (int) $admin->user_level_id,
+                    $validated['admin_permissions'] ?? AdminAccess::normalizeWebContentSectionPermissions($admin->admin_permissions ?? []),
+                    $validated['storefront_ids'] ?? $this->normalizeStorefrontIds($admin->admin_permissions ?? []),
+                );
             } elseif (!is_array($admin->admin_permissions)) {
                 $admin->admin_permissions = [];
             }
@@ -556,10 +570,16 @@ class AdminUserController extends Controller
             'email' => $email,
             'user_level_id' => (int) $validated['user_level_id'],
             'supplier_id' => isset($validated['supplier_id']) ? (int) $validated['supplier_id'] : null,
-            'admin_permissions' => AdminAccess::sanitizePermissionsForLevel(
-                (int) $validated['user_level_id'],
-                $validated['admin_permissions'] ?? [],
-            ),
+            'admin_permissions' => (int) $validated['user_level_id'] === 4
+                ? AdminAccess::sanitizeWebContentPermissionsForLevel(
+                    (int) $validated['user_level_id'],
+                    $validated['admin_permissions'] ?? [],
+                    $validated['storefront_ids'] ?? [],
+                )
+                : AdminAccess::sanitizePermissionsForLevel(
+                    (int) $validated['user_level_id'],
+                    $validated['admin_permissions'] ?? [],
+                ),
             'storefront_ids' => $this->normalizeStorefrontIds($validated['storefront_ids'] ?? []),
             'created_by' => $actorId,
             'expires_at' => $expiresAt->toIso8601String(),
