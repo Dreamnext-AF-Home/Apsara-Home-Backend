@@ -40,19 +40,11 @@ class SearchController extends Controller
         try {
             // Get live search results
             $products = $this->getLiveSearchProducts($query, $limit, $customerId);
-            $brands = $this->getLiveSearchBrands($query, 5); // Get up to 5 matching brands
 
             return response()->json([
                 'success' => true,
-                'data' => [
-                    'products' => $products,
-                    'brands' => $brands,
-                ],
-                'count' => [
-                    'products' => count($products),
-                    'brands' => count($brands),
-                    'total' => count($products) + count($brands),
-                ],
+                'data' => $products,
+                'count' => count($products),
                 'query' => $query,
             ]);
         } catch (\Exception $e) {
