@@ -140,7 +140,7 @@ class CustomerNotificationController extends Controller
                 'description' => $kycMeta['description'],
                 'count' => $kycActionCount,
                 'severity' => $kycMeta['severity'],
-                'href' => '/profile?tab=encashment&focus=verification',
+                'href' => '/verification',
                 'latest_at' => $kycMeta['latest_at'],
             ],
             [
