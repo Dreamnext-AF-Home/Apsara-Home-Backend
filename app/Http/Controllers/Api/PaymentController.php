@@ -545,6 +545,20 @@ class PaymentController extends Controller
 
         if ($this->isPaidStatus($status)) {
             $this->sendCheckoutCompletedEmailIfNeeded($checkoutId, $attrs);
+            
+            // Send real-time notification to customer for payment success
+            $order = CheckoutHistory::query()
+                ->where('ch_checkout_id', $checkoutId)
+                ->first();
+                
+            if ($order && (int) $order->ch_customer_id > 0) {
+                $this->notifyCustomerOrderStatusUpdate(
+                    $order, 
+                    'payment_success', 
+                    'Payment Successful', 
+                    "Your payment for order #{$checkoutId} has been successfully processed. Your order is now being prepared."
+                );
+            }
         }
 
         $cachedCustomer = Cache::get("checkout_customer:{$checkoutId}");
@@ -1497,8 +1511,74 @@ class PaymentController extends Controller
         Cache::put($cacheKey, true, now()->addDays(7));
     }
 
+    private function notifyCustomerOrderStatusUpdate(CheckoutHistory $order, string $eventType, string $title, string $description): void
+    {
+        if ((int) $order->ch_customer_id === 0) {
+            return; // Skip guest checkouts
+        }
+
+        $appId = (string) config('services.pusher.app_id', '');
+        $key = (string) config('services.pusher.key', '');
+        $secret = (string) config('services.pusher.secret', '');
+
+        if ($appId === '' || $key === '' || $secret === '') {
+            return;
+        }
+
+        $cluster = (string) config('services.pusher.cluster', 'ap1');
+        $useTls = (bool) config('services.pusher.use_tls', true);
+
+        try {
+            $pusher = new Pusher(
+                $key,
+                $secret,
+                $appId,
+                [
+                    'cluster' => $cluster,
+                    'useTLS' => $useTls,
+                ]
+            );
+
+            $channelName = 'private-customer-' . (int) $order->ch_customer_id;
+            
+            $pusher->trigger($channelName, 'order.status.updated', [
+                'order_id' => (int) $order->ch_id,
+                'checkout_id' => (string) $order->ch_checkout_id,
+                'event_type' => $eventType,
+                'title' => $title,
+                'description' => $description,
+                'status' => $order->ch_fulfillment_status ?: $this->mapCheckoutStatusToOrderStatus((string) $order->ch_status),
+                'payment_status' => (string) $order->ch_status,
+                'tracking_number' => $this->resolveOrderTrackingNumber($order),
+                'created_at' => now()->toDateTimeString(),
+            ]);
+
+            $pusher->trigger($channelName, 'notification.created', [
+                'id' => 'order_' . (int) $order->ch_id . '_' . $eventType,
+                'type' => 'order_update',
+                'title' => $title,
+                'description' => $description,
+                'order_id' => (int) $order->ch_id,
+                'checkout_id' => (string) $order->ch_checkout_id,
+                'status' => $order->ch_fulfillment_status ?: $this->mapCheckoutStatusToOrderStatus((string) $order->ch_status),
+                'created_at' => now()->toDateTimeString(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('Failed to publish customer realtime notification.', [
+                'customer_id' => (int) $order->ch_customer_id,
+                'checkout_id' => (string) $order->ch_checkout_id,
+                'event_type' => $eventType,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
     private function notifyAdminOrderCreated(CheckoutHistory $history): void
     {
+        // Skip admin notifications for guest checkouts (customer_id = 0)
+        if ((int) $history->ch_customer_id === 0) {
+            return;
+        }
         $customerName = trim((string) ($history->ch_customer_name ?? 'Customer'));
         $checkoutId = (string) ($history->ch_checkout_id ?? '');
         $amount = (float) ($history->ch_amount ?? 0);

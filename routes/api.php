@@ -189,6 +189,7 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::post('/encashment/verification-request', [EncashmentController::class, 'submitVerificationRequest']);
     Route::post('/encashment/verification-request-with-payout', [EncashmentController::class, 'submitVerificationRequestWithPayout']);
     Route::get('/notifications/customer', [CustomerNotificationController::class, 'index']);
+    Route::post('/realtime/pusher/auth', [CustomerNotificationController::class, 'pusherAuth']);
     Route::post('/interior-requests', [InteriorRequestController::class, 'store']);
     Route::get('/interior-requests', [InteriorRequestController::class, 'myRequests']);
     Route::get('/interior-requests/{id}', [InteriorRequestController::class, 'show']);

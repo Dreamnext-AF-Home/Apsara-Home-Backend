@@ -688,6 +688,24 @@ class AdminOrderController extends Controller
 
         if ($previousStatus !== (string) $order->ch_fulfillment_status) {
             $this->sendCustomerOrderStatusEmail($order, 'fulfillment_status');
+            
+            // Send real-time notification to customer
+            $statusLabels = [
+                'pending' => 'Order Pending',
+                'processing' => 'Order Processing',
+                'packed' => 'Order Packed',
+                'shipped' => 'Order Shipped',
+                'out_for_delivery' => 'Order Out for Delivery',
+                'delivered' => 'Order Delivered',
+                'cancelled' => 'Order Cancelled',
+                'refunded' => 'Order Refunded',
+            ];
+            
+            $title = $statusLabels[$validated['status']] ?? 'Order Status Updated';
+            $description = "Your order #{$order->ch_checkout_id} status has been updated to: " . ($statusLabels[$validated['status']] ?? $validated['status']);
+            
+            $paymentController = new \App\Http\Controllers\Api\PaymentController();
+            $paymentController->notifyCustomerOrderStatusUpdate($order, 'status_update', $title, $description);
         }
 
         $message = 'Order status updated.';
@@ -768,6 +786,24 @@ class AdminOrderController extends Controller
 
         if ($previousShipmentStatus !== (string) $order->ch_shipment_status) {
             $this->sendCustomerOrderStatusEmail($order, 'shipment_status');
+            
+            // Send real-time notification to customer
+            $shipmentLabels = [
+                'for_pickup' => 'Ready for Pickup',
+                'picked_up' => 'Order Picked Up',
+                'in_transit' => 'Order In Transit',
+                'out_for_delivery' => 'Order Out for Delivery',
+                'delivered' => 'Order Delivered',
+                'failed_delivery' => 'Delivery Failed',
+                'returned_to_sender' => 'Order Returned',
+                'cancelled' => 'Shipment Cancelled',
+            ];
+            
+            $title = $shipmentLabels[$shipmentStatus] ?? 'Shipment Status Updated';
+            $description = "Your order #{$order->ch_checkout_id} shipment status has been updated to: " . ($shipmentLabels[$shipmentStatus] ?? $shipmentStatus);
+            
+            $paymentController = new \App\Http\Controllers\Api\PaymentController();
+            $paymentController->notifyCustomerOrderStatusUpdate($order, 'shipment_update', $title, $description);
         }
 
         return response()->json([
