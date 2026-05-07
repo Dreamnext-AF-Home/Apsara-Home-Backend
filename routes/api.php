@@ -44,6 +44,7 @@ use App\Http\Controllers\Api\PasskeyAuthController;
 use App\Http\Controllers\Api\ProductViewerController;
 use App\Http\Controllers\Api\SearchController;
 use App\Http\Controllers\Api\TotpController;
+use App\Http\Controllers\Api\GeminiController;
 
 
 // Public auth routes
@@ -106,6 +107,12 @@ Route::get('/orders/track', [PaymentController::class, 'trackGuestOrder']);
 
 // AI support is expensive — same strict limit as auth
 Route::middleware('throttle:auth')->post('/ai-support', [\App\Http\Controllers\Api\AiSupportController::class, 'handle']);
+
+// Gemini Chat API - for mobile app chatbot with custom training data
+Route::middleware('throttle:public')->group(function () {
+    Route::get('/gemini/models', [GeminiController::class, 'listModels']);
+    Route::post('/gemini/chat', [GeminiController::class, 'chat']);
+});
 
 // Inbound webhooks: 30 requests/min per IP; POST-only
 Route::middleware('throttle:webhooks')->group(function () {
@@ -171,6 +178,7 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::post('/auth/addresses', [CustomerAddressController::class, 'store']);
     Route::patch('/auth/addresses/{id}/default', [CustomerAddressController::class, 'setDefault']);
     Route::get('/orders/history', [PaymentController::class, 'checkoutHistory']);
+    Route::get('/orders/counts', [PaymentController::class, 'orderCounts']);
     Route::post('/orders/{id}/confirm', [PaymentController::class, 'confirmOrder']);
     Route::post('/encashment/requests', [EncashmentController::class, 'store']);
     Route::get('/encashment/requests', [EncashmentController::class, 'myRequests']);
@@ -233,6 +241,9 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::get('/activity-logs/logins/history', [MemberActivityLogController::class, 'loginHistory']);
     Route::get('/activity-logs/purchases/history', [MemberActivityLogController::class, 'purchaseHistory']);
     Route::get('/activity-logs/wallet/history', [MemberActivityLogController::class, 'walletHistory']);
+
+    // Gemini Chat - authenticated route for users
+    Route::post('/gemini/chat', [GeminiController::class, 'chat']);
 });
 
 Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_admin,admin,csr'])->group(function () {
@@ -341,6 +352,7 @@ Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_a
 
 Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_admin,admin,csr,merchant_admin,web_content'])->group(function () {
     Route::get('/admin/orders', [AdminOrderController::class, 'index']);
+    Route::get('/admin/orders/counts', [AdminOrderController::class, 'counts']);
 });
 
 Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_admin,admin,csr,merchant_admin'])->group(function () {

@@ -981,22 +981,42 @@ class PaymentController extends Controller
                         'selected_size' => $order->ch_selected_size ?: null,
                         'selected_type' => $order->ch_selected_type ?: null,
                     ]],
-                    'total' => (float) $order->ch_amount,
+                    'total_amount' => (float) $order->ch_amount,
                     'shipping_fee' => (float) ($order->ch_shipping_fee ?? 0),
-                    'payment_method' => $this->formatPaymentMethod((string) $order->ch_payment_method),
-                    'shipping_address' => $order->ch_customer_address ?: 'No address provided',
-                    'courier' => $order->ch_courier ?: null,
-                    'tracking_no' => $trackingNo,
-                    'shipment_status' => $order->ch_shipment_status ?: null,
-                    'shipped_at' => optional($order->ch_shipped_at)->toDateTimeString(),
+                    'payment_method' => $this->formatPaymentMethod((string) ($order->ch_payment_method ?? '')),
+                    'tracking_number' => $trackingNo,
                     'created_at' => optional($order->ch_paid_at ?? $order->created_at)->toDateTimeString(),
-                    'estimated_delivery' => null,
                 ];
-            })
-            ->values();
+            })->values()->all();
 
         return response()->json([
             'orders' => $orders,
+            'total' => count($orders),
+        ]);
+    }
+
+    public function orderCounts(Request $request)
+    {
+        $customer = $request->user();
+        if (!$customer) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        $customerId = (int) $customer->getAuthIdentifier();
+        $base = CheckoutHistory::query()->where('ch_customer_id', $customerId);
+
+        return response()->json([
+            'all' => (int) (clone $base)->count(),
+            'pending' => (int) (clone $base)->where(function ($q) {
+                $q->where('ch_approval_status', 'pending_approval')
+                    ->orWhere('ch_fulfillment_status', 'pending');
+            })->count(),
+            'processing' => (int) (clone $base)->whereIn('ch_fulfillment_status', ['processing', 'packed', 'shipped', 'out_for_delivery'])->count(),
+            'shipped' => (int) (clone $base)->where('ch_fulfillment_status', 'shipped')->count(),
+            'delivered' => (int) (clone $base)->where('ch_fulfillment_status', 'delivered')->count(),
+            'cancelled' => (int) (clone $base)->whereIn('ch_fulfillment_status', ['cancelled', 'refunded'])->count(),
+            'completed' => (int) (clone $base)->where('ch_fulfillment_status', 'delivered')->count(),
+            'paid' => (int) (clone $base)->whereIn('ch_status', ['paid', 'succeeded', 'success'])->count(),
         ]);
     }
 

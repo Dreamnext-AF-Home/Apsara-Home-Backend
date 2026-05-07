@@ -1393,20 +1393,28 @@ class AdminOrderController extends Controller
         ), static fn ($id) => is_int($id) && $id > 0)));
     }
 
-    private function counts(): array
+    public function counts(Request $request)
     {
+        $admin = $this->resolveAdmin($request);
+        if (!$admin) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
         $base = CheckoutHistory::query();
 
-        return [
+        return response()->json([
             'all' => (int) (clone $base)->count(),
             'pending' => (int) (clone $base)->where(function ($q) {
                 $q->where('ch_approval_status', 'pending_approval')
                     ->orWhere('ch_fulfillment_status', 'pending');
             })->count(),
             'processing' => (int) (clone $base)->whereIn('ch_fulfillment_status', ['processing', 'packed', 'shipped', 'out_for_delivery'])->count(),
+            'shipped' => (int) (clone $base)->where('ch_fulfillment_status', 'shipped')->count(),
+            'delivered' => (int) (clone $base)->where('ch_fulfillment_status', 'delivered')->count(),
             'cancelled' => (int) (clone $base)->whereIn('ch_fulfillment_status', ['cancelled', 'refunded'])->count(),
             'completed' => (int) (clone $base)->where('ch_fulfillment_status', 'delivered')->count(),
-        ];
+            'paid' => (int) (clone $base)->whereIn('ch_status', ['paid', 'succeeded', 'success'])->count(),
+        ]);
     }
 
     private function computeSla(CheckoutHistory $order): array
