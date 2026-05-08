@@ -130,9 +130,16 @@ class PaymentController extends Controller
             return $this->resolveRequestedPaymongoMode($requestedMode, $request);
         }
 
-        $cachedCustomer = Cache::get("checkout_customer:{$checkoutId}");
-        if (is_array($cachedCustomer) && in_array(($cachedCustomer['payment_mode'] ?? null), ['test', 'live'], true)) {
-            return (string) $cachedCustomer['payment_mode'];
+        try {
+            $cachedCustomer = Cache::get("checkout_customer:{$checkoutId}");
+            if (is_array($cachedCustomer) && in_array(($cachedCustomer['payment_mode'] ?? null), ['test', 'live'], true)) {
+                return (string) $cachedCustomer['payment_mode'];
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Failed to read checkout payment mode from cache.', [
+                'checkout_id' => $checkoutId,
+                'error' => $e->getMessage(),
+            ]);
         }
 
         return $this->paymongoDefaultMode();
@@ -222,10 +229,10 @@ class PaymentController extends Controller
         if ($rawUrl !== '') {
             $path = trim((string) parse_url($rawUrl, PHP_URL_PATH));
             if ($path !== '') {
-                if (preg_match('#^/shop/([^/?#]+)#i', $path, $matches)) {
+                if (preg_match('#^/shop/([^/?\#]+)#i', $path, $matches)) {
                     return Str::slug((string) ($matches[1] ?? ''));
                 }
-                if (preg_match('#^/([^/?#]+)/(product|category|checkout|track-order)(?:/|$)#i', $path, $matches)) {
+                if (preg_match('#^/([^/?\#]+)/(product|category|checkout|track-order)(?:/|$)#i', $path, $matches)) {
                     return Str::slug((string) ($matches[1] ?? ''));
                 }
             }
@@ -388,8 +395,38 @@ class PaymentController extends Controller
             ],
         ];
 
-        $res = Http::withBasicAuth($secretKey, '')
-            ->post($this->paymongoApiUrl('/v1/checkout_sessions', $paymongoConfig['mode']), $payload);
+        try {
+            $res = Http::withBasicAuth($secretKey, '')
+                ->post($this->paymongoApiUrl('/v1/checkout_sessions', $paymongoConfig['mode']), $payload);
+        } catch (\Throwable $e) {
+            $isLocalSslError = app()->environment(['local', 'development'])
+                && str_contains(strtolower($e->getMessage()), 'curl error 60');
+
+            if ($isLocalSslError) {
+                Log::warning('Retrying PayMongo create session with SSL verification disabled for local environment.', [
+                    'payment_mode' => $paymongoConfig['mode'],
+                    'error' => $e->getMessage(),
+                ]);
+
+                try {
+                    $res = Http::withOptions(['verify' => false])
+                        ->withBasicAuth($secretKey, '')
+                        ->post($this->paymongoApiUrl('/v1/checkout_sessions', $paymongoConfig['mode']), $payload);
+                } catch (\Throwable $retryError) {
+                    return response()->json([
+                        'message' => 'PayMongo create session failed',
+                        'provider' => $validated['online_banking_provider'] ?? null,
+                        'error' => $retryError->getMessage(),
+                    ], 502);
+                }
+            } else {
+                return response()->json([
+                    'message' => 'PayMongo create session failed',
+                    'provider' => $validated['online_banking_provider'] ?? null,
+                    'error' => $e->getMessage(),
+                ], 502);
+            }
+        }
 
         if ($res->failed()) {
             return response()->json([
@@ -413,7 +450,7 @@ class PaymentController extends Controller
             $patchedCancelUrl = $cancelBase . '?checkout_id=' . urlencode($checkoutId);
 
             try {
-                Http::withBasicAuth($secretKey, '')
+                $patchResponse = Http::withBasicAuth($secretKey, '')
                     ->put($this->paymongoApiUrl("/v1/checkout_sessions/{$checkoutId}", $paymongoConfig['mode']), [
                         'data' => [
                             'attributes' => [
@@ -422,6 +459,22 @@ class PaymentController extends Controller
                             ],
                         ],
                     ]);
+                if (
+                    app()->environment(['local', 'development'])
+                    && $patchResponse->failed()
+                    && str_contains(strtolower((string) $patchResponse->body()), 'ssl certificate')
+                ) {
+                    Http::withOptions(['verify' => false])
+                        ->withBasicAuth($secretKey, '')
+                        ->put($this->paymongoApiUrl("/v1/checkout_sessions/{$checkoutId}", $paymongoConfig['mode']), [
+                            'data' => [
+                                'attributes' => [
+                                    'success_url' => $patchedSuccessUrl,
+                                    'cancel_url' => $patchedCancelUrl,
+                                ],
+                            ],
+                        ]);
+                }
                 data_set($data, 'attributes.success_url', $patchedSuccessUrl);
             } catch (\Throwable $e) {
                 Log::warning('Failed to patch checkout session redirect URLs with checkout_id.', [
@@ -521,8 +574,47 @@ class PaymentController extends Controller
             return response()->json(['message' => sprintf('PayMongo %s secret key is missing.', $paymentMode)], 500);
         }
 
-        $res = Http::withBasicAuth($secretKey, '')
-            ->get($this->paymongoApiUrl("/v1/checkout_sessions/{$checkoutId}", $paymentMode));
+        try {
+            $res = Http::withBasicAuth($secretKey, '')
+                ->get($this->paymongoApiUrl("/v1/checkout_sessions/{$checkoutId}", $paymentMode));
+        } catch (\Throwable $e) {
+            $isLocalSslError = app()->environment(['local', 'development'])
+                && str_contains(strtolower($e->getMessage()), 'curl error 60');
+
+            if ($isLocalSslError) {
+                try {
+                    Log::warning('Retrying PayMongo verify with SSL verification disabled for local environment.', [
+                        'checkout_id' => $checkoutId,
+                        'payment_mode' => $paymentMode,
+                    ]);
+
+                    $res = Http::withOptions(['verify' => false])
+                        ->withBasicAuth($secretKey, '')
+                        ->get($this->paymongoApiUrl("/v1/checkout_sessions/{$checkoutId}", $paymentMode));
+                } catch (\Throwable $retryError) {
+                    Log::warning('PayMongo verify retry (verify=false) failed.', [
+                        'checkout_id' => $checkoutId,
+                        'payment_mode' => $paymentMode,
+                        'error' => $retryError->getMessage(),
+                    ]);
+
+                    return response()->json([
+                        'message' => 'Unable to contact payment provider for verification.',
+                        'error' => $retryError->getMessage(),
+                    ], 502);
+                }
+            } else {
+            Log::warning('PayMongo verify request crashed.', [
+                'checkout_id' => $checkoutId,
+                'payment_mode' => $paymentMode,
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json([
+                'message' => 'Unable to contact payment provider for verification.',
+                'error' => $e->getMessage(),
+            ], 502);
+            }
+        }
 
         if ($res->failed()) {
             return response()->json([
@@ -535,33 +627,64 @@ class PaymentController extends Controller
         $status = $this->resolveCheckoutStatusForStorage(is_array($attrs) ? $attrs : []);
         $attrs['status'] = $status;
 
+        $hasCachedCustomer = false;
+        try {
+            $hasCachedCustomer = Cache::has("checkout_customer:{$checkoutId}");
+        } catch (\Throwable $e) {
+            Log::warning('Cache unavailable while checking checkout customer cache.', [
+                'checkout_id' => $checkoutId,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
         Log::info('Checkout verify response received', [
             'checkout_id' => $checkoutId,
             'status' => $status,
-            'has_cached_customer' => Cache::has("checkout_customer:{$checkoutId}"),
+            'has_cached_customer' => $hasCachedCustomer,
         ]);
 
-        $this->persistCheckoutHistoryIfNeeded($checkoutId, $attrs);
+        try {
+            $this->persistCheckoutHistoryIfNeeded($checkoutId, $attrs);
+        } catch (\Throwable $e) {
+            Log::warning('Failed to persist checkout history during verification.', [
+                'checkout_id' => $checkoutId,
+                'error' => $e->getMessage(),
+            ]);
+        }
 
         if ($this->isPaidStatus($status)) {
-            $this->sendCheckoutCompletedEmailIfNeeded($checkoutId, $attrs);
-            
-            // Send real-time notification to customer for payment success
+            try {
+                $this->sendCheckoutCompletedEmailIfNeeded($checkoutId, $attrs);
+            } catch (\Throwable $e) {
+                Log::warning('Failed to send checkout completed email.', [
+                    'checkout_id' => $checkoutId,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
             $order = CheckoutHistory::query()
                 ->where('ch_checkout_id', $checkoutId)
                 ->first();
-                
+
             if ($order && (int) $order->ch_customer_id > 0) {
                 $this->notifyCustomerOrderStatusUpdate(
-                    $order, 
-                    'payment_success', 
-                    'Payment Successful', 
+                    $order,
+                    'payment_success',
+                    'Payment Successful',
                     "Your payment for order #{$checkoutId} has been successfully processed. Your order is now being prepared."
                 );
             }
         }
 
-        $cachedCustomer = Cache::get("checkout_customer:{$checkoutId}");
+        $cachedCustomer = null;
+        try {
+            $cachedCustomer = Cache::get("checkout_customer:{$checkoutId}");
+        } catch (\Throwable $e) {
+            Log::warning('Cache unavailable while reading checkout customer payload.', [
+                'checkout_id' => $checkoutId,
+                'error' => $e->getMessage(),
+            ]);
+        }
         $order = CheckoutHistory::query()
             ->where('ch_checkout_id', $checkoutId)
             ->first();
@@ -609,7 +732,6 @@ class PaymentController extends Controller
             'payment_mode' => $paymentMode,
             'customer' => $customerPayload,
             'order_summary' => $orderSummaryPayload,
-            'raw' => $attrs,
         ]);
     }
 
@@ -749,12 +871,12 @@ class PaymentController extends Controller
                 Log::info('Checkout email skipped: already sent', ['checkout_id' => $checkoutId]);
             } else {
                 try {
-                    Mail::mailer('resend')->to($recipient)->send(new CheckoutCompletedMail($mailPayload));
+                    $this->sendCheckoutMailWithFallback($recipient, new CheckoutCompletedMail($mailPayload));
 
                     Log::info('Checkout email sent', [
                         'checkout_id' => $checkoutId,
                         'recipient' => $recipient,
-                        'mailer' => 'resend',
+                        'mailer' => app()->environment(['local', 'development']) ? $this->resolvePreferredCheckoutMailer().'|fallback-possible' : $this->resolvePreferredCheckoutMailer(),
                     ]);
                 } catch (\Throwable $e) {
                     Cache::forget($notifiedKey);
@@ -861,7 +983,7 @@ class PaymentController extends Controller
         }
 
         try {
-            Mail::mailer('resend')->to($recipient)->send(new PartnerStorefrontGuestOrderMail([
+            $this->sendCheckoutMailWithFallback($recipient, new PartnerStorefrontGuestOrderMail([
                 ...$mailPayload,
                 'storefront_display_name' => $this->extractPartnerStorefrontDisplayName($storefront),
                 'storefront_notification_email' => $notificationEmail,
@@ -871,7 +993,7 @@ class PaymentController extends Controller
                 'checkout_id' => $checkoutId,
                 'recipient' => $recipient,
                 'source_slug' => $sourceSlug,
-                'mailer' => 'resend',
+                'mailer' => app()->environment(['local', 'development']) ? $this->resolvePreferredCheckoutMailer().'|fallback-possible' : $this->resolvePreferredCheckoutMailer(),
             ]);
         } catch (\Throwable $e) {
             Cache::forget($notifiedKey);
@@ -883,6 +1005,37 @@ class PaymentController extends Controller
             ]);
             report($e);
         }
+    }
+
+    private function sendCheckoutMailWithFallback(string $recipient, mixed $mailable): void
+    {
+        $preferredMailer = $this->resolvePreferredCheckoutMailer();
+
+        try {
+            Mail::mailer($preferredMailer)->to($recipient)->send($mailable);
+            return;
+        } catch (\Throwable $e) {
+            $isLocalLike = app()->environment(['local', 'development']);
+            $looksLikeSsl = str_contains(strtolower($e->getMessage()), 'ssl certificate')
+                || str_contains(strtolower($e->getMessage()), 'curl error 60');
+
+            if (!$isLocalLike || !$looksLikeSsl || $preferredMailer !== 'resend') {
+                throw $e;
+            }
+
+            Log::warning('Resend SSL issue in local/dev, falling back to log mailer.', [
+                'recipient' => $recipient,
+                'error' => $e->getMessage(),
+            ]);
+
+            Mail::mailer('log')->to($recipient)->send($mailable);
+        }
+    }
+
+    private function resolvePreferredCheckoutMailer(): string
+    {
+        $mailer = trim((string) env('MAIL_MAILER', 'resend'));
+        return $mailer !== '' ? $mailer : 'resend';
     }
 
     private function findPartnerStorefrontBySlug(string $slug): ?WebPageContent
@@ -942,11 +1095,11 @@ class PaymentController extends Controller
         if ($sourceUrl !== '') {
             $path = trim((string) parse_url($sourceUrl, PHP_URL_PATH));
             if ($path !== '') {
-                if (preg_match('#^/shop/([^/?#]+)#i', $path, $matches)) {
+                if (preg_match('#^/shop/([^/?\#]+)#i', $path, $matches)) {
                     return strtolower(trim((string) ($matches[1] ?? '')));
                 }
 
-                if (preg_match('#^/([^/?#]+)/(product|category|checkout|track-order)(?:/|$)#i', $path, $matches)) {
+                if (preg_match('#^/([^/?\#]+)/(product|category|checkout|track-order)(?:/|$)#i', $path, $matches)) {
                     return strtolower(trim((string) ($matches[1] ?? '')));
                 }
             }
@@ -1207,7 +1360,49 @@ class PaymentController extends Controller
                 ->where('ch_checkout_id', $checkoutId)
                 ->first();
 
+            $fallbackDescription = (string) (data_get($attrs, 'description') ?: data_get($attrs, 'line_items.0.name') ?: 'Order');
+            $fallbackAmountCents = (int) data_get($attrs, 'line_items.0.amount', 0);
+            $fallbackAmount = $fallbackAmountCents > 0 ? ($fallbackAmountCents / 100) : 0.0;
+            $resolvedEmail = $this->extractCustomerEmailFromCheckoutAttributes($attrs);
+            $resolvedPhone = $this->extractCustomerPhoneFromCheckoutAttributes($attrs);
+            $resolvedName = $this->extractCustomerNameFromCheckoutAttributes($attrs);
+            $resolvedAddress = $this->extractCustomerAddressFromCheckoutAttributes($attrs);
+            $resolvedPaymentMethod = $this->extractPaymentMethodFromCheckoutAttributes($attrs);
+
             if (!$history) {
+                CheckoutHistory::create([
+                    'ch_customer_id' => null,
+                    'ch_checkout_id' => $checkoutId,
+                    'ch_payment_intent_id' => data_get($attrs, 'payment_intent.id'),
+                    'ch_status' => (string) ($attrs['status'] ?? 'pending'),
+                    'ch_approval_status' => 'pending_approval',
+                    'ch_fulfillment_status' => 'pending',
+                    'ch_description' => $fallbackDescription,
+                    'ch_amount' => $fallbackAmount,
+                    'ch_shipping_fee' => 0,
+                    'ch_payment_method' => $resolvedPaymentMethod,
+                    'ch_quantity' => 1,
+                    'ch_product_name' => $fallbackDescription,
+                    'ch_product_id' => null,
+                    'ch_product_sku' => '',
+                    'ch_product_pv' => 0,
+                    'ch_earned_pv' => 0,
+                    'ch_commission_basis_amount' => 0,
+                    'ch_product_image' => '',
+                    'ch_selected_color' => '',
+                    'ch_selected_size' => '',
+                    'ch_selected_type' => '',
+                    'ch_customer_name' => $resolvedName !== '' ? $resolvedName : 'Customer',
+                    'ch_customer_email' => $resolvedEmail,
+                    'ch_customer_phone' => $resolvedPhone,
+                    'ch_customer_address' => $resolvedAddress,
+                    'ch_source_label' => '',
+                    'ch_source_slug' => '',
+                    'ch_source_host' => '',
+                    'ch_source_url' => '',
+                    'ch_paid_at' => $this->isPaidStatus($attrs['status'] ?? null) ? now() : null,
+                ]);
+
                 return;
             }
 
@@ -1216,6 +1411,21 @@ class PaymentController extends Controller
 
             $history->ch_status = (string) ($attrs['status'] ?? $history->ch_status ?? 'pending');
             $history->ch_payment_intent_id = data_get($attrs, 'payment_intent.id') ?: $history->ch_payment_intent_id;
+            if ((string) ($history->ch_payment_method ?? '') === '' && $resolvedPaymentMethod !== '') {
+                $history->ch_payment_method = $resolvedPaymentMethod;
+            }
+            if ((string) ($history->ch_customer_name ?? '') === '' && $resolvedName !== '') {
+                $history->ch_customer_name = $resolvedName;
+            }
+            if ((string) ($history->ch_customer_email ?? '') === '' && $resolvedEmail !== '') {
+                $history->ch_customer_email = $resolvedEmail;
+            }
+            if ((string) ($history->ch_customer_phone ?? '') === '' && $resolvedPhone !== '') {
+                $history->ch_customer_phone = $resolvedPhone;
+            }
+            if ((string) ($history->ch_customer_address ?? '') === '' && $resolvedAddress !== '') {
+                $history->ch_customer_address = $resolvedAddress;
+            }
             if ($isNowPaid && !$history->ch_paid_at) {
                 $history->ch_paid_at = now();
             }
@@ -1247,43 +1457,73 @@ class PaymentController extends Controller
             ->where('ch_checkout_id', $checkoutId)
             ->value('ch_approval_status');
 
-        $history = CheckoutHistory::updateOrCreate(
-            ['ch_checkout_id' => $checkoutId],
-            [
-                // Guest checkouts do not have a member account, so store 0 as a sentinel.
-                'ch_customer_id' => (int) ($cached['customer_id'] ?? 0),
-                'ch_referrer_customer_id' => !empty($cached['referrer_user_id']) ? (int) $cached['referrer_user_id'] : null,
-                'ch_referral_source_type' => (string) ($cached['referral_source_type'] ?? ''),
-                'ch_payment_intent_id' => data_get($attrs, 'payment_intent.id'),
-                'ch_status' => (string) ($attrs['status'] ?? 'paid'),
-                'ch_description' => (string) ($cached['description'] ?? ''),
-                'ch_amount' => (float) ($cached['amount'] ?? 0),
-                'ch_shipping_fee' => (float) ($cached['shipping_fee'] ?? 0),
-                'ch_payment_method' => (string) ($cached['payment_method'] ?? ''),
-                'ch_quantity' => $quantity,
-                'ch_product_name' => (string) ($resolvedOrderSnapshot['product_name'] ?? ($cached['description'] ?? 'Order Item')),
-                'ch_product_id' => isset($resolvedOrderSnapshot['product_id']) ? (int) $resolvedOrderSnapshot['product_id'] : null,
-                'ch_product_sku' => (string) ($resolvedOrderSnapshot['product_sku'] ?? ''),
-                'ch_product_pv' => $productPv,
-                'ch_earned_pv' => $productPv * $quantity,
-                'ch_commission_basis_amount' => $commissionBasisAmount * $quantity,
-                'ch_product_image' => (string) ($resolvedOrderSnapshot['product_image'] ?? ''),
-                'ch_selected_color' => (string) ($resolvedOrderSnapshot['selected_color'] ?? ''),
-                'ch_selected_size' => (string) ($resolvedOrderSnapshot['selected_size'] ?? ''),
-                'ch_selected_type' => (string) ($resolvedOrderSnapshot['selected_type'] ?? ''),
-                'ch_customer_name' => (string) ($cached['name'] ?? 'Customer'),
-                'ch_customer_email' => (string) ($cached['email'] ?? ''),
-                'ch_customer_phone' => (string) ($cached['phone'] ?? ''),
-                'ch_customer_address' => (string) ($cached['address'] ?? ''),
-                'ch_source_label' => (string) ($cached['source_label'] ?? ''),
-                'ch_source_slug' => (string) ($cached['source_slug'] ?? ''),
-                'ch_source_host' => (string) ($cached['source_host'] ?? ''),
-                'ch_source_url' => (string) ($cached['source_url'] ?? ''),
-                'ch_paid_at' => $this->isPaidStatus($attrs['status'] ?? null) ? now() : null,
-                'ch_approval_status' => $existingApprovalStatus ?: 'pending_approval',
-                'ch_fulfillment_status' => $existingFulfillmentStatus ?: 'pending',
-            ]
-        );
+        try {
+            $history = CheckoutHistory::updateOrCreate(
+                ['ch_checkout_id' => $checkoutId],
+                [
+                    // Guest checkouts may not have a member account; keep NULL to satisfy FK constraints.
+                    'ch_customer_id' => !empty($cached['customer_id']) ? (int) $cached['customer_id'] : null,
+                    'ch_referrer_customer_id' => !empty($cached['referrer_user_id']) ? (int) $cached['referrer_user_id'] : null,
+                    'ch_referral_source_type' => (string) ($cached['referral_source_type'] ?? ''),
+                    'ch_payment_intent_id' => data_get($attrs, 'payment_intent.id'),
+                    'ch_status' => (string) ($attrs['status'] ?? 'paid'),
+                    'ch_description' => (string) ($cached['description'] ?? ''),
+                    'ch_amount' => (float) ($cached['amount'] ?? 0),
+                    'ch_shipping_fee' => (float) ($cached['shipping_fee'] ?? 0),
+                    'ch_payment_method' => (string) (($cached['payment_method'] ?? '') ?: $this->extractPaymentMethodFromCheckoutAttributes($attrs)),
+                    'ch_quantity' => $quantity,
+                    'ch_product_name' => (string) ($resolvedOrderSnapshot['product_name'] ?? ($cached['description'] ?? 'Order Item')),
+                    'ch_product_id' => isset($resolvedOrderSnapshot['product_id']) ? (int) $resolvedOrderSnapshot['product_id'] : null,
+                    'ch_product_sku' => (string) ($resolvedOrderSnapshot['product_sku'] ?? ''),
+                    'ch_product_pv' => $productPv,
+                    'ch_earned_pv' => $productPv * $quantity,
+                    'ch_commission_basis_amount' => $commissionBasisAmount * $quantity,
+                    'ch_product_image' => (string) ($resolvedOrderSnapshot['product_image'] ?? ''),
+                    'ch_selected_color' => (string) ($resolvedOrderSnapshot['selected_color'] ?? ''),
+                    'ch_selected_size' => (string) ($resolvedOrderSnapshot['selected_size'] ?? ''),
+                    'ch_selected_type' => (string) ($resolvedOrderSnapshot['selected_type'] ?? ''),
+                    'ch_customer_name' => (string) (($cached['name'] ?? '') ?: $this->extractCustomerNameFromCheckoutAttributes($attrs) ?: 'Customer'),
+                    'ch_customer_email' => (string) (($cached['email'] ?? '') ?: $this->extractCustomerEmailFromCheckoutAttributes($attrs)),
+                    'ch_customer_phone' => (string) (($cached['phone'] ?? '') ?: $this->extractCustomerPhoneFromCheckoutAttributes($attrs)),
+                    'ch_customer_address' => (string) (($cached['address'] ?? '') ?: $this->extractCustomerAddressFromCheckoutAttributes($attrs)),
+                    'ch_source_label' => (string) ($cached['source_label'] ?? ''),
+                    'ch_source_slug' => (string) ($cached['source_slug'] ?? ''),
+                    'ch_source_host' => (string) ($cached['source_host'] ?? ''),
+                    'ch_source_url' => (string) ($cached['source_url'] ?? ''),
+                    'ch_paid_at' => $this->isPaidStatus($attrs['status'] ?? null) ? now() : null,
+                    'ch_approval_status' => $existingApprovalStatus ?: 'pending_approval',
+                    'ch_fulfillment_status' => $existingFulfillmentStatus ?: 'pending',
+                ]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('Primary checkout history upsert failed, falling back to minimal persistence.', [
+                'checkout_id' => $checkoutId,
+                'error' => $e->getMessage(),
+            ]);
+
+            $history = CheckoutHistory::updateOrCreate(
+                ['ch_checkout_id' => $checkoutId],
+                [
+                    'ch_customer_id' => null,
+                    'ch_payment_intent_id' => data_get($attrs, 'payment_intent.id'),
+                    'ch_status' => (string) ($attrs['status'] ?? 'pending'),
+                    'ch_approval_status' => $existingApprovalStatus ?: 'pending_approval',
+                    'ch_fulfillment_status' => $existingFulfillmentStatus ?: 'pending',
+                    'ch_description' => (string) ($cached['description'] ?? 'Order'),
+                    'ch_amount' => (float) ($cached['amount'] ?? 0),
+                    'ch_shipping_fee' => (float) ($cached['shipping_fee'] ?? 0),
+                    'ch_payment_method' => (string) (($cached['payment_method'] ?? '') ?: $this->extractPaymentMethodFromCheckoutAttributes($attrs)),
+                    'ch_quantity' => $quantity,
+                    'ch_product_name' => (string) ($resolvedOrderSnapshot['product_name'] ?? ($cached['description'] ?? 'Order Item')),
+                    'ch_product_sku' => (string) ($resolvedOrderSnapshot['product_sku'] ?? ''),
+                    'ch_customer_name' => (string) (($cached['name'] ?? '') ?: $this->extractCustomerNameFromCheckoutAttributes($attrs) ?: 'Customer'),
+                    'ch_customer_email' => (string) (($cached['email'] ?? '') ?: $this->extractCustomerEmailFromCheckoutAttributes($attrs)),
+                    'ch_customer_phone' => (string) (($cached['phone'] ?? '') ?: $this->extractCustomerPhoneFromCheckoutAttributes($attrs)),
+                    'ch_customer_address' => (string) (($cached['address'] ?? '') ?: $this->extractCustomerAddressFromCheckoutAttributes($attrs)),
+                    'ch_paid_at' => $this->isPaidStatus($attrs['status'] ?? null) ? now() : null,
+                ]
+            );
+        }
 
         $isNowPaid = $this->isPaidStatus($attrs['status'] ?? null);
         $wasPaidBefore = $this->isPaidStatus($existingPaymentStatus);
@@ -1295,6 +1535,139 @@ class PaymentController extends Controller
         if ($isNowPaid) {
             $this->markAffiliateVoucherUsedIfNeeded($checkoutId, is_array($cached) ? $cached : []);
         }
+    }
+
+    private function extractCustomerEmailFromCheckoutAttributes(array $attrs): string
+    {
+        $candidates = [
+            data_get($attrs, 'billing.email'),
+            data_get($attrs, 'customer.email'),
+            data_get($attrs, 'metadata.customer_email'),
+            data_get($attrs, 'metadata.email'),
+            data_get($attrs, 'payments.0.billing.email'),
+            data_get($attrs, 'payments.0.attributes.billing.email'),
+            data_get($attrs, 'payments.0.attributes.source.billing.email'),
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (is_string($candidate) && trim($candidate) !== '') {
+                return trim($candidate);
+            }
+        }
+
+        return '';
+    }
+
+    private function extractCustomerPhoneFromCheckoutAttributes(array $attrs): string
+    {
+        $candidates = [
+            data_get($attrs, 'billing.phone'),
+            data_get($attrs, 'customer.phone'),
+            data_get($attrs, 'metadata.customer_phone'),
+            data_get($attrs, 'metadata.phone'),
+            data_get($attrs, 'payments.0.billing.phone'),
+            data_get($attrs, 'payments.0.attributes.billing.phone'),
+            data_get($attrs, 'payments.0.attributes.source.billing.phone'),
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (is_string($candidate) && trim($candidate) !== '') {
+                return trim($candidate);
+            }
+        }
+
+        return '';
+    }
+
+    private function extractCustomerNameFromCheckoutAttributes(array $attrs): string
+    {
+        $candidates = [
+            data_get($attrs, 'billing.name'),
+            data_get($attrs, 'customer.name'),
+            data_get($attrs, 'metadata.customer_name'),
+            data_get($attrs, 'metadata.name'),
+            data_get($attrs, 'payments.0.billing.name'),
+            data_get($attrs, 'payments.0.attributes.billing.name'),
+            data_get($attrs, 'payments.0.attributes.source.billing.name'),
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (is_string($candidate) && trim($candidate) !== '') {
+                return trim($candidate);
+            }
+        }
+
+        return '';
+    }
+
+    private function extractCustomerAddressFromCheckoutAttributes(array $attrs): string
+    {
+        $address = data_get($attrs, 'billing.address');
+        if (is_array($address)) {
+            $parts = array_filter([
+                $address['line1'] ?? null,
+                $address['line2'] ?? null,
+                $address['city'] ?? null,
+                $address['state'] ?? null,
+                $address['postal_code'] ?? null,
+                $address['country'] ?? null,
+            ], static fn ($part) => is_string($part) && trim($part) !== '');
+
+            if ($parts !== []) {
+                return implode(', ', array_map(static fn ($part) => trim((string) $part), $parts));
+            }
+        }
+
+        $candidates = [
+            data_get($attrs, 'customer.address'),
+            data_get($attrs, 'metadata.customer_address'),
+            data_get($attrs, 'metadata.address'),
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (is_string($candidate) && trim($candidate) !== '') {
+                return trim($candidate);
+            }
+        }
+
+        return '';
+    }
+
+    private function extractPaymentMethodFromCheckoutAttributes(array $attrs): string
+    {
+        $direct = [
+            data_get($attrs, 'payment_method'),
+            data_get($attrs, 'payment_method_type'),
+            data_get($attrs, 'payments.0.payment_method_used'),
+            data_get($attrs, 'payments.0.attributes.payment_method_used'),
+            data_get($attrs, 'payments.0.source.type'),
+            data_get($attrs, 'payments.0.attributes.source.type'),
+        ];
+
+        foreach ($direct as $candidate) {
+            if (!is_string($candidate)) {
+                continue;
+            }
+
+            $normalized = strtolower(trim($candidate));
+            if ($normalized === '') {
+                continue;
+            }
+            if (str_contains($normalized, 'gcash')) {
+                return 'gcash';
+            }
+            if (str_contains($normalized, 'maya') || str_contains($normalized, 'paymaya')) {
+                return 'maya';
+            }
+            if (str_contains($normalized, 'card')) {
+                return 'card';
+            }
+            if (str_contains($normalized, 'bank')) {
+                return 'online_banking';
+            }
+        }
+
+        return '';
     }
 
     private function resolveOrderSnapshot(array $order): array
