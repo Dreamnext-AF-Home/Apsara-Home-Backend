@@ -11,6 +11,8 @@ use App\Models\EncashmentRequest;
 use App\Support\CustomerCashWallet;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Str;
+use Pusher\Pusher;
 
 class CustomerNotificationController extends Controller
 {
@@ -359,5 +361,39 @@ class CustomerNotificationController extends Controller
                 : 'Your username request has been approved by admin.',
             'latest_at' => $reviewedAt?->toDateTimeString(),
         ];
+    }
+
+    public function pusherAuth(Request $request)
+    {
+        $customer = $request->user();
+        if (!$customer instanceof Customer) {
+            return response()->json(['message' => 'Only customer accounts can access real-time notifications.'], 403);
+        }
+
+        $validated = $request->validate([
+            'socket_id' => 'required|string|max:100',
+            'channel_name' => 'required|string|max:255',
+        ]);
+
+        $channelName = (string) $validated['channel_name'];
+        $expectedChannel = 'private-customer-' . (int) $customer->c_userid;
+        
+        if ($channelName !== $expectedChannel) {
+            return response()->json(['message' => 'Forbidden channel.'], 403);
+        }
+
+        $key = (string) config('services.pusher.key', '');
+        $secret = (string) config('services.pusher.secret', '');
+
+        if ($key === '' || $secret === '') {
+            return response()->json(['message' => 'Pusher is not configured.'], 503);
+        }
+
+        $socketId = (string) $validated['socket_id'];
+        $signature = hash_hmac('sha256', $socketId . ':' . $channelName, $secret);
+
+        return response()->json([
+            'auth' => $key . ':' . $signature,
+        ]);
     }
 }
