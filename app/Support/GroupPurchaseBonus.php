@@ -111,7 +111,10 @@ class GroupPurchaseBonus
             return 0.0;
         }
 
-        return max(0, (float) env('UNILEVEL_BONUS_RATE', 0.06));
+        $totalRate = max(0, (float) env('UNILEVEL_BONUS_RATE', 0.06));
+        $maxLevels = self::maxPaidLevels();
+
+        return $maxLevels > 0 ? $totalRate / $maxLevels : 0.0;
     }
 
     private static function resolveEligibleUplineChain(Customer $buyer, int $maxPaidLevels = 10)

@@ -457,7 +457,7 @@ class AdminOrderController extends Controller
                 'from' => $paginated->firstItem(),
                 'to' => $paginated->lastItem(),
             ],
-            'counts' => $this->counts($request),
+            'counts' => $this->counts($request)->getData(true),
         ]);
     }
 

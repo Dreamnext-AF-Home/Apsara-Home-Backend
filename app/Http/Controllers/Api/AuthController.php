@@ -568,25 +568,6 @@ class AuthController extends Controller
             report($e);
         }
 
-        // Log login activity
-        try {
-            MemberActivityLog::create([
-                'mal_customer_id' => (int) $customer->c_userid,
-                'mal_activity_type' => MemberActivityLog::ACTIVITY_LOGIN,
-                'mal_action' => MemberActivityLog::ACTION_CREATE,
-                'mal_description' => 'Member logged in',
-                'mal_ip_address' => $request->ip(),
-                'mal_user_agent' => $request->userAgent(),
-                'mal_created_at' => now(),
-            ]);
-        } catch (\Throwable $e) {
-            // Log silently if activity logging fails
-            Log::warning('Failed to log login activity', [
-                'customer_id' => (int) $customer->c_userid,
-                'error' => $e->getMessage(),
-            ]);
-        }
-
         return response()->json([
             'user'  => $this->transformCustomer($customer),
             'token' => $token,

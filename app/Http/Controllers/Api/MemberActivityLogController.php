@@ -68,8 +68,9 @@ class MemberActivityLogController extends Controller
         $action = $request->query('action');
         $startDate = $request->query('start_date');
         $endDate = $request->query('end_date');
+        $search = trim((string) $request->query('q', ''));
 
-        $query = MemberActivityLog::query();
+        $query = MemberActivityLog::query()->with('customer');
 
         if ($customerId) {
             $query->where('mal_customer_id', $customerId);
@@ -89,6 +90,22 @@ class MemberActivityLogController extends Controller
 
         if ($endDate) {
             $query->whereDate('mal_created_at', '<=', $endDate);
+        }
+
+        if ($search !== '') {
+            $query->where(function ($q) use ($search) {
+                $q->where('mal_description', 'ilike', "%{$search}%")
+                    ->orWhere('mal_activity_type', 'ilike', "%{$search}%")
+                    ->orWhere('mal_action', 'ilike', "%{$search}%")
+                    ->orWhere('mal_ip_address', 'ilike', "%{$search}%")
+                    ->orWhereHas('customer', function ($customerQuery) use ($search) {
+                        $customerQuery
+                            ->where('c_email', 'ilike', "%{$search}%")
+                            ->orWhere('c_username', 'ilike', "%{$search}%")
+                            ->orWhere('c_fname', 'ilike', "%{$search}%")
+                            ->orWhere('c_lname', 'ilike', "%{$search}%");
+                    });
+            });
         }
 
         $logs = $query->orderByDesc('mal_created_at')->paginate($perPage);
