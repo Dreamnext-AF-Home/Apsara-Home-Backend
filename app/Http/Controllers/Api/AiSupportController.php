@@ -51,7 +51,7 @@ class AiSupportController extends Controller
             || in_array($normalizedNameQuery, ['bed', 'pillow', 'sofa', 'bench', 'mirror', 'tv', 'speaker', 'redmipad', 'mouse', 'monitor', 'cellphone', 'cctvcamera', 'router', 'wifiextender', 'vacuumcleaner', 'washingmachine', 'laundrymachine', 'frontload', 'washer', 'massage', 'garmentsteamer', 'refrigerator', 'electricshaver', 'groomingkit', 'wallmountedsplitinverter', 'motorrange', 'gasrange', 'abstract', 'flower', 'fish', 'geometry', 'sedimentcurve', 'panda', 'football', 'treeoflife', 'candleholder', 'chainlink', 'tray', 'mat', 'crate', 'hairdryer', 'flashdrive', 'usb', 'bookshelf', 'shelf', 'door', 'slidingdoor', 'wardrobe', 'drawer', 'fragrance', 'freshseriesforcarhome', 'carhome', 'carfragrance', 'homefragrance', 'housefragrance', 'foam', 'cushioning', 'padding', 'sponge', 'insulation', 'foldablemattress', 'trifoldmattress', 'foambed', 'portablemattress', 'floormattress', 'bedrestcushion', 'mattress', 'beanbag', 'teardrop', 'ottoman', 'plasticorganizerbasket', 'plasticstoragebasket', 'organizerbin', 'storagebin', 'multipurposebasket', 'utilitybasket', 'shelfbasket', 'cabinetbasket', 'rackorganizer', 'shelfstoragebasket', 'closetbasket', 'drawerbasket'], true);
 
         foreach ($this->tagalogIntentAliases() as $pattern => $append) {
-            if (preg_match($pattern, $question)) {
+            if ($this->safePregMatch($pattern, $question)) {
                 $qLower .= $append;
             }
         }
@@ -948,7 +948,7 @@ class AiSupportController extends Controller
             . '|paano mag sign ?up|paano mag register|paano gumawa ng account|paano mag create ng account|paano mag open ng account|paano mag join|paano mag simula|paano magsimula'
             . ')\b/i';
 
-        return (bool) preg_match($pattern, $qLower);
+        return $this->safePregMatch($pattern, $qLower);
     }
 
     private function defaultQuickReplies(): array
@@ -1703,7 +1703,7 @@ class AiSupportController extends Controller
     {
         $text = strtolower($input);
         $rangePattern = '/(?:php|₱)?\s*([0-9][0-9,\.]*\s*k?)\s*(?:-|–|to|up to|upto|below|under|less than)\s*(?:php|₱)?\s*([0-9][0-9,\.]*\s*k?)/i';
-        if (preg_match($rangePattern, $text, $match)) {
+        if ($this->safePregMatch($rangePattern, $text, $match)) {
             $min = $this->parseBudgetToken($match[1] ?? '');
             $max = $this->parseBudgetToken($match[2] ?? '');
             if ($max > 0 && $min > 0 && $min > $max) {
@@ -1713,7 +1713,7 @@ class AiSupportController extends Controller
         }
 
         $singlePattern = '/(?:php|₱)?\s*([0-9][0-9,\.]*\s*k?)\b/i';
-        if (preg_match($singlePattern, $text, $match)) {
+        if ($this->safePregMatch($singlePattern, $text, $match)) {
             $max = $this->parseBudgetToken($match[1] ?? '');
             return ['min' => $max > 0 ? 1 : 0, 'max' => $max];
         }
@@ -1734,6 +1734,15 @@ class AiSupportController extends Controller
             return 0.0;
         }
         return $isK ? $num * 1000 : $num;
+    }
+
+    private function safePregMatch(string $pattern, string $subject, ?array &$matches = null): bool
+    {
+        $result = $matches === null
+            ? @preg_match($pattern, $subject)
+            : @preg_match($pattern, $subject, $matches);
+
+        return $result === 1;
     }
 
     private function hasBudgetIntent(string $qLower): bool

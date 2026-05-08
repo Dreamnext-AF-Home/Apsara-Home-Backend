@@ -229,10 +229,10 @@ class PaymentController extends Controller
         if ($rawUrl !== '') {
             $path = trim((string) parse_url($rawUrl, PHP_URL_PATH));
             if ($path !== '') {
-                if (preg_match('#^/shop/([^/?#]+)#i', $path, $matches)) {
+                if (preg_match('#^/shop/([^/?\#]+)#i', $path, $matches)) {
                     return Str::slug((string) ($matches[1] ?? ''));
                 }
-                if (preg_match('#^/([^/?#]+)/(product|category|checkout|track-order)(?:/|$)#i', $path, $matches)) {
+                if (preg_match('#^/([^/?\#]+)/(product|category|checkout|track-order)(?:/|$)#i', $path, $matches)) {
                     return Str::slug((string) ($matches[1] ?? ''));
                 }
             }
@@ -1095,11 +1095,11 @@ class PaymentController extends Controller
         if ($sourceUrl !== '') {
             $path = trim((string) parse_url($sourceUrl, PHP_URL_PATH));
             if ($path !== '') {
-                if (preg_match('#^/shop/([^/?#]+)#i', $path, $matches)) {
+                if (preg_match('#^/shop/([^/?\#]+)#i', $path, $matches)) {
                     return strtolower(trim((string) ($matches[1] ?? '')));
                 }
 
-                if (preg_match('#^/([^/?#]+)/(product|category|checkout|track-order)(?:/|$)#i', $path, $matches)) {
+                if (preg_match('#^/([^/?\#]+)/(product|category|checkout|track-order)(?:/|$)#i', $path, $matches)) {
                     return strtolower(trim((string) ($matches[1] ?? '')));
                 }
             }
