@@ -183,7 +183,7 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::post('/orders/{id}/confirm', [PaymentController::class, 'confirmOrder']);
     
     // Mobile payment endpoints
-    Route::middleware('throttle:mobile-payment')->group(function () {
+    Route::middleware('throttle:10,1')->group(function () {
         Route::post('/mobile/payments/create', [MobilePaymentController::class, 'createMobilePayment']);
         Route::get('/mobile/payments/{mobileOrderId}/status', [MobilePaymentController::class, 'getMobilePaymentStatus']);
         Route::get('/mobile/orders', [MobilePaymentController::class, 'getMobileOrderHistory']);

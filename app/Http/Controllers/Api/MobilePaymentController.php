@@ -8,7 +8,6 @@ use App\Models\Customer;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -57,43 +56,34 @@ class MobilePaymentController extends Controller
             'order.handling_fee' => 'nullable|numeric|min:0',
         ]);
 
-        // Rate limiting for mobile payments
-        $this->checkMobilePaymentRateLimit($request);
+        try {
+            // Generate unique mobile order ID
+            $mobileOrderId = $this->generateMobileOrderId($validated['platform']);
 
-        // Generate unique mobile order ID
-        $mobileOrderId = $this->generateMobileOrderId($validated['platform']);
+            // Create PayMongo checkout session FIRST
+            $paymongoResponse = $this->createPayMongoCheckoutSession($validated, $mobileOrderId);
 
-        // Create mobile order record first (prevents duplication)
-        $mobileOrder = $this->createMobileOrder($request, $validated, $mobileOrderId);
+            // Create mobile order record with checkout ID
+            $mobileOrder = $this->createMobileOrder($request, $validated, $mobileOrderId, $paymongoResponse);
 
-        // Create PayMongo checkout session
-        $paymongoResponse = $this->createPayMongoCheckoutSession($validated, $mobileOrderId);
+            // Cache mobile order data for payment verification
+            $this->cacheMobileOrderData($mobileOrderId, $validated, $mobileOrder);
 
-        // Update mobile order with PayMongo session info
-        $mobileOrder->update([
-            'ch_checkout_id' => $paymongoResponse['checkout_id'],
-            'ch_payment_intent_id' => $paymongoResponse['payment_intent_id'] ?? null,
-        ]);
+            return response()->json([
+                'mobile_order_id' => $mobileOrderId,
+                'checkout_id' => $paymongoResponse['checkout_id'],
+                'checkout_url' => $paymongoResponse['checkout_url'],
+                'payment_mode' => $paymongoResponse['payment_mode'],
+                'platform' => $validated['platform'],
+                'created_at' => now()->toISOString(),
+            ]);
 
-        // Cache mobile order data for payment verification
-        $this->cacheMobileOrderData($mobileOrderId, $validated, $mobileOrder);
-
-        Log::info('Mobile payment order created', [
-            'mobile_order_id' => $mobileOrderId,
-            'platform' => $validated['platform'],
-            'app_version' => $validated['app_version'],
-            'checkout_id' => $paymongoResponse['checkout_id'],
-            'amount' => $validated['amount'],
-        ]);
-
-        return response()->json([
-            'mobile_order_id' => $mobileOrderId,
-            'checkout_id' => $paymongoResponse['checkout_id'],
-            'checkout_url' => $paymongoResponse['checkout_url'],
-            'payment_mode' => $paymongoResponse['payment_mode'],
-            'platform' => $validated['platform'],
-            'created_at' => now()->toISOString(),
-        ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'message' => 'Mobile payment processing failed',
+                'error' => $e->getMessage()
+            ], 500);
+        }
     }
 
     public function getMobilePaymentStatus(Request $request, string $mobileOrderId)
@@ -196,13 +186,15 @@ class MobilePaymentController extends Controller
         return "{$prefix}-{$timestamp}-{$random}";
     }
 
-    private function createMobileOrder(Request $request, array $validated, string $mobileOrderId): CheckoutHistory
+    private function createMobileOrder(Request $request, array $validated, string $mobileOrderId, array $paymongoResponse): CheckoutHistory
     {
         $customer = $request->user();
         $orderData = $validated['order'] ?? [];
         $customerData = $validated['customer'] ?? [];
 
         return CheckoutHistory::create([
+            'ch_checkout_id' => $paymongoResponse['checkout_id'],
+            'ch_payment_intent_id' => $paymongoResponse['payment_intent_id'] ?? null,
             'ch_mobile_order_id' => $mobileOrderId,
             'ch_customer_id' => (int) $customer->getAuthIdentifier(),
             'ch_customer_name' => $customerData['name'] ?? $customer->c_name,
@@ -243,47 +235,53 @@ class MobilePaymentController extends Controller
 
     private function createPayMongoCheckoutSession(array $validated, string $mobileOrderId): array
     {
-        $paymentController = new PaymentController();
-        $paymongoConfig = $paymentController->getPaymongoConfig($validated['payment_mode'] ?? null);
-        
-        $secretKey = $paymongoConfig['secret_key'];
-        if (!$secretKey) {
-            throw new \RuntimeException(sprintf('PayMongo %s secret key is missing.', $paymongoConfig['mode']));
-        }
+        try {
+            $paymongoConfig = $this->getPaymongoConfig($validated['payment_mode'] ?? null);
+            
+            $secretKey = $paymongoConfig['secret_key'];
+            if (!$secretKey) {
+                throw new \RuntimeException(sprintf('PayMongo %s secret key is missing.', $paymongoConfig['mode']));
+            }
 
-        $payload = [
-            'data' => [
-                'attributes' => [
-                    'line_items' => [[
-                        'currency' => 'PHP',
-                        'amount' => (int) round((float) $validated['amount'] * 100),
-                        'name' => $validated['description'],
-                        'quantity' => 1,
+            $payload = [
+                'data' => [
+                    'attributes' => [
+                        'line_items' => [[
+                            'currency' => 'PHP',
+                            'amount' => (int) round((float) $validated['amount'] * 100),
+                            'name' => $validated['description'],
+                            'quantity' => 1,
+                            'description' => "Mobile Order: {$mobileOrderId}",
+                        ]],
+                        'payment_method_types' => $this->mapPaymentMethods($validated['payment_method'], $validated['online_banking_provider'] ?? null),
+                        'success_url' => config('app.mobile_payment_success_url', 'https://yourapp.com/payment/success'),
+                        'cancel_url' => config('app.mobile_payment_cancel_url', 'https://yourapp.com/payment/cancel'),
                         'description' => "Mobile Order: {$mobileOrderId}",
-                    ]],
-                    'payment_method_types' => $this->mapPaymentMethods($validated['payment_method'], $validated['online_banking_provider'] ?? null),
-                    'success_url' => config('app.mobile_payment_success_url', 'https://yourapp.com/payment/success'),
-                    'cancel_url' => config('app.mobile_payment_cancel_url', 'https://yourapp.com/payment/cancel'),
-                    'description' => "Mobile Order: {$mobileOrderId}",
+                    ],
                 ],
-            ],
-        ];
+            ];
 
-        $response = Http::withBasicAuth($secretKey, '')
-            ->post($paymentController->paymongoApiUrl('/v1/checkout_sessions', $paymongoConfig['mode']), $payload);
+            $apiUrl = $this->paymongoApiUrl('/v1/checkout_sessions', $paymongoConfig['mode']);
 
-        if ($response->failed()) {
-            throw new \RuntimeException('PayMongo create session failed: ' . $response->body());
+            $response = Http::withBasicAuth($secretKey, '')
+                ->post($apiUrl, $payload);
+
+            if ($response->failed()) {
+                throw new \RuntimeException('PayMongo create session failed: ' . $response->body());
+            }
+
+            $data = $response->json('data');
+            
+            return [
+                'checkout_id' => $data['id'],
+                'checkout_url' => $data['attributes']['checkout_url'],
+                'payment_intent_id' => $data['attributes']['payment_intent']['id'] ?? null,
+                'payment_mode' => $paymongoConfig['mode'],
+            ];
+
+        } catch (\Exception $e) {
+            throw $e;
         }
-
-        $data = $response->json('data');
-        
-        return [
-            'checkout_id' => $data['id'],
-            'checkout_url' => $data['attributes']['checkout_url'],
-            'payment_intent_id' => $data['attributes']['payment_intent']['id'] ?? null,
-            'payment_mode' => $paymongoConfig['mode'],
-        ];
     }
 
     private function mapPaymentMethods(string $method, ?string $onlineBankingProvider = null): array
@@ -349,5 +347,47 @@ class MobilePaymentController extends Controller
     {
         // Add your tracking number resolution logic here
         return $order->ch_tracking_number ?? null;
+    }
+
+    private function getPaymongoConfig(?string $requestedMode = null): array
+    {
+        $mode = $this->resolveRequestedPaymongoMode($requestedMode);
+        $config = (array) config("services.paymongo.modes.{$mode}", []);
+
+        return [
+            'mode' => $mode,
+            'secret_key' => (string) ($config['secret_key'] ?? ''),
+            'public_key' => (string) ($config['public_key'] ?? ''),
+            'webhook_secret' => (string) ($config['webhook_secret'] ?? ''),
+            'api_base_url' => (string) config('services.paymongo.api_base_url', 'https://api.paymongo.com'),
+        ];
+    }
+
+    private function resolveRequestedPaymongoMode(?string $requestedMode = null): string
+    {
+        if ($requestedMode !== null && $requestedMode !== '') {
+            if (!in_array($requestedMode, ['test', 'live'], true)) {
+                $requestedMode = null;
+            }
+        }
+
+        if ($requestedMode !== null && $requestedMode !== '') {
+            return $requestedMode;
+        }
+
+        $defaultMode = config('services.paymongo.default_mode', 'test');
+        $allowModeSwitch = config('services.paymongo.allow_mode_switch', false);
+
+        if ($allowModeSwitch && app()->environment(['local', 'development'])) {
+            return 'test';
+        }
+
+        return $defaultMode;
+    }
+
+    private function paymongoApiUrl(string $path, ?string $requestedMode = null): string
+    {
+        $base = rtrim((string) ($this->getPaymongoConfig($requestedMode)['api_base_url'] ?? 'https://api.paymongo.com'), '/');
+        return $base . '/' . ltrim($path, '/');
     }
 }
