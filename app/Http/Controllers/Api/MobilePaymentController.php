@@ -9,6 +9,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
@@ -26,12 +27,13 @@ class MobilePaymentController extends Controller
             'payment_mode' => 'nullable|in:test,live',
             'online_banking_provider' => 'nullable|in:dob,ubp',
             'voucher_code' => 'nullable|string|max:80',
-            
+            'idempotency_key' => 'nullable|string|max:255',
+
             // Mobile-specific required fields
             'platform' => 'required|in:ios,android',
             'app_version' => 'required|string|max:50',
             'device_id' => 'nullable|string|max:255',
-            
+
             // Customer info
             'customer' => 'nullable|array',
             'customer.name' => 'nullable|string|max:255',
@@ -40,7 +42,7 @@ class MobilePaymentController extends Controller
             'customer.address' => 'nullable|string|max:500',
             'customer.referred_by' => 'nullable|string|max:255',
             'customer.is_member' => 'nullable|boolean',
-            
+
             // Order info
             'order' => 'nullable|array',
             'order.product_name' => 'nullable|string|max:255',
@@ -57,6 +59,24 @@ class MobilePaymentController extends Controller
         ]);
 
         try {
+            $customer = $request->user();
+            $idempotencyKey = $validated['idempotency_key'] ?? null;
+
+            // Check for duplicate pending order with idempotency key or duplicate detection
+            $existingOrder = $this->checkForDuplicateOrder($customer, $validated, $idempotencyKey);
+            if ($existingOrder) {
+                return response()->json([
+                    'mobile_order_id' => $existingOrder->ch_mobile_order_id,
+                    'checkout_id' => $existingOrder->ch_checkout_id,
+                    'checkout_url' => $this->getCheckoutUrlFromCache($existingOrder->ch_mobile_order_id),
+                    'payment_mode' => $this->resolvePaymentMode($validated['payment_mode'] ?? null),
+                    'platform' => $validated['platform'],
+                    'status' => 'pending',
+                    'created_at' => $existingOrder->created_at->toISOString(),
+                    'is_duplicate' => true,
+                ]);
+            }
+
             // Generate unique mobile order ID
             $mobileOrderId = $this->generateMobileOrderId($validated['platform']);
 
@@ -64,7 +84,7 @@ class MobilePaymentController extends Controller
             $paymongoResponse = $this->createPayMongoCheckoutSession($validated, $mobileOrderId);
 
             // Create mobile order record with checkout ID
-            $mobileOrder = $this->createMobileOrder($request, $validated, $mobileOrderId, $paymongoResponse);
+            $mobileOrder = $this->createMobileOrder($request, $validated, $mobileOrderId, $paymongoResponse, $idempotencyKey);
 
             // Cache mobile order data for payment verification
             $this->cacheMobileOrderData($mobileOrderId, $validated, $mobileOrder);
@@ -163,6 +183,47 @@ class MobilePaymentController extends Controller
         ]);
     }
 
+    private function checkForDuplicateOrder($customer, array $validated, ?string $idempotencyKey): ?CheckoutHistory
+    {
+        if ($idempotencyKey) {
+            $order = CheckoutHistory::where('ch_customer_id', (int) $customer->getAuthIdentifier())
+                ->whereJsonContains('ch_mobile_metadata->idempotency_key', $idempotencyKey)
+                ->where('ch_is_mobile', true)
+                ->where('ch_status', 'pending')
+                ->first();
+
+            if ($order) {
+                return $order;
+            }
+        }
+
+        // Fallback: check for duplicate within last 5 minutes with same product, amount, customer
+        $orderData = $validated['order'] ?? [];
+        $fiveMinutesAgo = now()->subMinutes(5);
+
+        $duplicate = CheckoutHistory::where('ch_customer_id', (int) $customer->getAuthIdentifier())
+            ->where('ch_product_id', $orderData['product_id'] ?? null)
+            ->where('ch_amount', (float) $validated['amount'])
+            ->where('ch_status', 'pending')
+            ->where('ch_is_mobile', true)
+            ->where('created_at', '>=', $fiveMinutesAgo)
+            ->latest('created_at')
+            ->first();
+
+        return $duplicate;
+    }
+
+    private function getCheckoutUrlFromCache(string $mobileOrderId): ?string
+    {
+        $cached = Cache::get("mobile_order:{$mobileOrderId}");
+        return $cached['checkout_url'] ?? null;
+    }
+
+    private function resolvePaymentMode(?string $requestedMode): string
+    {
+        return $this->resolveRequestedPaymongoMode($requestedMode);
+    }
+
     private function checkMobilePaymentRateLimit(Request $request): void
     {
         $key = "mobile_payment_rate_limit:" . $request->ip();
@@ -186,7 +247,7 @@ class MobilePaymentController extends Controller
         return "{$prefix}-{$timestamp}-{$random}";
     }
 
-    private function createMobileOrder(Request $request, array $validated, string $mobileOrderId, array $paymongoResponse): CheckoutHistory
+    private function createMobileOrder(Request $request, array $validated, string $mobileOrderId, array $paymongoResponse, ?string $idempotencyKey = null): CheckoutHistory
     {
         $customer = $request->user();
         $orderData = $validated['order'] ?? [];
@@ -201,7 +262,7 @@ class MobilePaymentController extends Controller
             'ch_customer_email' => $customerData['email'] ?? $customer->c_email,
             'ch_customer_phone' => $customerData['phone'] ?? $customer->c_phone,
             'ch_customer_address' => $customerData['address'] ?? null,
-            
+
             'ch_description' => $validated['description'],
             'ch_amount' => (float) $validated['amount'],
             'ch_shipping_fee' => (float) ($orderData['handling_fee'] ?? 0),
@@ -209,7 +270,7 @@ class MobilePaymentController extends Controller
             'ch_status' => 'pending',
             'ch_approval_status' => 'pending_approval',
             'ch_fulfillment_status' => 'pending',
-            
+
             'ch_product_name' => $orderData['product_name'] ?? null,
             'ch_product_id' => $orderData['product_id'] ?? null,
             'ch_product_sku' => $orderData['product_sku'] ?? null,
@@ -219,7 +280,7 @@ class MobilePaymentController extends Controller
             'ch_selected_color' => $orderData['selected_color'] ?? null,
             'ch_selected_size' => $orderData['selected_size'] ?? null,
             'ch_selected_type' => $orderData['selected_type'] ?? null,
-            
+
             'ch_is_mobile' => true,
             'ch_platform' => $validated['platform'],
             'ch_app_version' => $validated['app_version'],
@@ -228,6 +289,7 @@ class MobilePaymentController extends Controller
                 'platform' => $validated['platform'],
                 'app_version' => $validated['app_version'],
                 'device_id' => $validated['device_id'] ?? null,
+                'idempotency_key' => $idempotencyKey,
                 'user_agent' => $request->userAgent(),
                 'ip_address' => $request->ip(),
                 'created_at' => now()->toISOString(),
