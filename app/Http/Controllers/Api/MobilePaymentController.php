@@ -229,7 +229,7 @@ class MobilePaymentController extends Controller
             $order = CheckoutHistory::where('ch_customer_id', (int) $customer->getAuthIdentifier())
                 ->whereJsonContains('ch_mobile_metadata->idempotency_key', $idempotencyKey)
                 ->where('ch_is_mobile', true)
-                ->where('ch_status', 'pending')
+                ->whereIn('ch_status', ['pending', 'paid', 'succeeded', 'success'])
                 ->first();
 
             if ($order) {
@@ -244,7 +244,7 @@ class MobilePaymentController extends Controller
         $duplicate = CheckoutHistory::where('ch_customer_id', (int) $customer->getAuthIdentifier())
             ->where('ch_product_id', $orderData['product_id'] ?? null)
             ->where('ch_amount', (float) $validated['amount'])
-            ->where('ch_status', 'pending')
+            ->whereIn('ch_status', ['pending', 'paid', 'succeeded', 'success'])
             ->where('ch_is_mobile', true)
             ->where('created_at', '>=', $fiveMinutesAgo)
             ->latest('created_at')
