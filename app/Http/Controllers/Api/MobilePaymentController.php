@@ -83,8 +83,18 @@ class MobilePaymentController extends Controller
             // Create PayMongo checkout session FIRST
             $paymongoResponse = $this->createPayMongoCheckoutSession($validated, $mobileOrderId);
 
-            // Create mobile order record with checkout ID
-            $mobileOrder = $this->createMobileOrder($request, $validated, $mobileOrderId, $paymongoResponse, $idempotencyKey);
+            // Check if order was already created by webhook (race condition)
+            $existingOrder = CheckoutHistory::query()
+                ->where('ch_checkout_id', $paymongoResponse['checkout_id'])
+                ->first();
+
+            if ($existingOrder) {
+                // Order already exists (webhook arrived first), return it
+                $mobileOrder = $existingOrder;
+            } else {
+                // Create mobile order record with checkout ID
+                $mobileOrder = $this->createMobileOrder($request, $validated, $mobileOrderId, $paymongoResponse, $idempotencyKey);
+            }
 
             // Cache mobile order data for payment verification
             $this->cacheMobileOrderData($mobileOrderId, $validated, $mobileOrder);
