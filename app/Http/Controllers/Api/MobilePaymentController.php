@@ -135,6 +135,35 @@ class MobilePaymentController extends Controller
         ]);
     }
 
+    public function proceedWithPendingPayment(Request $request, string $checkoutId)
+    {
+        $customer = $request->user();
+
+        // Get the EXISTING pending order using checkout_id
+        $order = CheckoutHistory::where('ch_checkout_id', $checkoutId)
+            ->where('ch_customer_id', (int) $customer->getAuthIdentifier())
+            ->where('ch_status', 'pending')
+            ->first();
+
+        if (!$order) {
+            return response()->json(['message' => 'Pending order not found'], 404);
+        }
+
+        // Get checkout URL from PayMongo
+        $checkoutUrl = $this->getCheckoutUrlFromPayMongo($checkoutId);
+
+        return response()->json([
+            'checkout_id' => $checkoutId,
+            'checkout_url' => $checkoutUrl,
+            'status' => 'pending',
+            'amount' => (float) $order->ch_amount,
+            'shipping_fee' => (float) ($order->ch_shipping_fee ?? 0),
+            'product_name' => $order->ch_product_name,
+            'quantity' => (int) $order->ch_quantity,
+            'created_at' => $order->created_at->toISOString(),
+        ]);
+    }
+
     public function getMobileOrderHistory(Request $request)
     {
         $customer = $request->user();
@@ -217,6 +246,34 @@ class MobilePaymentController extends Controller
     {
         $cached = Cache::get("mobile_order:{$mobileOrderId}");
         return $cached['checkout_url'] ?? null;
+    }
+
+    private function getCheckoutUrlFromPayMongo(string $checkoutId): ?string
+    {
+        try {
+            $paymongoConfig = $this->getPaymongoConfig();
+            $secretKey = $paymongoConfig['secret_key'];
+
+            $response = Http::withBasicAuth($secretKey, '')
+                ->get($this->paymongoApiUrl("/v1/checkout_sessions/{$checkoutId}", $paymongoConfig['mode']));
+
+            if ($response->successful()) {
+                return $response->json('data.attributes.checkout_url');
+            }
+
+            Log::warning('Failed to fetch checkout URL from PayMongo', [
+                'checkout_id' => $checkoutId,
+                'response' => $response->body(),
+            ]);
+
+            return null;
+        } catch (\Exception $e) {
+            Log::error('PayMongo checkout URL fetch error', [
+                'checkout_id' => $checkoutId,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
     }
 
     private function resolvePaymentMode(?string $requestedMode): string

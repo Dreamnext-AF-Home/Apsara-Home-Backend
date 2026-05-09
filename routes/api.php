@@ -186,6 +186,7 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::middleware('throttle:10,1')->group(function () {
         Route::post('/mobile/payments/create', [MobilePaymentController::class, 'createMobilePayment']);
         Route::get('/mobile/payments/{mobileOrderId}/status', [MobilePaymentController::class, 'getMobilePaymentStatus']);
+        Route::get('/mobile/payments/{checkoutId}/proceed', [MobilePaymentController::class, 'proceedWithPendingPayment']);
         Route::get('/mobile/orders', [MobilePaymentController::class, 'getMobileOrderHistory']);
     });
     Route::post('/encashment/requests', [EncashmentController::class, 'store']);
