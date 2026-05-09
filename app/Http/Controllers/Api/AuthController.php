@@ -568,25 +568,6 @@ class AuthController extends Controller
             report($e);
         }
 
-        // Log login activity
-        try {
-            MemberActivityLog::create([
-                'mal_customer_id' => (int) $customer->c_userid,
-                'mal_activity_type' => MemberActivityLog::ACTIVITY_LOGIN,
-                'mal_action' => MemberActivityLog::ACTION_CREATE,
-                'mal_description' => 'Member logged in',
-                'mal_ip_address' => $request->ip(),
-                'mal_user_agent' => $request->userAgent(),
-                'mal_created_at' => now(),
-            ]);
-        } catch (\Throwable $e) {
-            // Log silently if activity logging fails
-            Log::warning('Failed to log login activity', [
-                'customer_id' => (int) $customer->c_userid,
-                'error' => $e->getMessage(),
-            ]);
-        }
-
         return response()->json([
             'user'  => $this->transformCustomer($customer),
             'token' => $token,
@@ -880,7 +861,9 @@ class AuthController extends Controller
         $customer = $request->user();
 
         $items = MemberActivityLog::forCustomer((int) $customer->c_userid)
-            ->limit(30)
+            ->where('mal_activity_type', MemberActivityLog::ACTIVITY_LOGIN)
+            ->orderByDesc('mal_created_at')
+            ->limit(5)
             ->get()
             ->map(function (MemberActivityLog $log): array {
                 return [
@@ -965,6 +948,33 @@ class AuthController extends Controller
                     'last_active_at' => optional($lastActiveAt)->toIso8601String(),
                     'is_current' => $tokenId === $currentTokenId,
                 ];
+            })
+            ->values();
+
+        if ($items->isEmpty()) {
+            [$platform, $browser, $device] = $this->detectDeviceInfo((string) $request->userAgent());
+            $items = collect([[
+                'id' => 0,
+                'token_id' => $currentTokenId > 0 ? $currentTokenId : 0,
+                'device' => $device !== '' ? $device : 'Current Device',
+                'platform' => $platform !== '' ? $platform : 'Unknown OS',
+                'browser' => $browser !== '' ? $browser : 'Unknown Browser',
+                'location' => 'Current location',
+                'ip_address' => (string) $request->ip(),
+                'user_agent' => (string) $request->userAgent(),
+                'created_at' => now()->toIso8601String(),
+                'last_active_at' => now()->toIso8601String(),
+                'is_current' => true,
+            ]]);
+        }
+
+        $items = $items
+            ->sort(function (array $a, array $b): int {
+                if (($a['is_current'] ?? false) && !($b['is_current'] ?? false)) return -1;
+                if (!($a['is_current'] ?? false) && ($b['is_current'] ?? false)) return 1;
+                $aTime = strtotime((string) ($a['last_active_at'] ?? $a['created_at'] ?? '')) ?: 0;
+                $bTime = strtotime((string) ($b['last_active_at'] ?? $b['created_at'] ?? '')) ?: 0;
+                return $bTime <=> $aTime;
             })
             ->values();
 
