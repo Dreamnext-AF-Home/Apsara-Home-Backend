@@ -90,6 +90,7 @@ class MobilePaymentController extends Controller
             $this->cacheMobileOrderData($mobileOrderId, $validated, $mobileOrder);
 
             return response()->json([
+                'order_id' => (int) $mobileOrder->ch_id,
                 'mobile_order_id' => $mobileOrderId,
                 'checkout_id' => $paymongoResponse['checkout_id'],
                 'checkout_url' => $paymongoResponse['checkout_url'],

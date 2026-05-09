@@ -1358,9 +1358,17 @@ class PaymentController extends Controller
 
         $cached = Cache::get("checkout_customer:{$checkoutId}");
         if (!$cached) {
+            // Look for existing order - check mobile orders first (more specific), then any order by checkout_id
             $history = CheckoutHistory::query()
                 ->where('ch_checkout_id', $checkoutId)
+                ->where('ch_is_mobile', true)
                 ->first();
+
+            if (!$history) {
+                $history = CheckoutHistory::query()
+                    ->where('ch_checkout_id', $checkoutId)
+                    ->first();
+            }
 
             $fallbackDescription = (string) (data_get($attrs, 'description') ?: data_get($attrs, 'line_items.0.name') ?: 'Order');
             $fallbackAmountCents = (int) data_get($attrs, 'line_items.0.amount', 0);
@@ -1372,40 +1380,46 @@ class PaymentController extends Controller
             $resolvedPaymentMethod = $this->extractPaymentMethodFromCheckoutAttributes($attrs);
 
             if (!$history) {
-                CheckoutHistory::create([
-                    'ch_customer_id' => null,
-                    'ch_checkout_id' => $checkoutId,
-                    'ch_payment_intent_id' => data_get($attrs, 'payment_intent.id'),
-                    'ch_status' => (string) ($attrs['status'] ?? 'pending'),
-                    'ch_approval_status' => 'pending_approval',
-                    'ch_fulfillment_status' => 'pending',
-                    'ch_description' => $fallbackDescription,
-                    'ch_amount' => $fallbackAmount,
-                    'ch_shipping_fee' => 0,
-                    'ch_payment_method' => $resolvedPaymentMethod,
-                    'ch_quantity' => 1,
-                    'ch_product_name' => $fallbackDescription,
-                    'ch_product_id' => null,
-                    'ch_product_sku' => '',
-                    'ch_product_pv' => 0,
-                    'ch_earned_pv' => 0,
-                    'ch_commission_basis_amount' => 0,
-                    'ch_product_image' => '',
-                    'ch_selected_color' => '',
-                    'ch_selected_size' => '',
-                    'ch_selected_type' => '',
-                    'ch_customer_name' => $resolvedName !== '' ? $resolvedName : 'Customer',
-                    'ch_customer_email' => $resolvedEmail,
-                    'ch_customer_phone' => $resolvedPhone,
-                    'ch_customer_address' => $resolvedAddress,
-                    'ch_source_label' => '',
-                    'ch_source_slug' => '',
-                    'ch_source_host' => '',
-                    'ch_source_url' => '',
-                    'ch_paid_at' => $this->isPaidStatus($attrs['status'] ?? null) ? now() : null,
-                ]);
+                // Use firstOrCreate to prevent duplicate creation from race conditions
+                $history = CheckoutHistory::firstOrCreate(
+                    ['ch_checkout_id' => $checkoutId],
+                    [
+                        'ch_customer_id' => null,
+                        'ch_payment_intent_id' => data_get($attrs, 'payment_intent.id'),
+                        'ch_status' => (string) ($attrs['status'] ?? 'pending'),
+                        'ch_approval_status' => 'pending_approval',
+                        'ch_fulfillment_status' => 'pending',
+                        'ch_description' => $fallbackDescription,
+                        'ch_amount' => $fallbackAmount,
+                        'ch_shipping_fee' => 0,
+                        'ch_payment_method' => $resolvedPaymentMethod,
+                        'ch_quantity' => 1,
+                        'ch_product_name' => $fallbackDescription,
+                        'ch_product_id' => null,
+                        'ch_product_sku' => '',
+                        'ch_product_pv' => 0,
+                        'ch_earned_pv' => 0,
+                        'ch_commission_basis_amount' => 0,
+                        'ch_product_image' => '',
+                        'ch_selected_color' => '',
+                        'ch_selected_size' => '',
+                        'ch_selected_type' => '',
+                        'ch_customer_name' => $resolvedName !== '' ? $resolvedName : 'Customer',
+                        'ch_customer_email' => $resolvedEmail,
+                        'ch_customer_phone' => $resolvedPhone,
+                        'ch_customer_address' => $resolvedAddress,
+                        'ch_source_label' => '',
+                        'ch_source_slug' => '',
+                        'ch_source_host' => '',
+                        'ch_source_url' => '',
+                        'ch_paid_at' => $this->isPaidStatus($attrs['status'] ?? null) ? now() : null,
+                    ]
+                );
 
-                return;
+                // If newly created, return early. If found existing, continue to update
+                if ($history->wasRecentlyCreated) {
+                    return;
+                }
             }
 
             $wasPaidBefore = $this->isPaidStatus($history->ch_status ?? null);
