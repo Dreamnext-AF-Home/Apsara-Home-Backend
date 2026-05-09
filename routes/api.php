@@ -45,6 +45,7 @@ use App\Http\Controllers\Api\ProductViewerController;
 use App\Http\Controllers\Api\SearchController;
 use App\Http\Controllers\Api\TotpController;
 use App\Http\Controllers\Api\GeminiController;
+use App\Http\Controllers\Api\MobilePaymentController;
 
 
 // Public auth routes
@@ -180,6 +181,13 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::get('/orders/history', [PaymentController::class, 'checkoutHistory']);
     Route::get('/orders/counts', [PaymentController::class, 'orderCounts']);
     Route::post('/orders/{id}/confirm', [PaymentController::class, 'confirmOrder']);
+    
+    // Mobile payment endpoints
+    Route::middleware('throttle:mobile-payment')->group(function () {
+        Route::post('/mobile/payments/create', [MobilePaymentController::class, 'createMobilePayment']);
+        Route::get('/mobile/payments/{mobileOrderId}/status', [MobilePaymentController::class, 'getMobilePaymentStatus']);
+        Route::get('/mobile/orders', [MobilePaymentController::class, 'getMobileOrderHistory']);
+    });
     Route::post('/encashment/requests', [EncashmentController::class, 'store']);
     Route::get('/encashment/requests', [EncashmentController::class, 'myRequests']);
     Route::post('/encashment/payout-methods', [EncashmentController::class, 'storePayoutMethod']);
