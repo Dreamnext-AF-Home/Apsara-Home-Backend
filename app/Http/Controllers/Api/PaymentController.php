@@ -1185,7 +1185,7 @@ class PaymentController extends Controller
             'delivered' => (int) (clone $base)->where('ch_fulfillment_status', 'delivered')->count(),
             'cancelled' => (int) (clone $base)->whereIn('ch_fulfillment_status', ['cancelled', 'refunded'])->count(),
             'completed' => (int) (clone $base)->where('ch_fulfillment_status', 'delivered')->count(),
-            'paid' => (int) (clone $base)->whereIn('ch_status', ['paid', 'succeeded', 'success'])->count(),
+            'paid' => (int) (clone $base)->whereIn('ch_status', ['paid', 'succeeded', 'success'])->where('ch_fulfillment_status', 'pending')->count(),
         ]);
     }
 
