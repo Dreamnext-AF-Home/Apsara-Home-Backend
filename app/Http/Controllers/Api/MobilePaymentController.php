@@ -175,15 +175,26 @@ class MobilePaymentController extends Controller
             ->when($platform, function ($query, $platform) {
                 $query->where('ch_platform', $platform);
             })
-            ->orderByDesc('ch_paid_at')
+            ->orderByRaw('COALESCE(ch_paid_at, created_at) DESC')
             ->orderByDesc('ch_id')
             ->get()
             ->map(function (CheckoutHistory $order) {
+                $paymentStatus = match(strtolower($order->ch_status)) {
+                    'paid', 'succeeded', 'success' => 'paid',
+                    'failed', 'cancelled', 'expired' => 'cancelled',
+                    'active', 'unpaid', 'pending' => 'pending',
+                    default => 'pending',
+                };
+                $fulfillmentStatus = $order->ch_fulfillment_status ?: 'pending';
+                $displayStatus = $fulfillmentStatus !== 'pending' ? $fulfillmentStatus : $paymentStatus;
+
                 return [
                     'id' => (int) $order->ch_id,
                     'mobile_order_id' => $order->ch_mobile_order_id,
                     'order_number' => $order->ch_checkout_id,
-                    'status' => $order->ch_status,
+                    'status' => $displayStatus,
+                    'payment_status' => $paymentStatus,
+                    'fulfillment_status' => $fulfillmentStatus,
                     'platform' => $order->ch_platform,
                     'app_version' => $order->ch_app_version,
                     'items' => [[

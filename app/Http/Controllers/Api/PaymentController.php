@@ -1122,21 +1122,23 @@ class PaymentController extends Controller
 
         $orders = CheckoutHistory::query()
             ->where('ch_customer_id', (int) $customer->getAuthIdentifier())
-            ->orderByDesc('ch_paid_at')
+            ->orderByRaw('COALESCE(ch_paid_at, created_at) DESC')
             ->orderByDesc('ch_id')
             ->get()
             ->map(function (CheckoutHistory $order) {
                 $trackingNo = $this->resolveOrderTrackingNumber($order);
                 $quantity = max(1, (int) $order->ch_quantity);
                 $itemName = $order->ch_product_name ?: ($order->ch_description ?: 'Order Item');
-                $status = $order->ch_fulfillment_status
-                    ? (string) $order->ch_fulfillment_status
-                    : $this->mapCheckoutStatusToOrderStatus((string) $order->ch_status);
+                $paymentStatus = $this->mapCheckoutStatusToOrderStatus((string) $order->ch_status);
+                $fulfillmentStatus = $order->ch_fulfillment_status ?: 'pending';
+                $status = $fulfillmentStatus !== 'pending' ? $fulfillmentStatus : $paymentStatus;
 
                 return [
                     'id' => (int) $order->ch_id,
                     'order_number' => $order->ch_checkout_id,
                     'status' => $status,
+                    'payment_status' => $paymentStatus,
+                    'fulfillment_status' => $fulfillmentStatus,
                     'items' => [[
                         'id' => (int) $order->ch_id,
                         'product_id' => $order->ch_product_id ? (int) $order->ch_product_id : null,
@@ -2109,10 +2111,10 @@ class PaymentController extends Controller
     private function mapCheckoutStatusToOrderStatus(string $status): string
     {
         return match (strtolower($status)) {
-            'paid', 'succeeded', 'success' => 'processing',
+            'paid', 'succeeded', 'success' => 'paid',
             'failed', 'cancelled', 'expired' => 'cancelled',
             'active', 'unpaid', 'pending' => 'pending',
-            default => 'processing',
+            default => 'pending',
         };
     }
 
