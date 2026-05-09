@@ -207,6 +207,8 @@ class MobilePaymentController extends Controller
             'ch_shipping_fee' => (float) ($orderData['handling_fee'] ?? 0),
             'ch_payment_method' => $validated['payment_method'],
             'ch_status' => 'pending',
+            'ch_approval_status' => 'pending_approval',
+            'ch_fulfillment_status' => 'pending',
             
             'ch_product_name' => $orderData['product_name'] ?? null,
             'ch_product_id' => $orderData['product_id'] ?? null,
