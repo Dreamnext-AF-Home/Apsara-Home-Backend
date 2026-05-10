@@ -341,7 +341,16 @@ class AdminAuthController extends Controller
 
         $raw = $admin->admin_permissions ?? [];
         if (! is_array($raw)) {
-            return [];
+            if (is_string($admin->admin_permissions) && trim($admin->admin_permissions) !== '') {
+                $decoded = json_decode($admin->admin_permissions, true);
+                if (is_array($decoded)) {
+                    $raw = $decoded;
+                } else {
+                    return [];
+                }
+            } else {
+                return [];
+            }
         }
 
         $ids = array_values(array_unique(array_filter(array_map(

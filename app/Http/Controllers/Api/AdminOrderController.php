@@ -9,6 +9,8 @@ use App\Models\AdminNotification;
 use App\Models\AdminNotificationRead;
 use App\Models\CheckoutHistory;
 use App\Models\Customer;
+use App\Models\Category;
+use App\Models\Product;
 use App\Models\WebPageContent;
 use App\Services\Payments\PaymongoPaymentSyncService;
 use App\Services\Shipping\JntShippingService;
@@ -385,7 +387,62 @@ class AdminOrderController extends Controller
             ->orderByDesc('ch_id')
             ->paginate($perPage);
 
-        $items = collect($paginated->items())->map(function (CheckoutHistory $order) {
+        $pageOrders = collect($paginated->items());
+        $productIds = $pageOrders
+            ->pluck('ch_product_id')
+            ->filter(fn ($id) => is_numeric($id) && (int) $id > 0)
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+        $productSkus = $pageOrders
+            ->pluck('ch_product_sku')
+            ->map(fn ($sku) => strtolower(trim((string) $sku)))
+            ->filter(fn ($sku) => $sku !== '')
+            ->unique()
+            ->values()
+            ->all();
+
+        $productCategoryById = [];
+        $productCategoryBySku = [];
+        $categoryIds = [];
+        if (!empty($productIds) || !empty($productSkus)) {
+            $productRows = Product::query()
+                ->select(['pd_id', 'pd_parent_sku', 'pd_catid'])
+                ->when(!empty($productIds), fn ($q) => $q->orWhereIn('pd_id', $productIds))
+                ->when(!empty($productSkus), fn ($q) => $q->orWhereIn(DB::raw('LOWER(pd_parent_sku)'), $productSkus))
+                ->get();
+
+            foreach ($productRows as $productRow) {
+                $catId = (int) ($productRow->pd_catid ?? 0);
+                if ($catId <= 0) {
+                    continue;
+                }
+
+                $pid = (int) ($productRow->pd_id ?? 0);
+                if ($pid > 0) {
+                    $productCategoryById[$pid] = $catId;
+                }
+
+                $sku = strtolower(trim((string) ($productRow->pd_parent_sku ?? '')));
+                if ($sku !== '') {
+                    $productCategoryBySku[$sku] = $catId;
+                }
+
+                $categoryIds[] = $catId;
+            }
+        }
+
+        $categoryNameById = [];
+        $categoryIds = array_values(array_unique(array_filter($categoryIds, fn ($id) => is_int($id) && $id > 0)));
+        if (!empty($categoryIds)) {
+            $categoryNameById = Category::query()
+                ->whereIn('cat_id', $categoryIds)
+                ->pluck('cat_name', 'cat_id')
+                ->toArray();
+        }
+
+        $items = collect($paginated->items())->map(function (CheckoutHistory $order) use ($productCategoryById, $productCategoryBySku, $categoryNameById) {
             $sla = $this->computeSla($order);
             $shipmentPayload = $order->ch_shipment_payload;
             if (is_string($shipmentPayload) && trim($shipmentPayload) !== '') {
@@ -399,6 +456,15 @@ class AdminOrderController extends Controller
             $trackingNo = $this->resolveOrderTrackingNumber($order, $shipmentPayload);
             $shipmentStatus = $order->ch_shipment_status ?: $this->extractShipmentStatus($shipmentPayload);
             $fulfillmentMode = $this->resolveStoredFulfillmentMode($order);
+            $resolvedProductId = $order->ch_product_id ? (int) $order->ch_product_id : null;
+            $resolvedProductSku = strtolower(trim((string) ($order->ch_product_sku ?? '')));
+            $productCategoryId = null;
+            if ($resolvedProductId !== null && isset($productCategoryById[$resolvedProductId])) {
+                $productCategoryId = (int) $productCategoryById[$resolvedProductId];
+            } elseif ($resolvedProductSku !== '' && isset($productCategoryBySku[$resolvedProductSku])) {
+                $productCategoryId = (int) $productCategoryBySku[$resolvedProductSku];
+            }
+            $productCategoryName = $productCategoryId !== null ? ($categoryNameById[$productCategoryId] ?? null) : null;
 
             return [
                 'id' => (int) $order->ch_id,
@@ -425,6 +491,8 @@ class AdminOrderController extends Controller
                 'product_name' => $order->ch_product_name ?? ($order->ch_description ?? 'Order Item'),
                 'product_id' => $order->ch_product_id ? (int) $order->ch_product_id : null,
                 'product_sku' => $order->ch_product_sku,
+                'product_category_id' => $productCategoryId,
+                'product_category_name' => $productCategoryName,
                 'product_pv' => (float) ($order->ch_product_pv ?? 0),
                 'earned_pv' => (float) ($order->ch_earned_pv ?? 0),
                 'pv_posted_at' => optional($order->ch_pv_posted_at)->toDateTimeString(),
@@ -1381,10 +1449,12 @@ class AdminOrderController extends Controller
             return;
         }
 
-        $sourceSlugs = WebPageContent::query()
-            ->where('wpc_type', 'partner-storefront')
+        $storefrontRows = WebPageContent::query()
+            ->whereIn('wpc_type', ['partner-storefront', 'partner-storefronts'])
             ->whereIn('wpc_id', $storefrontIds)
-            ->get(['wpc_key', 'wpc_payload'])
+            ->get(['wpc_key', 'wpc_title', 'wpc_payload']);
+
+        $sourceSlugs = $storefrontRows
             ->map(function (WebPageContent $storefront) {
                 $payloadSlug = trim((string) data_get($storefront->wpc_payload, 'fields.slug', ''));
                 $fallbackKey = trim((string) ($storefront->wpc_key ?? ''));
@@ -1395,23 +1465,40 @@ class AdminOrderController extends Controller
             ->values()
             ->all();
 
-        if (empty($sourceSlugs)) {
+        $sourceLabels = $storefrontRows
+            ->flatMap(function (WebPageContent $storefront) {
+                $displayName = trim((string) data_get($storefront->wpc_payload, 'fields.display_name', ''));
+                $title = trim((string) ($storefront->wpc_title ?? ''));
+                $key = trim((string) ($storefront->wpc_key ?? ''));
+                return [$displayName, $title, $key];
+            })
+            ->map(static fn (string $value) => strtolower(trim($value)))
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        if (empty($sourceSlugs) && empty($sourceLabels)) {
             $query->whereRaw('1 = 0');
             return;
         }
 
-        $query->where(function ($scoped) use ($sourceSlugs) {
-            if (Schema::hasColumn('tbl_checkout_history', 'ch_source_slug')) {
+        $query->where(function ($scoped) use ($sourceSlugs, $sourceLabels) {
+            if (!empty($sourceSlugs) && Schema::hasColumn('tbl_checkout_history', 'ch_source_slug')) {
                 $scoped->whereIn('ch_source_slug', $sourceSlugs);
             }
 
-            if (Schema::hasColumn('tbl_checkout_history', 'ch_source_url')) {
+            if (!empty($sourceSlugs) && Schema::hasColumn('tbl_checkout_history', 'ch_source_url')) {
                 $likeOperator = DB::connection()->getDriverName() === 'pgsql' ? 'ilike' : 'like';
 
                 foreach ($sourceSlugs as $slug) {
                     $pattern = '%/' . $slug . '/%';
                     $scoped->orWhere('ch_source_url', $likeOperator, $pattern);
                 }
+            }
+
+            if (!empty($sourceLabels) && Schema::hasColumn('tbl_checkout_history', 'ch_source_label')) {
+                $scoped->orWhereIn(DB::raw('LOWER(ch_source_label)'), $sourceLabels);
             }
         });
     }
@@ -1423,10 +1510,30 @@ class AdminOrderController extends Controller
             return [];
         }
 
-        return array_values(array_unique(array_filter(array_map(
+        $ids = array_values(array_unique(array_filter(array_map(
             static fn ($id) => is_numeric($id) ? (int) $id : null,
             $raw
         ), static fn ($id) => is_int($id) && $id > 0)));
+
+        if (!empty($ids)) {
+            return $ids;
+        }
+
+        // Fallback: some partner accounts may have storefront ids in a JSON string payload.
+        if (is_string($admin->admin_permissions) && trim($admin->admin_permissions) !== '') {
+            $decoded = json_decode($admin->admin_permissions, true);
+            if (is_array($decoded)) {
+                $fallbackIds = array_values(array_unique(array_filter(array_map(
+                    static fn ($id) => is_numeric($id) ? (int) $id : null,
+                    $decoded
+                ), static fn ($id) => is_int($id) && $id > 0)));
+                if (!empty($fallbackIds)) {
+                    return $fallbackIds;
+                }
+            }
+        }
+
+        return [];
     }
 
     public function counts(Request $request)

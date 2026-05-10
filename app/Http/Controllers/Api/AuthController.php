@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Schema;
@@ -786,9 +787,9 @@ class AuthController extends Controller
         /** @var Customer $customer */
         $customer = $request->user();
         $token = $customer->currentAccessToken();
-        $tokenId = (int) ($token?->id ?? 0);
+        $tokenId = $token instanceof PersonalAccessToken ? (int) $token->id : 0;
 
-        if ($token) {
+        if ($token instanceof PersonalAccessToken) {
             $token->delete();
         }
 
@@ -829,8 +830,6 @@ class AuthController extends Controller
         $customer = $request->user();
 
         if ($customer instanceof Customer) {
-            TierEvaluator::evaluate($customer);
-            $customer->refresh();
             $customer->loadMissing('sponsor:c_userid,c_username,c_fname,c_mname,c_lname');
         }
 
@@ -3246,11 +3245,12 @@ class AuthController extends Controller
         try {
             $token = $validated['id_token'];
             $tokenParts = explode('.', $token);
+            $isEmailVerified = false;
             
             // Check if it's an access token (starts with 'ya29.') or ID token (JWT with 3 parts)
             if (strpos($token, 'ya29.') === 0) {
                 // This is an access token, use Google API to get user info
-                $response = \Http::get('https://www.googleapis.com/oauth2/v2/userinfo', [
+                $response = Http::get('https://www.googleapis.com/oauth2/v2/userinfo', [
                     'access_token' => $token
                 ]);
 
@@ -3271,6 +3271,7 @@ class AuthController extends Controller
                 $firstName = $userInfo['given_name'] ?? null;
                 $lastName = $userInfo['family_name'] ?? null;
                 $picture = $userInfo['picture'] ?? null;
+                $isEmailVerified = (bool) ($userInfo['verified_email'] ?? false);
                 
             } elseif (count($tokenParts) === 3) {
                 // This is an ID token (JWT), decode it
@@ -3299,6 +3300,7 @@ class AuthController extends Controller
                 $firstName = $payload['given_name'] ?? null;
                 $lastName = $payload['family_name'] ?? null;
                 $picture = $payload['picture'] ?? null;
+                $isEmailVerified = (bool) ($payload['email_verified'] ?? false);
                 
             } else {
                 return response()->json(['message' => 'Invalid token format.'], 400);
@@ -3332,7 +3334,7 @@ class AuthController extends Controller
                     'given_name' => $firstName,
                     'family_name' => $lastName,
                     'picture' => $picture,
-                    'verified' => $payload['email_verified'] ?? false,
+                    'verified' => $isEmailVerified,
                 ],
             ]);
 
@@ -3354,7 +3356,7 @@ class AuthController extends Controller
             $accessToken = $validated['access_token'];
             $providerId  = $validated['provider_id'];
 
-            $response = \Http::get('https://graph.facebook.com/v18.0/me', [
+            $response = Http::get('https://graph.facebook.com/v18.0/me', [
                 'fields'       => 'id,name,email,first_name,last_name',
                 'access_token' => $accessToken,
             ]);
