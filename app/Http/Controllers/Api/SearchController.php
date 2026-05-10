@@ -239,6 +239,9 @@ class SearchController extends Controller
     {
         $isMember = $this->isMember($customerId);
         
+        // Split query into individual words for better matching
+        $searchTerms = array_filter(explode(' ', $query));
+        
         // Optimized query using indexes and avoiding expensive operations
         $products = DB::table('tbl_product as p')
             ->select([
@@ -257,11 +260,14 @@ class SearchController extends Controller
             ->where('p.pd_status', 1) // Uses idx_product_status_flags
             ->whereNotNull('p.pd_image')
             ->where('p.pd_image', '!=', '')
-            ->where(function ($builder) use ($query) {
-                // Use more efficient search - prioritize exact matches first
-                $builder->where('p.pd_name', 'LIKE', $query . '%') // Uses idx_product_name
-                      ->orWhere('p.pd_name', 'LIKE', '%' . $query . '%') // Fallback
-                      ->orWhere('p.pd_description', 'LIKE', '%' . $query . '%');
+            ->where(function ($builder) use ($searchTerms) {
+                // Case-insensitive search - match if ANY word is found in name OR description
+                foreach ($searchTerms as $term) {
+                    $builder->orWhere(function ($q) use ($term) {
+                        $q->whereRaw('LOWER(p.pd_name) LIKE ?', ['%' . strtolower($term) . '%'])
+                          ->orWhereRaw('LOWER(p.pd_description) LIKE ?', ['%' . strtolower($term) . '%']);
+                    });
+                }
             })
             ->orderBy('p.pd_bestseller', 'desc') // Uses idx_product_status_flags
             ->orderBy('p.pd_musthave', 'desc')   // Uses idx_product_status_flags
@@ -488,8 +494,15 @@ class SearchController extends Controller
             ->whereNotNull('p.pd_image') // Only products with photos
             ->where('p.pd_image', '!=', '') // Only products with non-empty photos
             ->where(function ($builder) use ($query) {
-                $builder->where('p.pd_name', 'LIKE', '%' . $query . '%')
-                      ->orWhere('p.pd_description', 'LIKE', '%' . $query . '%');
+                // Split query into individual words for better matching
+                $searchTerms = array_filter(explode(' ', $query));
+                // Case-insensitive search - match if ANY word is found in name OR description
+                foreach ($searchTerms as $term) {
+                    $builder->orWhere(function ($q) use ($term) {
+                        $q->whereRaw('LOWER(p.pd_name) LIKE ?', ['%' . strtolower($term) . '%'])
+                          ->orWhereRaw('LOWER(p.pd_description) LIKE ?', ['%' . strtolower($term) . '%']);
+                    });
+                }
             });
 
         // Apply filters
@@ -675,8 +688,15 @@ class SearchController extends Controller
                 ->join('tbl_product as p', 'c.cat_id', '=', 'p.pd_catid')
                 ->where('p.pd_status', 1) // Uses idx_product_status_flags
                 ->where(function ($builder) use ($query) {
-                    $builder->where('p.pd_name', 'LIKE', '%' . $query . '%')
-                          ->orWhere('p.pd_description', 'LIKE', '%' . $query . '%');
+                    // Split query into individual words for better matching
+                    $searchTerms = array_filter(explode(' ', $query));
+                    // Case-insensitive search - match if ANY word is found in name OR description
+                    foreach ($searchTerms as $term) {
+                        $builder->orWhere(function ($q) use ($term) {
+                            $q->whereRaw('LOWER(p.pd_name) LIKE ?', ['%' . strtolower($term) . '%'])
+                              ->orWhereRaw('LOWER(p.pd_description) LIKE ?', ['%' . strtolower($term) . '%']);
+                        });
+                    }
                 })
                 ->groupBy('c.cat_id', 'c.cat_name')
                 ->orderBy('count', 'desc')
@@ -699,8 +719,15 @@ class SearchController extends Controller
                 ->join('tbl_product as p', 'pb.pb_id', '=', 'p.pd_brand_type')
                 ->where('p.pd_status', 1) // Uses idx_product_status_flags
                 ->where(function ($builder) use ($query) {
-                    $builder->where('p.pd_name', 'LIKE', '%' . $query . '%')
-                          ->orWhere('p.pd_description', 'LIKE', '%' . $query . '%');
+                    // Split query into individual words for better matching
+                    $searchTerms = array_filter(explode(' ', $query));
+                    // Case-insensitive search - match if ANY word is found in name OR description
+                    foreach ($searchTerms as $term) {
+                        $builder->orWhere(function ($q) use ($term) {
+                            $q->whereRaw('LOWER(p.pd_name) LIKE ?', ['%' . strtolower($term) . '%'])
+                              ->orWhereRaw('LOWER(p.pd_description) LIKE ?', ['%' . strtolower($term) . '%']);
+                        });
+                    }
                 })
                 ->groupBy('pb.pb_id', 'pb.pb_name')
                 ->orderBy('count', 'desc')
