@@ -7,6 +7,7 @@ use App\Mail\Checkout\PartnerStorefrontGuestOrderMail;
 use App\Models\AdminNotification;
 use App\Mail\Checkout\CheckoutCompletedMail;
 use App\Models\CheckoutHistory;
+use App\Models\OrderNotification;
 use App\Models\ProductReview;
 use App\Models\Product;
 use App\Models\SystemSetting;
@@ -780,6 +781,7 @@ class PaymentController extends Controller
         $this->persistCheckoutHistoryIfNeeded($checkoutId, $attrs);
         if ($this->isPaidStatus($attrs['status'] ?? 'paid')) {
             $this->sendCheckoutCompletedEmailIfNeeded($checkoutId, $attrs);
+            OrderNotification::updateStatusForCheckout($checkoutId, 'paid');
         }
 
         Log::info('PayMongo webhook processed.', [
@@ -821,6 +823,7 @@ class PaymentController extends Controller
         $this->persistCheckoutHistoryIfNeeded($checkoutId, $attrs);
         if ($this->isPaidStatus($attrs['status'] ?? 'paid')) {
             $this->sendCheckoutCompletedEmailIfNeeded($checkoutId, $attrs);
+            OrderNotification::updateStatusForCheckout($checkoutId, 'paid');
         }
 
         return response()->json([
