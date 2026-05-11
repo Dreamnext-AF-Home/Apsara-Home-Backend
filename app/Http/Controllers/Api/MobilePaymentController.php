@@ -605,6 +605,14 @@ class MobilePaymentController extends Controller
         $customerData = $validated['customer'] ?? [];
         $orderData = $validated['order'] ?? [];
 
+        // Debug: Log the order object values
+        Log::debug('Creating order notification', [
+            'order_id' => $order->ch_id,
+            'mobile_order_id' => $order->ch_mobile_order_id,
+            'checkout_id' => $order->ch_checkout_id,
+            'customer_id' => $order->ch_customer_id,
+        ]);
+
         try {
             $productName = $orderData['product_name'] ?? $validated['description'] ?? 'Order Item';
             $quantity = (int) ($orderData['quantity'] ?? 1);
