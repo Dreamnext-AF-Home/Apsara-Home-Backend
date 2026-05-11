@@ -17,7 +17,8 @@ class CustomerBonusNotification
         string $sourceType,
         int $sourceId,
         array $payload = [],
-        string $href = '/profile?tab=encashment'
+        string $href = '/profile?tab=encashment',
+        string $severity = 'success'
     ): void {
         $customerId = (int) ($customer->c_userid ?? 0);
         if ($customerId <= 0 || $sourceId <= 0) {
@@ -26,22 +27,32 @@ class CustomerBonusNotification
 
         $createdAt = now('Asia/Manila');
 
-        $notification = CustomerNotification::query()->firstOrCreate(
-            [
-                'cn_customer_id' => $customerId,
-                'cn_source_type' => $sourceType,
-                'cn_source_id' => $sourceId,
-            ],
-            [
-                'cn_type' => $type,
-                'cn_severity' => 'success',
-                'cn_title' => $title,
-                'cn_message' => $message,
-                'cn_href' => $href,
-                'cn_payload' => $payload,
-                'cn_created_at' => $createdAt,
-            ]
-        );
+        try {
+            $notification = CustomerNotification::query()->firstOrCreate(
+                [
+                    'cn_customer_id' => $customerId,
+                    'cn_source_type' => $sourceType,
+                    'cn_source_id' => $sourceId,
+                ],
+                [
+                    'cn_type' => $type,
+                    'cn_severity' => $severity,
+                    'cn_title' => $title,
+                    'cn_message' => $message,
+                    'cn_href' => $href,
+                    'cn_payload' => $payload,
+                    'cn_created_at' => $createdAt,
+                ]
+            );
+        } catch (\Throwable $exception) {
+            Log::warning('Failed to store customer bonus notification.', [
+                'customer_id' => $customerId,
+                'source_type' => $sourceType,
+                'source_id' => $sourceId,
+                'error' => $exception->getMessage(),
+            ]);
+            return;
+        }
 
         if (!$notification->wasRecentlyCreated) {
             return;
@@ -53,7 +64,7 @@ class CustomerBonusNotification
             'title' => $title,
             'description' => $message,
             'count' => 1,
-            'severity' => 'success',
+            'severity' => $severity,
             'href' => $href,
             'latest_at' => $notification->cn_created_at
                 ? $notification->cn_created_at->timezone('Asia/Manila')->toIso8601String()

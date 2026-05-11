@@ -192,4 +192,3 @@ class OrderNotification extends Model
         }
     }
 }
-
