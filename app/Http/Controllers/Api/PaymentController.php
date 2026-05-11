@@ -1269,7 +1269,7 @@ class PaymentController extends Controller
                 $q->where('ch_approval_status', 'pending_approval')
                     ->orWhere('ch_fulfillment_status', 'pending');
             })->whereNotIn('ch_status', ['paid', 'succeeded', 'success'])->count(),
-            'processing' => (int) (clone $base)->whereIn('ch_fulfillment_status', ['processing', 'packed', 'shipped', 'out_for_delivery'])->count(),
+            'processing' => (int) (clone $base)->whereIn('ch_fulfillment_status', ['processing', 'packed'])->count(),
             'shipped' => (int) (clone $base)->where('ch_fulfillment_status', 'shipped')->count(),
             'delivered' => (int) (clone $base)->where('ch_fulfillment_status', 'delivered')->count(),
             'cancelled' => (int) (clone $base)->whereIn('ch_fulfillment_status', ['cancelled', 'refunded'])->count(),
