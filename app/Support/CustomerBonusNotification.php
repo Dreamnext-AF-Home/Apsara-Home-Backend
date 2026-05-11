@@ -24,6 +24,8 @@ class CustomerBonusNotification
             return;
         }
 
+        $createdAt = now('Asia/Manila');
+
         $notification = CustomerNotification::query()->firstOrCreate(
             [
                 'cn_customer_id' => $customerId,
@@ -37,7 +39,7 @@ class CustomerBonusNotification
                 'cn_message' => $message,
                 'cn_href' => $href,
                 'cn_payload' => $payload,
-                'cn_created_at' => now(),
+                'cn_created_at' => $createdAt,
             ]
         );
 
@@ -53,8 +55,12 @@ class CustomerBonusNotification
             'count' => 1,
             'severity' => 'success',
             'href' => $href,
-            'latest_at' => optional($notification->cn_created_at)->toDateTimeString(),
-            'created_at' => optional($notification->cn_created_at)->toDateTimeString(),
+            'latest_at' => $notification->cn_created_at
+                ? $notification->cn_created_at->timezone('Asia/Manila')->toIso8601String()
+                : null,
+            'created_at' => $notification->cn_created_at
+                ? $notification->cn_created_at->timezone('Asia/Manila')->toIso8601String()
+                : null,
             'payload' => $payload,
         ]);
     }
