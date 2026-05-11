@@ -660,4 +660,72 @@ class MobilePaymentController extends Controller
             ]);
         }
     }
+
+    public function getOrderNotifications(Request $request)
+    {
+        $customer = $request->user();
+        $customerId = (int) $customer->getAuthIdentifier();
+
+        $notifications = OrderNotification::query()
+            ->where('on_customer_id', $customerId)
+            ->orderByDesc('on_created_at')
+            ->orderByDesc('on_id')
+            ->get()
+            ->map(function (OrderNotification $notification) {
+                return [
+                    'id' => (int) $notification->on_id,
+                    'type' => $notification->on_type,
+                    'severity' => $notification->on_severity,
+                    'title' => $notification->on_title,
+                    'message' => $notification->on_message,
+                    'product_name' => $notification->on_product_name,
+                    'product_image' => $notification->on_product_image,
+                    'product_sku' => $notification->on_product_sku,
+                    'quantity' => (int) $notification->on_quantity,
+                    'amount' => (float) $notification->on_amount,
+                    'status' => $notification->on_status,
+                    'payment_method' => $notification->on_payment_method,
+                    'href' => $notification->on_href,
+                    'is_read' => (bool) $notification->on_is_read,
+                    'mobile_order_id' => $notification->on_mobile_order_id,
+                    'checkout_id' => $notification->on_checkout_id,
+                    'created_at' => $notification->on_created_at?->toISOString(),
+                    'payload' => $notification->on_payload ?? [],
+                ];
+            });
+
+        $unreadCount = OrderNotification::query()
+            ->where('on_customer_id', $customerId)
+            ->where('on_is_read', false)
+            ->count();
+
+        return response()->json([
+            'notifications' => $notifications,
+            'unread_count' => $unreadCount,
+            'total' => $notifications->count(),
+        ]);
+    }
+
+    public function markNotificationAsRead(Request $request, int $id)
+    {
+        $customer = $request->user();
+        $customerId = (int) $customer->getAuthIdentifier();
+
+        $notification = OrderNotification::query()
+            ->where('on_id', $id)
+            ->where('on_customer_id', $customerId)
+            ->first();
+
+        if (!$notification) {
+            return response()->json(['message' => 'Notification not found'], 404);
+        }
+
+        $notification->markAsRead();
+
+        return response()->json([
+            'id' => (int) $notification->on_id,
+            'is_read' => true,
+            'read_at' => $notification->on_read_at?->toISOString(),
+        ]);
+    }
 }
