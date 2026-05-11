@@ -67,16 +67,16 @@ class OrderNotification extends Model
             'pending' => 'purchases://pending',
             'paid', 'succeeded', 'success' => 'purchases://paid',
             'processing' => 'purchases://processing',
-            'shipped' => 'purchases://shipped',
+            'to_ship', 'packed', 'shipped' => 'purchases://to_ship',
             'to_receive', 'out_for_delivery' => 'purchases://to_receive',
-            'delivered' => 'purchases://delivered',
+            'delivered', 'completed' => 'purchases://delivered',
             default => 'purchases://pending',
         };
 
         $severity = match ($status) {
             'paid', 'succeeded', 'success' => 'success',
-            'delivered' => 'success',
-            'shipped', 'to_receive' => 'warning',
+            'delivered', 'completed' => 'success',
+            'to_ship', 'packed', 'shipped', 'to_receive', 'out_for_delivery' => 'warning',
             default => 'info',
         };
 
@@ -116,9 +116,9 @@ class OrderNotification extends Model
             $message = match ($status) {
                 'paid', 'succeeded', 'success' => "Payment confirmed via {$paymentMethod}! Your order amounting to ₱{$amount} has been paid and is being processed.",
                 'processing' => "Your order {$productName} is now being prepared for shipment.",
-                'shipped' => "Your order {$productName} has been shipped and is on its way.",
+                'to_ship', 'packed', 'shipped' => "Your order {$productName} is now ready to ship.",
                 'to_receive', 'out_for_delivery' => "Your order {$productName} is out for delivery and will arrive soon.",
-                'delivered' => "Your order {$productName} has been delivered. Thank you for shopping!",
+                'delivered', 'completed' => "Your order {$productName} has been delivered. Thank you for shopping!",
                 default => null, // Keep existing message for other statuses
             };
 
