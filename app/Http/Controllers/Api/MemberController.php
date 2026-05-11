@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Models\AdminNotification;
 use App\Models\Customer;
 use App\Models\CustomerWalletLedger;
+use App\Support\CustomerBonusNotification;
 use App\Support\TierEvaluator;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
@@ -947,6 +948,7 @@ class MemberController extends Controller
         ]);
 
         [$firstName, $middleName, $lastName] = $this->splitName((string) $validated['name']);
+        $previousStatus = $this->mapStatus((int) ($customer->c_lockstatus ?? 0), (int) ($customer->c_accnt_status ?? 0));
         [$accountStatus, $lockStatus] = $this->mapStoredStatus((string) $validated['status']);
 
         $customer->fill([
@@ -968,11 +970,67 @@ class MemberController extends Controller
         ]);
         $customer->save();
 
+        $newStatus = (string) $validated['status'];
+        if ($previousStatus !== $newStatus) {
+            $this->notifyMemberStatusChanged($customer, $previousStatus, $newStatus);
+        }
+
         $this->bustMembersCache();
 
         return response()->json([
             'message' => 'Member updated successfully.',
         ]);
+    }
+
+    private function notifyMemberStatusChanged(Customer $customer, string $previousStatus, string $newStatus): void
+    {
+        $customerId = (int) ($customer->c_userid ?? 0);
+        if ($customerId <= 0) {
+            return;
+        }
+
+        $labels = [
+            'active' => 'Active',
+            'pending' => 'Pending',
+            'blocked' => 'Blocked',
+            'kyc_review' => 'KYC Review',
+        ];
+
+        $title = match ($newStatus) {
+            'active' => 'Account status updated',
+            'blocked' => 'Account access updated',
+            'kyc_review' => 'Verification under review',
+            default => 'Account status changed',
+        };
+
+        $message = match ($newStatus) {
+            'active' => 'Your account is now active and verified.',
+            'blocked' => 'Your account has been blocked. Please contact support for assistance.',
+            'kyc_review' => 'Your account is now under KYC review. Please wait for the verification result.',
+            default => 'Your account status changed to ' . ($labels[$newStatus] ?? ucfirst($newStatus)) . '.',
+        };
+
+        $severity = match ($newStatus) {
+            'active' => 'success',
+            'blocked' => 'critical',
+            'kyc_review' => 'warning',
+            default => 'info',
+        };
+
+        CustomerBonusNotification::notify(
+            $customer,
+            'account_status_changed',
+            $title,
+            $message,
+            'member_status_change:' . $previousStatus . ':' . $newStatus . ':' . now('Asia/Manila')->timestamp,
+            $customerId,
+            [
+                'previous_status' => $previousStatus,
+                'new_status' => $newStatus,
+            ],
+            '/profile',
+            $severity
+        );
     }
 
     public function destroy(int $id): JsonResponse
