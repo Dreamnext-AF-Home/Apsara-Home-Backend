@@ -100,17 +100,39 @@ class OrderNotification extends Model
                 ? $hrefPrefix . '/' . $notification->on_checkout_id
                 : $hrefPrefix;
 
-            $notification->update([
+            // Build dynamic message based on status and notification details
+            $productName = $notification->on_product_name ?? 'your item';
+            $amount = number_format((float) ($notification->on_amount ?? 0), 2);
+            $paymentMethod = ucfirst($notification->on_payment_method ?? 'the payment method');
+
+            $message = match ($status) {
+                'paid', 'succeeded', 'success' => "Payment confirmed via {$paymentMethod}! Your order amounting to ₱{$amount} has been paid and is being processed.",
+                'processing' => "Your order {$productName} is now being prepared for shipment.",
+                'shipped' => "Your order {$productName} has been shipped and is on its way.",
+                'to_receive', 'out_for_delivery' => "Your order {$productName} is out for delivery and will arrive soon.",
+                'delivered' => "Your order {$productName} has been delivered. Thank you for shopping!",
+                default => null, // Keep existing message for other statuses
+            };
+
+            $updateData = [
                 'on_status' => $status,
                 'on_href' => $href,
                 'on_severity' => $severity,
-            ]);
+            ];
+
+            // Update message if we have a specific one for this status
+            if ($message !== null) {
+                $updateData['on_message'] = $message;
+            }
+
+            $notification->update($updateData);
 
             Log::info('Order notification updated', [
                 'notification_id' => $notification->on_id,
                 'checkout_id' => $checkoutId,
                 'new_status' => $status,
                 'new_href' => $href,
+                'new_message' => $updateData['on_message'] ?? 'unchanged',
             ]);
 
             $customerIds[] = (int) $notification->on_customer_id;
