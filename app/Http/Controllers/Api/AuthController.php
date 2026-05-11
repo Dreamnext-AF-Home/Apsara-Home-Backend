@@ -9,6 +9,7 @@ use App\Models\CustomerLoginSession;
 use App\Models\CustomerAddress;
 use App\Models\MemberActivityLog;
 use App\Models\MemberTier;
+use App\Models\WebPageContent;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
@@ -98,6 +99,7 @@ class AuthController extends Controller
             'province_code'         => 'nullable|string|max:20',
             'region_code'           => 'nullable|string|max:20',
             'zip_code'              => 'nullable|string|max:20',
+            'partner_slug'          => 'nullable|string|max:255',
         ], [
             'password.min' => 'Password must be at least 8 characters.',
             'password.confirmed' => 'Password confirmation does not match.',
@@ -133,6 +135,8 @@ class AuthController extends Controller
 
         $verificationToken = (string) Str::uuid();
         $otp = (string) random_int(1000, 9999);
+        $partnerSlug = strtolower(trim((string) ($validated['partner_slug'] ?? '')));
+        $senderContext = $this->resolvePartnerOtpSenderContext($partnerSlug);
 
         Cache::put($this->registrationOtpCacheKey($verificationToken), [
             'otp_hash' => Hash::make($otp),
@@ -141,9 +145,10 @@ class AuthController extends Controller
                 'referrer_user_id' => (int) $referrer->c_userid,
             ], JSON_THROW_ON_ERROR)),
             'email' => (string) $validated['email'],
+            'sender_context' => $senderContext,
         ], now()->addMinutes(10));
 
-        $this->sendRegistrationOtpEmail((string) $validated['email'], $otp);
+        $this->sendRegistrationOtpEmail((string) $validated['email'], $otp, $senderContext);
 
         return response()->json([
             'message' => 'A 4-digit verification code has been sent to your email.',
@@ -299,7 +304,8 @@ class AuthController extends Controller
             'email' => (string) $cached['email'],
         ], now()->addMinutes(10));
 
-        $this->sendRegistrationOtpEmail((string) $cached['email'], $otp);
+        $senderContext = is_array($cached['sender_context'] ?? null) ? $cached['sender_context'] : [];
+        $this->sendRegistrationOtpEmail((string) $cached['email'], $otp, $senderContext);
 
         return response()->json([
             'message' => 'A new verification code has been sent.',
@@ -2506,9 +2512,52 @@ class AuthController extends Controller
         return "customer_password_reset:{$token}";
     }
 
-    private function sendRegistrationOtpEmail(string $email, string $otp): void
+    private function sendRegistrationOtpEmail(string $email, string $otp, array $senderContext = []): void
     {
-        Mail::mailer('resend')->to($email)->send(new RegistrationOtpMail($otp, $email));
+        $brandName = trim((string) ($senderContext['name'] ?? 'AF Home'));
+        $mailable = new RegistrationOtpMail($otp, $email, $brandName);
+
+        Mail::mailer('resend')->to($email)->send($mailable);
+    }
+
+    private function resolvePartnerOtpSenderContext(string $partnerSlug): array
+    {
+        $normalizedSlug = strtolower(trim($partnerSlug));
+        if ($normalizedSlug === '') {
+            return [];
+        }
+
+        $storefront = WebPageContent::query()
+            ->whereIn('wpc_type', ['partner-storefront', 'partner-storefronts'])
+            ->orderByDesc('wpc_status')
+            ->get()
+            ->first(function (WebPageContent $item) use ($normalizedSlug) {
+                $key = strtolower(trim((string) ($item->wpc_key ?? '')));
+                $payloadSlug = strtolower(trim((string) data_get($item->wpc_payload, 'fields.slug', '')));
+                return $key === $normalizedSlug || $payloadSlug === $normalizedSlug;
+            });
+
+        if (!$storefront instanceof WebPageContent) {
+            return [];
+        }
+
+        $senderEmail = trim((string) data_get($storefront->wpc_payload, 'fields.notification_email', ''));
+        if ($senderEmail === '') {
+            $senderEmail = trim((string) data_get($storefront->wpc_payload, 'notification_email', ''));
+        }
+
+        $displayName = trim((string) (
+            data_get($storefront->wpc_payload, 'fields.display_name', '')
+            ?: $storefront->wpc_title
+            ?: $storefront->wpc_key
+            ?: 'Partner Storefront'
+        ));
+
+        return [
+            'slug' => $normalizedSlug,
+            'email' => $senderEmail,
+            'name' => $displayName !== '' ? $displayName : 'Partner Storefront',
+        ];
     }
 
     private function notifyReferrerAboutRegistration(Customer $referrer, Customer $referral): void

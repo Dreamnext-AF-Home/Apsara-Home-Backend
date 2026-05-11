@@ -4,6 +4,8 @@ namespace App\Services;
 
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use RuntimeException;
 
 class CloudinaryUploadService
@@ -25,7 +27,7 @@ class CloudinaryUploadService
         $apiSecret = trim((string) env('CLOUDINARY_API_SECRET', ''));
 
         if ($cloudName === '' || $apiKey === '' || $apiSecret === '') {
-            throw new RuntimeException('Cloudinary is not configured. Please set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.');
+            return $this->uploadToLocalPublicDisk($file, $folder, $resourceType);
         }
 
         $timestamp = time();
@@ -66,6 +68,27 @@ class CloudinaryUploadService
         return [
             'secure_url' => $secureUrl,
             'public_id' => $publicId,
+        ];
+    }
+
+    private function uploadToLocalPublicDisk(UploadedFile $file, string $folder, string $resourceType): array
+    {
+        $folder = trim($folder, '/');
+        $safeFolder = $folder !== '' ? $folder : "afhome/{$resourceType}s";
+        $extension = $file->getClientOriginalExtension() ?: $file->extension() ?: ($resourceType === 'video' ? 'mp4' : 'jpg');
+        $filename = Str::uuid()->toString() . '.' . strtolower($extension);
+        $relativePath = trim($safeFolder . '/' . $filename, '/');
+
+        $storedPath = Storage::disk('public')->putFileAs($safeFolder, $file, $filename);
+        if (! $storedPath) {
+            throw new RuntimeException('Failed to store uploaded file.');
+        }
+
+        $publicUrl = url(Storage::url($relativePath));
+
+        return [
+            'secure_url' => $publicUrl,
+            'public_id' => $relativePath,
         ];
     }
 }
