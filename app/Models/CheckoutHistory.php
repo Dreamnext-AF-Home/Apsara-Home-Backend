@@ -15,6 +15,7 @@ class CheckoutHistory extends Model
         'ch_referral_source_type',
         'ch_checkout_id',
         'ch_payment_intent_id',
+        'ch_mobile_order_id',
         'ch_status',
         'ch_approval_status',
         'ch_approval_notes',
