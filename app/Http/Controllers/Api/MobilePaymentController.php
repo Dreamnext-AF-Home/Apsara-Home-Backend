@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Mail\Checkout\CheckoutCompletedMail;
 use App\Models\CheckoutHistory;
 use App\Models\Customer;
 use Illuminate\Http\Request;
@@ -10,6 +11,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
@@ -99,6 +101,9 @@ class MobilePaymentController extends Controller
 
             // Cache mobile order data for payment verification
             $this->cacheMobileOrderData($mobileOrderId, $validated, $mobileOrder);
+
+            // Send order confirmation email
+            $this->sendOrderConfirmationEmail($mobileOrder, $validated);
 
             return response()->json([
                 'order_id' => (int) $mobileOrder->ch_id,
@@ -533,5 +538,61 @@ class MobilePaymentController extends Controller
     {
         $base = rtrim((string) ($this->getPaymongoConfig($requestedMode)['api_base_url'] ?? 'https://api.paymongo.com'), '/');
         return $base . '/' . ltrim($path, '/');
+    }
+
+    private function sendOrderConfirmationEmail(CheckoutHistory $order, array $validated): void
+    {
+        $customerData = $validated['customer'] ?? [];
+        $orderData = $validated['order'] ?? [];
+
+        $recipient = $customerData['email'] ?? $order->ch_customer_email;
+        if (empty($recipient)) {
+            Log::warning('Mobile order email skipped: missing customer email', [
+                'mobile_order_id' => $order->ch_mobile_order_id,
+                'checkout_id' => $order->ch_checkout_id,
+            ]);
+            return;
+        }
+
+        $mailPayload = [
+            'checkout_id' => $order->ch_checkout_id,
+            'customer_name' => $customerData['name'] ?? $order->ch_customer_name ?? 'Customer',
+            'customer_email' => $recipient,
+            'customer_phone' => $customerData['phone'] ?? $order->ch_customer_phone ?? null,
+            'description' => $validated['description'] ?? 'Order',
+            'amount' => (float) $validated['amount'],
+            'payment_method' => $validated['payment_method'] ?? null,
+            'status' => 'pending',
+            'order_status_label' => 'pending payment',
+            'payment_intent_id' => $order->ch_payment_intent_id,
+            'shipping_address' => $customerData['address'] ?? $order->ch_customer_address ?? null,
+            'source_label' => 'Mobile App',
+            'order' => [
+                'product_name' => $orderData['product_name'] ?? null,
+                'product_sku' => $orderData['product_sku'] ?? null,
+                'quantity' => (int) ($orderData['quantity'] ?? 1),
+                'selected_color' => $orderData['selected_color'] ?? null,
+                'selected_size' => $orderData['selected_size'] ?? null,
+                'selected_type' => $orderData['selected_type'] ?? null,
+            ],
+            'mobile_order_id' => $order->ch_mobile_order_id,
+            'platform' => $validated['platform'] ?? null,
+        ];
+
+        try {
+            Mail::to($recipient)->send(new CheckoutCompletedMail($mailPayload));
+            Log::info('Mobile order confirmation email sent', [
+                'mobile_order_id' => $order->ch_mobile_order_id,
+                'checkout_id' => $order->ch_checkout_id,
+                'recipient' => $recipient,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Failed to send mobile order confirmation email', [
+                'mobile_order_id' => $order->ch_mobile_order_id,
+                'checkout_id' => $order->ch_checkout_id,
+                'recipient' => $recipient,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 }
