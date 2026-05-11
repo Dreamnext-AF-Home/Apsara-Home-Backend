@@ -143,6 +143,7 @@ class MobilePaymentController extends Controller
         if ($order->ch_checkout_id && $status === 'pending') {
             $status = $this->verifyPayMongoPaymentStatus($order->ch_checkout_id);
             $order->update(['ch_status' => $status]);
+            OrderNotification::updateStatusForCheckout((string) $order->ch_checkout_id, $status);
         }
 
         return response()->json([
