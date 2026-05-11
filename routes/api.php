@@ -189,6 +189,8 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
         Route::get('/mobile/payments/{mobileOrderId}/status', [MobilePaymentController::class, 'getMobilePaymentStatus']);
         Route::get('/mobile/payments/{checkoutId}/proceed', [MobilePaymentController::class, 'proceedWithPendingPayment']);
         Route::get('/mobile/orders', [MobilePaymentController::class, 'getMobileOrderHistory']);
+        Route::get('/mobile/notifications', [MobilePaymentController::class, 'getOrderNotifications']);
+        Route::patch('/mobile/notifications/{id}/read', [MobilePaymentController::class, 'markNotificationAsRead']);
     });
     Route::post('/encashment/requests', [EncashmentController::class, 'store']);
     Route::get('/encashment/requests', [EncashmentController::class, 'myRequests']);

@@ -3,13 +3,16 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Mail\Checkout\CheckoutCompletedMail;
 use App\Models\CheckoutHistory;
 use App\Models\Customer;
+use App\Models\OrderNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
@@ -100,6 +103,12 @@ class MobilePaymentController extends Controller
             // Cache mobile order data for payment verification
             $this->cacheMobileOrderData($mobileOrderId, $validated, $mobileOrder);
 
+            // Send order confirmation email
+            $this->sendOrderConfirmationEmail($mobileOrder, $validated);
+
+            // Create order notification with product details
+            $this->createOrderNotification($mobileOrder, $validated);
+
             return response()->json([
                 'order_id' => (int) $mobileOrder->ch_id,
                 'mobile_order_id' => $mobileOrderId,
@@ -129,12 +138,8 @@ class MobilePaymentController extends Controller
             return response()->json(['message' => 'Mobile order not found'], 404);
         }
 
-        // Verify payment status with PayMongo if needed
-        $status = $order->ch_status;
-        if ($order->ch_checkout_id && $status === 'pending') {
-            $status = $this->verifyPayMongoPaymentStatus($order->ch_checkout_id);
-            $order->update(['ch_status' => $status]);
-        }
+        // Realtime-first: status is updated asynchronously via webhook + Pusher events.
+        $status = (string) $order->ch_status;
 
         return response()->json([
             'mobile_order_id' => $mobileOrderId,
@@ -533,5 +538,268 @@ class MobilePaymentController extends Controller
     {
         $base = rtrim((string) ($this->getPaymongoConfig($requestedMode)['api_base_url'] ?? 'https://api.paymongo.com'), '/');
         return $base . '/' . ltrim($path, '/');
+    }
+
+    private function sendOrderConfirmationEmail(CheckoutHistory $order, array $validated): void
+    {
+        $customerData = $validated['customer'] ?? [];
+        $orderData = $validated['order'] ?? [];
+
+        $recipient = $customerData['email'] ?? $order->ch_customer_email;
+        if (empty($recipient)) {
+            Log::warning('Mobile order email skipped: missing customer email', [
+                'mobile_order_id' => $order->ch_mobile_order_id,
+                'checkout_id' => $order->ch_checkout_id,
+            ]);
+            return;
+        }
+
+        $mailPayload = [
+            'checkout_id' => $order->ch_checkout_id,
+            'customer_name' => $customerData['name'] ?? $order->ch_customer_name ?? 'Customer',
+            'customer_email' => $recipient,
+            'customer_phone' => $customerData['phone'] ?? $order->ch_customer_phone ?? null,
+            'description' => $validated['description'] ?? 'Order',
+            'amount' => (float) $validated['amount'],
+            'payment_method' => $validated['payment_method'] ?? null,
+            'status' => 'pending',
+            'order_status_label' => 'pending payment',
+            'payment_intent_id' => $order->ch_payment_intent_id,
+            'shipping_address' => $customerData['address'] ?? $order->ch_customer_address ?? null,
+            'source_label' => 'Mobile App',
+            'order' => [
+                'product_name' => $orderData['product_name'] ?? null,
+                'product_sku' => $orderData['product_sku'] ?? null,
+                'quantity' => (int) ($orderData['quantity'] ?? 1),
+                'selected_color' => $orderData['selected_color'] ?? null,
+                'selected_size' => $orderData['selected_size'] ?? null,
+                'selected_type' => $orderData['selected_type'] ?? null,
+            ],
+            'mobile_order_id' => $order->ch_mobile_order_id,
+            'platform' => $validated['platform'] ?? null,
+        ];
+
+        try {
+            Mail::to($recipient)->send(new CheckoutCompletedMail($mailPayload));
+            Log::info('Mobile order confirmation email sent', [
+                'mobile_order_id' => $order->ch_mobile_order_id,
+                'checkout_id' => $order->ch_checkout_id,
+                'recipient' => $recipient,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Failed to send mobile order confirmation email', [
+                'mobile_order_id' => $order->ch_mobile_order_id,
+                'checkout_id' => $order->ch_checkout_id,
+                'recipient' => $recipient,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function createOrderNotification(CheckoutHistory $order, array $validated): void
+    {
+        $customerData = $validated['customer'] ?? [];
+        $orderData = $validated['order'] ?? [];
+
+        // Debug: Log the order object values
+        Log::debug('Creating order notification', [
+            'order_id' => $order->ch_id,
+            'mobile_order_id' => $order->ch_mobile_order_id,
+            'checkout_id' => $order->ch_checkout_id,
+            'customer_id' => $order->ch_customer_id,
+        ]);
+
+        try {
+            $productName = $orderData['product_name'] ?? $validated['description'] ?? 'Order Item';
+            $quantity = (int) ($orderData['quantity'] ?? 1);
+            $productImage = $orderData['product_image'] ?? $order->ch_product_image ?? null;
+
+            OrderNotification::create([
+                'on_customer_id' => $order->ch_customer_id,
+                'on_checkout_id' => $order->ch_checkout_id,
+                'on_mobile_order_id' => $order->ch_mobile_order_id,
+                'on_type' => 'order_created',
+                'on_severity' => 'info',
+                'on_title' => 'Order Placed: ' . $productName,
+                'on_message' => 'Your order has been created and is pending payment. Amount: ₱' . number_format((float) $validated['amount'], 2),
+                'on_product_name' => $productName,
+                'on_product_image' => $productImage,
+                'on_product_sku' => $orderData['product_sku'] ?? $order->ch_product_sku ?? null,
+                'on_quantity' => $quantity,
+                'on_amount' => (float) $validated['amount'],
+                'on_status' => 'pending',
+                'on_payment_method' => $validated['payment_method'] ?? null,
+                'on_href' => 'purchases://pending/' . $order->ch_checkout_id,
+                'on_payload' => [
+                    'mobile_order_id' => $order->ch_mobile_order_id,
+                    'checkout_id' => $order->ch_checkout_id,
+                    'platform' => $validated['platform'] ?? null,
+                    'product_id' => $orderData['product_id'] ?? null,
+                    'selected_color' => $orderData['selected_color'] ?? null,
+                    'selected_size' => $orderData['selected_size'] ?? null,
+                    'selected_type' => $orderData['selected_type'] ?? null,
+                ],
+                'on_is_read' => false,
+                'on_created_at' => now(),
+            ]);
+
+            Log::info('Order notification created', [
+                'mobile_order_id' => $order->ch_mobile_order_id,
+                'checkout_id' => $order->ch_checkout_id,
+                'customer_id' => $order->ch_customer_id,
+            ]);
+
+            // Broadcast realtime notification to customer
+            $this->broadcastOrderNotification($order->ch_customer_id, $order->ch_checkout_id);
+        } catch (\Throwable $e) {
+            Log::error('Failed to create order notification', [
+                'mobile_order_id' => $order->ch_mobile_order_id,
+                'checkout_id' => $order->ch_checkout_id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    public function getOrderNotifications(Request $request)
+    {
+        $customer = $request->user();
+        $customerId = (int) $customer->getAuthIdentifier();
+
+        $notifications = OrderNotification::query()
+            ->where('on_customer_id', $customerId)
+            ->orderByDesc('on_created_at')
+            ->orderByDesc('on_id')
+            ->get()
+            ->map(function (OrderNotification $notification) {
+                return [
+                    'id' => (int) $notification->on_id,
+                    'type' => $notification->on_type,
+                    'severity' => $notification->on_severity,
+                    'title' => $notification->on_title,
+                    'message' => $notification->on_message,
+                    'product_name' => $notification->on_product_name,
+                    'product_image' => $notification->on_product_image,
+                    'product_sku' => $notification->on_product_sku,
+                    'quantity' => (int) $notification->on_quantity,
+                    'amount' => (float) $notification->on_amount,
+                    'status' => $notification->on_status,
+                    'payment_method' => $notification->on_payment_method,
+                    'href' => $notification->on_href,
+                    'is_read' => (bool) $notification->on_is_read,
+                    'mobile_order_id' => $notification->on_mobile_order_id,
+                    'checkout_id' => $notification->on_checkout_id,
+                    'created_at' => $notification->on_created_at?->toISOString(),
+                    'payload' => $notification->on_payload ?? [],
+                ];
+            });
+
+        $unreadCount = OrderNotification::query()
+            ->where('on_customer_id', $customerId)
+            ->where('on_is_read', false)
+            ->count();
+
+        return response()->json([
+            'notifications' => $notifications,
+            'unread_count' => $unreadCount,
+            'total' => $notifications->count(),
+        ]);
+    }
+
+    public function markNotificationAsRead(Request $request, int $id)
+    {
+        $customer = $request->user();
+        $customerId = (int) $customer->getAuthIdentifier();
+
+        $notification = OrderNotification::query()
+            ->where('on_id', $id)
+            ->where('on_customer_id', $customerId)
+            ->first();
+
+        if (!$notification) {
+            return response()->json(['message' => 'Notification not found'], 404);
+        }
+
+        $notification->markAsRead();
+
+        // Broadcast updated unread count
+        $this->broadcastNotificationCountUpdate((int) $notification->on_customer_id);
+
+        return response()->json([
+            'id' => (int) $notification->on_id,
+            'is_read' => true,
+            'read_at' => $notification->on_read_at?->toISOString(),
+        ]);
+    }
+
+    private function broadcastOrderNotification(int $customerId, string $checkoutId): void
+    {
+        try {
+            $key = (string) config('services.pusher.key', '');
+            $secret = (string) config('services.pusher.secret', '');
+            $appId = (string) config('services.pusher.app_id', '');
+            $cluster = (string) config('services.pusher.cluster', 'ap1');
+
+            if ($key === '' || $secret === '' || $appId === '') {
+                return;
+            }
+
+            $pusher = new Pusher($key, $secret, $appId, ['cluster' => $cluster, 'useTLS' => true]);
+            $channelName = 'private-customer-' . $customerId;
+
+            // Get unread count
+            $unreadCount = OrderNotification::query()
+                ->where('on_customer_id', $customerId)
+                ->where('on_is_read', false)
+                ->count();
+
+            $pusher->trigger($channelName, 'order.notification.created', [
+                'checkout_id' => $checkoutId,
+                'unread_count' => (int) $unreadCount,
+                'created_at' => now()->toDateTimeString(),
+            ]);
+
+            $pusher->trigger($channelName, 'notification.count.updated', [
+                'unread_count' => (int) $unreadCount,
+                'updated_at' => now()->toDateTimeString(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Failed to broadcast order notification', [
+                'customer_id' => $customerId,
+                'checkout_id' => $checkoutId,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function broadcastNotificationCountUpdate(int $customerId): void
+    {
+        try {
+            $key = (string) config('services.pusher.key', '');
+            $secret = (string) config('services.pusher.secret', '');
+            $appId = (string) config('services.pusher.app_id', '');
+            $cluster = (string) config('services.pusher.cluster', 'ap1');
+
+            if ($key === '' || $secret === '' || $appId === '') {
+                return;
+            }
+
+            $pusher = new Pusher($key, $secret, $appId, ['cluster' => $cluster, 'useTLS' => true]);
+            $channelName = 'private-customer-' . $customerId;
+
+            $unreadCount = OrderNotification::query()
+                ->where('on_customer_id', $customerId)
+                ->where('on_is_read', false)
+                ->count();
+
+            $pusher->trigger($channelName, 'notification.count.updated', [
+                'unread_count' => (int) $unreadCount,
+                'updated_at' => now()->toDateTimeString(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Failed to broadcast notification count', [
+                'customer_id' => $customerId,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 }

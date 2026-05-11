@@ -4,6 +4,7 @@ namespace App\Services\Payments;
 
 use App\Models\AdminNotification;
 use App\Models\CheckoutHistory;
+use App\Models\OrderNotification;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -100,6 +101,7 @@ class PaymongoPaymentSyncService
             $order->ch_paid_at = now();
         }
         $order->save();
+        OrderNotification::updateStatusForCheckout($checkoutId, $status);
 
         if ($isNowPaid && !$wasPaidBefore) {
             $this->createAdminOrderNotification($order);
