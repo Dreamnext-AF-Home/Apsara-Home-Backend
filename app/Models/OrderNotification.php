@@ -54,7 +54,7 @@ class OrderNotification extends Model
 
     public static function updateStatusForCheckout(string $checkoutId, string $status): void
     {
-        Log::debug('Updating order notification status', [
+        Log::info('Updating order notification status', [
             'checkout_id' => $checkoutId,
             'status' => $status,
         ]);
@@ -81,13 +81,17 @@ class OrderNotification extends Model
             ->where('on_checkout_id', $checkoutId)
             ->get();
 
-        Log::debug('Found notifications to update', [
+        Log::info('Found notifications to update', [
             'checkout_id' => $checkoutId,
             'count' => $notifications->count(),
         ]);
 
         if ($notifications->isEmpty()) {
-            Log::warning('No notifications found for checkout_id', ['checkout_id' => $checkoutId]);
+            Log::warning('No notifications found for checkout_id', [
+                'checkout_id' => $checkoutId,
+                'all_notifications_count' => self::query()->count(),
+                'sample_checkout_ids' => self::query()->limit(3)->pluck('on_checkout_id')->toArray(),
+            ]);
             return;
         }
 
@@ -125,14 +129,13 @@ class OrderNotification extends Model
                 $updateData['on_message'] = $message;
             }
 
-            $notification->update($updateData);
+            $updated = $notification->update($updateData);
 
-            Log::info('Order notification updated', [
+            Log::info('Order notification update result', [
                 'notification_id' => $notification->on_id,
                 'checkout_id' => $checkoutId,
-                'new_status' => $status,
-                'new_href' => $href,
-                'new_message' => $updateData['on_message'] ?? 'unchanged',
+                'update_success' => $updated,
+                'update_data' => $updateData,
             ]);
 
             $customerIds[] = (int) $notification->on_customer_id;

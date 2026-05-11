@@ -765,6 +765,12 @@ class PaymentController extends Controller
         }
 
         $checkoutId = $this->extractCheckoutIdFromWebhook($payload);
+        Log::info('PayMongo webhook extracted checkout_id', [
+            'checkout_id' => $checkoutId,
+            'event_type' => $eventType,
+            'payload_checkout_id' => data_get($payload, 'data.attributes.data.id'),
+        ]);
+
         if (!$checkoutId) {
             Log::warning('PayMongo webhook ignored: checkout id missing.', ['event_type' => $eventType]);
             return response()->json([
@@ -778,10 +784,37 @@ class PaymentController extends Controller
         $attrs['status'] = $attrs['status'] ?? 'paid';
         $attrs = $this->hydrateCheckoutAttributesIfNeeded($checkoutId, $attrs);
 
+        // Debug: Check if notification exists before update
+        $notificationExists = \App\Models\OrderNotification::query()
+            ->where('on_checkout_id', $checkoutId)
+            ->exists();
+        Log::info('PayMongo webhook notification lookup', [
+            'checkout_id' => $checkoutId,
+            'notification_exists' => $notificationExists,
+        ]);
+
         $this->persistCheckoutHistoryIfNeeded($checkoutId, $attrs);
-        if ($this->isPaidStatus($attrs['status'] ?? 'paid')) {
+
+        $isPaid = $this->isPaidStatus($attrs['status'] ?? 'paid');
+        Log::info('PayMongo webhook payment check', [
+            'checkout_id' => $checkoutId,
+            'status' => $attrs['status'] ?? 'paid',
+            'is_paid' => $isPaid,
+        ]);
+
+        if ($isPaid) {
             $this->sendCheckoutCompletedEmailIfNeeded($checkoutId, $attrs);
+
+            Log::info('Updating order notification for paid status', [
+                'checkout_id' => $checkoutId,
+                'status' => 'paid',
+            ]);
+
             OrderNotification::updateStatusForCheckout($checkoutId, 'paid');
+
+            Log::info('Order notification update completed', [
+                'checkout_id' => $checkoutId,
+            ]);
         }
 
         Log::info('PayMongo webhook processed.', [
@@ -821,9 +854,27 @@ class PaymentController extends Controller
         $attrs = $this->hydrateCheckoutAttributesIfNeeded($checkoutId, $attrs);
 
         $this->persistCheckoutHistoryIfNeeded($checkoutId, $attrs);
-        if ($this->isPaidStatus($attrs['status'] ?? 'paid')) {
+
+        $isPaid = $this->isPaidStatus($attrs['status'] ?? 'paid');
+        Log::info('Test webhook payment check', [
+            'checkout_id' => $checkoutId,
+            'status' => $attrs['status'] ?? 'paid',
+            'is_paid' => $isPaid,
+        ]);
+
+        if ($isPaid) {
             $this->sendCheckoutCompletedEmailIfNeeded($checkoutId, $attrs);
+
+            Log::info('Updating order notification from test webhook', [
+                'checkout_id' => $checkoutId,
+                'status' => 'paid',
+            ]);
+
             OrderNotification::updateStatusForCheckout($checkoutId, 'paid');
+
+            Log::info('Order notification update completed from test webhook', [
+                'checkout_id' => $checkoutId,
+            ]);
         }
 
         return response()->json([
