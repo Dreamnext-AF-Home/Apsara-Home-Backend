@@ -170,7 +170,9 @@ class CustomerNotificationController extends Controller
                     'count' => 1,
                     'severity' => (string) ($notification->cn_severity ?? 'info'),
                     'href' => (string) ($notification->cn_href ?? '/profile'),
-                    'latest_at' => optional($notification->cn_created_at)->toDateTimeString(),
+                    'latest_at' => $notification->cn_created_at
+                        ? $notification->cn_created_at->timezone('Asia/Manila')->toIso8601String()
+                        : null,
                 ];
             })
             ->values()
