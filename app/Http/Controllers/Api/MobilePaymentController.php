@@ -138,13 +138,8 @@ class MobilePaymentController extends Controller
             return response()->json(['message' => 'Mobile order not found'], 404);
         }
 
-        // Verify payment status with PayMongo if needed
-        $status = $order->ch_status;
-        if ($order->ch_checkout_id && $status === 'pending') {
-            $status = $this->verifyPayMongoPaymentStatus($order->ch_checkout_id);
-            $order->update(['ch_status' => $status]);
-            OrderNotification::updateStatusForCheckout((string) $order->ch_checkout_id, $status);
-        }
+        // Realtime-first: status is updated asynchronously via webhook + Pusher events.
+        $status = (string) $order->ch_status;
 
         return response()->json([
             'mobile_order_id' => $mobileOrderId,
