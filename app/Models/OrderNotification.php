@@ -49,4 +49,32 @@ class OrderNotification extends Model
             'on_read_at' => now(),
         ]);
     }
+
+    public static function updateStatusForCheckout(string $checkoutId, string $status): void
+    {
+        $href = match ($status) {
+            'pending' => 'purchases://pending',
+            'paid', 'succeeded', 'success' => 'purchases://paid',
+            'processing' => 'purchases://processing',
+            'shipped' => 'purchases://shipped',
+            'to_receive', 'out_for_delivery' => 'purchases://to_receive',
+            'delivered' => 'purchases://delivered',
+            default => 'purchases://pending',
+        };
+
+        $severity = match ($status) {
+            'paid', 'succeeded', 'success' => 'success',
+            'delivered' => 'success',
+            'shipped', 'to_receive' => 'warning',
+            default => 'info',
+        };
+
+        self::query()
+            ->where('on_checkout_id', $checkoutId)
+            ->update([
+                'on_status' => $status,
+                'on_href' => $href,
+                'on_severity' => $severity,
+            ]);
+    }
 }
