@@ -54,6 +54,11 @@ class OrderNotification extends Model
 
     public static function updateStatusForCheckout(string $checkoutId, string $status): void
     {
+        Log::debug('Updating order notification status', [
+            'checkout_id' => $checkoutId,
+            'status' => $status,
+        ]);
+
         $hrefPrefix = match ($status) {
             'pending' => 'purchases://pending',
             'paid', 'succeeded', 'success' => 'purchases://paid',
@@ -71,26 +76,45 @@ class OrderNotification extends Model
             default => 'info',
         };
 
+        // Find notifications by checkout_id
+        $notifications = self::query()
+            ->where('on_checkout_id', $checkoutId)
+            ->get();
+
+        Log::debug('Found notifications to update', [
+            'checkout_id' => $checkoutId,
+            'count' => $notifications->count(),
+        ]);
+
+        if ($notifications->isEmpty()) {
+            Log::warning('No notifications found for checkout_id', ['checkout_id' => $checkoutId]);
+            return;
+        }
+
         // Track customer IDs for broadcasting
         $customerIds = [];
 
-        // Update each notification individually to include checkout_id in href
-        self::query()
-            ->where('on_checkout_id', $checkoutId)
-            ->get()
-            ->each(function (self $notification) use ($hrefPrefix, $severity, $status, &$customerIds) {
-                $href = $notification->on_checkout_id
-                    ? $hrefPrefix . '/' . $notification->on_checkout_id
-                    : $hrefPrefix;
+        // Update each notification
+        foreach ($notifications as $notification) {
+            $href = $notification->on_checkout_id
+                ? $hrefPrefix . '/' . $notification->on_checkout_id
+                : $hrefPrefix;
 
-                $notification->update([
-                    'on_status' => $status,
-                    'on_href' => $href,
-                    'on_severity' => $severity,
-                ]);
+            $notification->update([
+                'on_status' => $status,
+                'on_href' => $href,
+                'on_severity' => $severity,
+            ]);
 
-                $customerIds[] = (int) $notification->on_customer_id;
-            });
+            Log::info('Order notification updated', [
+                'notification_id' => $notification->on_id,
+                'checkout_id' => $checkoutId,
+                'new_status' => $status,
+                'new_href' => $href,
+            ]);
+
+            $customerIds[] = (int) $notification->on_customer_id;
+        }
 
         // Broadcast updates to affected customers
         foreach (array_unique($customerIds) as $customerId) {
