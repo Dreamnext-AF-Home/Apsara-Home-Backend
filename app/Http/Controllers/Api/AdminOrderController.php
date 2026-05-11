@@ -757,7 +757,7 @@ class AdminOrderController extends Controller
         $shippingResult = $this->bookShipmentOnShipped($order, (string) $validated['status']);
 
         if ($previousStatus !== (string) $order->ch_fulfillment_status) {
-            $this->sendCustomerOrderStatusEmail($order, 'fulfillment_status');
+            $this->sendCustomerOrderStatusEmailSafely($order, 'fulfillment_status');
             
             // Send real-time notification to customer
             $statusLabels = [
@@ -774,8 +774,7 @@ class AdminOrderController extends Controller
             $title = $statusLabels[$validated['status']] ?? 'Order Status Updated';
             $description = "Your order #{$order->ch_checkout_id} status has been updated to: " . ($statusLabels[$validated['status']] ?? $validated['status']);
             
-            $paymentController = new \App\Http\Controllers\Api\PaymentController();
-            $paymentController->notifyCustomerOrderStatusUpdate($order, 'status_update', $title, $description);
+            $this->notifyCustomerOrderStatusUpdateSafely($order, 'status_update', $title, $description);
         }
 
         $message = 'Order status updated.';
@@ -855,7 +854,7 @@ class AdminOrderController extends Controller
         }
 
         if ($previousShipmentStatus !== (string) $order->ch_shipment_status) {
-            $this->sendCustomerOrderStatusEmail($order, 'shipment_status');
+            $this->sendCustomerOrderStatusEmailSafely($order, 'shipment_status');
             
             // Send real-time notification to customer
             $shipmentLabels = [
@@ -872,8 +871,7 @@ class AdminOrderController extends Controller
             $title = $shipmentLabels[$shipmentStatus] ?? 'Shipment Status Updated';
             $description = "Your order #{$order->ch_checkout_id} shipment status has been updated to: " . ($shipmentLabels[$shipmentStatus] ?? $shipmentStatus);
             
-            $paymentController = new \App\Http\Controllers\Api\PaymentController();
-            $paymentController->notifyCustomerOrderStatusUpdate($order, 'shipment_update', $title, $description);
+            $this->notifyCustomerOrderStatusUpdateSafely($order, 'shipment_update', $title, $description);
         }
 
         return response()->json([
@@ -1648,6 +1646,38 @@ class AdminOrderController extends Controller
                 'error' => $e->getMessage(),
             ]);
             report($e);
+        }
+    }
+
+    private function sendCustomerOrderStatusEmailSafely(CheckoutHistory $order, string $eventType): void
+    {
+        try {
+            $this->sendCustomerOrderStatusEmail($order, $eventType);
+        } catch (\Throwable $e) {
+            Log::warning('Order status update continued after email notification failed.', [
+                'order_id' => (int) $order->ch_id,
+                'checkout_id' => (string) $order->ch_checkout_id,
+                'event_type' => $eventType,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function notifyCustomerOrderStatusUpdateSafely(
+        CheckoutHistory $order,
+        string $eventType,
+        string $title,
+        string $description
+    ): void {
+        try {
+            (new PaymentController())->notifyCustomerOrderStatusUpdate($order, $eventType, $title, $description);
+        } catch (\Throwable $e) {
+            Log::warning('Order status update continued after customer notification failed.', [
+                'order_id' => (int) $order->ch_id,
+                'checkout_id' => (string) $order->ch_checkout_id,
+                'event_type' => $eventType,
+                'error' => $e->getMessage(),
+            ]);
         }
     }
 

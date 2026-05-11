@@ -27,22 +27,32 @@ class CustomerBonusNotification
 
         $createdAt = now('Asia/Manila');
 
-        $notification = CustomerNotification::query()->firstOrCreate(
-            [
-                'cn_customer_id' => $customerId,
-                'cn_source_type' => $sourceType,
-                'cn_source_id' => $sourceId,
-            ],
-            [
-                'cn_type' => $type,
-                'cn_severity' => $severity,
-                'cn_title' => $title,
-                'cn_message' => $message,
-                'cn_href' => $href,
-                'cn_payload' => $payload,
-                'cn_created_at' => $createdAt,
-            ]
-        );
+        try {
+            $notification = CustomerNotification::query()->firstOrCreate(
+                [
+                    'cn_customer_id' => $customerId,
+                    'cn_source_type' => $sourceType,
+                    'cn_source_id' => $sourceId,
+                ],
+                [
+                    'cn_type' => $type,
+                    'cn_severity' => $severity,
+                    'cn_title' => $title,
+                    'cn_message' => $message,
+                    'cn_href' => $href,
+                    'cn_payload' => $payload,
+                    'cn_created_at' => $createdAt,
+                ]
+            );
+        } catch (\Throwable $exception) {
+            Log::warning('Failed to store customer bonus notification.', [
+                'customer_id' => $customerId,
+                'source_type' => $sourceType,
+                'source_id' => $sourceId,
+                'error' => $exception->getMessage(),
+            ]);
+            return;
+        }
 
         if (!$notification->wasRecentlyCreated) {
             return;

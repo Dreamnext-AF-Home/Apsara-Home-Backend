@@ -7,6 +7,7 @@ use App\Mail\Checkout\PartnerStorefrontGuestOrderMail;
 use App\Models\AdminNotification;
 use App\Mail\Checkout\CheckoutCompletedMail;
 use App\Models\CheckoutHistory;
+use App\Models\CustomerNotification;
 use App\Models\OrderNotification;
 use App\Models\ProductReview;
 use App\Models\Product;
@@ -1988,10 +1989,50 @@ class PaymentController extends Controller
         Cache::put($cacheKey, true, now()->addDays(7));
     }
 
-    private function notifyCustomerOrderStatusUpdate(CheckoutHistory $order, string $eventType, string $title, string $description): void
+    public function notifyCustomerOrderStatusUpdate(CheckoutHistory $order, string $eventType, string $title, string $description): void
     {
         if ((int) $order->ch_customer_id === 0) {
             return; // Skip guest checkouts
+        }
+
+        $createdAt = now('Asia/Manila');
+        $status = $order->ch_fulfillment_status ?: $this->mapCheckoutStatusToOrderStatus((string) $order->ch_status);
+        $href = '/orders';
+        $severity = match ($status) {
+            'delivered' => 'success',
+            'cancelled', 'refunded', 'failed_delivery', 'returned_to_sender' => 'critical',
+            'out_for_delivery', 'shipped', 'packed', 'processing' => 'warning',
+            default => 'info',
+        };
+
+        try {
+            $notification = CustomerNotification::query()->create([
+                'cn_customer_id' => (int) $order->ch_customer_id,
+                'cn_type' => 'order_update',
+                'cn_severity' => $severity,
+                'cn_title' => $title,
+                'cn_message' => $description,
+                'cn_href' => $href,
+                'cn_payload' => [
+                    'order_id' => (int) $order->ch_id,
+                    'checkout_id' => (string) $order->ch_checkout_id,
+                    'event_type' => $eventType,
+                    'status' => $status,
+                    'payment_status' => (string) $order->ch_status,
+                    'tracking_number' => $this->resolveOrderTrackingNumber($order),
+                ],
+                'cn_source_type' => $eventType,
+                'cn_source_id' => (int) $order->ch_id,
+                'cn_created_at' => $createdAt,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('Failed to store customer order notification.', [
+                'customer_id' => (int) $order->ch_customer_id,
+                'checkout_id' => (string) $order->ch_checkout_id,
+                'event_type' => $eventType,
+                'error' => $e->getMessage(),
+            ]);
+            return;
         }
 
         $appId = (string) config('services.pusher.app_id', '');
@@ -2024,21 +2065,25 @@ class PaymentController extends Controller
                 'event_type' => $eventType,
                 'title' => $title,
                 'description' => $description,
-                'status' => $order->ch_fulfillment_status ?: $this->mapCheckoutStatusToOrderStatus((string) $order->ch_status),
+                'status' => $status,
                 'payment_status' => (string) $order->ch_status,
                 'tracking_number' => $this->resolveOrderTrackingNumber($order),
-                'created_at' => now()->toDateTimeString(),
+                'created_at' => $createdAt->toIso8601String(),
             ]);
 
             $pusher->trigger($channelName, 'notification.created', [
-                'id' => 'order_' . (int) $order->ch_id . '_' . $eventType,
+                'id' => 'customer_notification:' . (int) $notification->cn_id,
                 'type' => 'order_update',
                 'title' => $title,
                 'description' => $description,
+                'count' => 1,
+                'severity' => $severity,
+                'href' => $href,
+                'latest_at' => $createdAt->toIso8601String(),
                 'order_id' => (int) $order->ch_id,
                 'checkout_id' => (string) $order->ch_checkout_id,
-                'status' => $order->ch_fulfillment_status ?: $this->mapCheckoutStatusToOrderStatus((string) $order->ch_status),
-                'created_at' => now()->toDateTimeString(),
+                'status' => $status,
+                'created_at' => $createdAt->toIso8601String(),
             ]);
         } catch (\Throwable $e) {
             Log::warning('Failed to publish customer realtime notification.', [
