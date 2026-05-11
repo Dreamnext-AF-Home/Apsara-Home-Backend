@@ -46,7 +46,12 @@ use App\Http\Controllers\Api\SearchController;
 use App\Http\Controllers\Api\TotpController;
 use App\Http\Controllers\Api\GeminiController;
 use App\Http\Controllers\Api\MobilePaymentController;
+use Illuminate\Support\Facades\Broadcast;
+use Illuminate\Http\Request;
 
+Route::middleware(['auth:sanctum'])->post('/broadcasting/auth', function (Request $request) {
+    return Broadcast::auth($request);
+});
 
 // Public auth routes
 Route::prefix('auth')->group(function () {
