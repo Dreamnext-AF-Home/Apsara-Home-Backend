@@ -54,9 +54,13 @@ class OrderNotification extends Model
 
     public static function updateStatusForCheckout(string $checkoutId, string $status): void
     {
+        // Normalize checkout_id - trim whitespace and lowercase for comparison
+        $checkoutId = trim($checkoutId);
+
         Log::info('Updating order notification status', [
             'checkout_id' => $checkoutId,
             'status' => $status,
+            'checkout_id_length' => strlen($checkoutId),
         ]);
 
         $hrefPrefix = match ($status) {
