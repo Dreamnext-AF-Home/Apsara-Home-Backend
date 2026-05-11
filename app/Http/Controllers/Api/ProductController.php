@@ -1208,11 +1208,13 @@ class ProductController extends Controller
     private function syncVariants(Product $product, array $variants, \DateTimeInterface $now): void
     {
         // Pre-load existing variants keyed by pv_sku for fast lookup
-        $existingBySku = ProductVariant::query()
+        $existingVariants = ProductVariant::query()
             ->where('pv_pdid', $product->pd_id)
             ->whereNotNull('pv_sku')
-            ->get()
+            ->get();
+        $existingBySku = $existingVariants
             ->keyBy('pv_sku');
+        $keptVariantIds = [];
 
         foreach ($variants as $variant) {
             if (!is_array($variant)) {
@@ -1227,6 +1229,7 @@ class ProductController extends Controller
             $width     = isset($variant['pv_width']) && $variant['pv_width'] !== '' ? $variant['pv_width'] : null;
             $dimension = isset($variant['pv_dimension']) && $variant['pv_dimension'] !== '' ? $variant['pv_dimension'] : null;
             $height    = isset($variant['pv_height']) && $variant['pv_height'] !== '' ? $variant['pv_height'] : null;
+            $hasImageList = array_key_exists('pv_images', $variant);
             $images    = collect($variant['pv_images'] ?? [])
                 ->filter(fn ($url) => is_string($url) && trim($url) !== '')
                 ->map(fn ($url) => trim((string) $url))
@@ -1270,8 +1273,10 @@ class ProductController extends Controller
                 ]));
             }
 
-            // Replace photos only when new images are provided
-            if (!empty($images)) {
+            $keptVariantIds[] = (int) $variantRow->pv_id;
+
+            // Replace photos when the image list is explicitly provided, even when empty.
+            if ($hasImageList) {
                 ProductVariantPhoto::query()->where('pvp_pvid', $variantRow->pv_id)->delete();
                 foreach ($images as $imgIndex => $url) {
                     ProductVariantPhoto::create([
@@ -1282,6 +1287,17 @@ class ProductController extends Controller
                     ]);
                 }
             }
+        }
+
+        $staleVariantQuery = ProductVariant::query()->where('pv_pdid', $product->pd_id);
+        if (!empty($keptVariantIds)) {
+            $staleVariantQuery->whereNotIn('pv_id', array_values(array_unique($keptVariantIds)));
+        }
+        $staleVariantIds = $staleVariantQuery->pluck('pv_id')->all();
+
+        if (!empty($staleVariantIds)) {
+            ProductVariantPhoto::query()->whereIn('pvp_pvid', $staleVariantIds)->delete();
+            ProductVariant::query()->whereIn('pv_id', $staleVariantIds)->delete();
         }
     }
 
