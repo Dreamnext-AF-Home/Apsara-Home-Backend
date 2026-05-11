@@ -633,7 +633,7 @@ class MobilePaymentController extends Controller
                 'on_amount' => (float) $validated['amount'],
                 'on_status' => 'pending',
                 'on_payment_method' => $validated['payment_method'] ?? null,
-                'on_href' => 'purchases://pending/' . $order->ch_mobile_order_id,
+                'on_href' => 'purchases://pending/' . $order->ch_checkout_id,
                 'on_payload' => [
                     'mobile_order_id' => $order->ch_mobile_order_id,
                     'checkout_id' => $order->ch_checkout_id,

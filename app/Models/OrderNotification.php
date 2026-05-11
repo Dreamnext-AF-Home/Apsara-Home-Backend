@@ -69,13 +69,13 @@ class OrderNotification extends Model
             default => 'info',
         };
 
-        // Update each notification individually to include mobile_order_id in href
+        // Update each notification individually to include checkout_id in href
         self::query()
             ->where('on_checkout_id', $checkoutId)
             ->get()
             ->each(function (self $notification) use ($hrefPrefix, $severity, $status) {
-                $href = $notification->on_mobile_order_id
-                    ? $hrefPrefix . '/' . $notification->on_mobile_order_id
+                $href = $notification->on_checkout_id
+                    ? $hrefPrefix . '/' . $notification->on_checkout_id
                     : $hrefPrefix;
 
                 $notification->update([
