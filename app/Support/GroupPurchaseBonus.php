@@ -95,6 +95,28 @@ class GroupPurchaseBonus
                         ),
                         'wl_created_by' => $awardedBy,
                     ]);
+
+                    CustomerBonusNotification::notify(
+                        $upline,
+                        'unilevel_bonus',
+                        'Unilevel bonus received',
+                        sprintf(
+                            'You received PHP %s from compressed level %d downline PV.',
+                            number_format($bonusAmount, 2),
+                            $levelNo
+                        ),
+                        'group_purchase_bonus',
+                        (int) $award->gpba_id,
+                        [
+                            'source_customer_id' => (int) $buyer->c_userid,
+                            'level_no' => $levelNo,
+                            'earned_pv' => $earnedPv,
+                            'bonus_rate' => $rate,
+                            'bonus_amount' => $bonusAmount,
+                            'checkout_id' => (string) ($referenceOrder?->ch_checkout_id ?? ''),
+                            'reference_order_id' => $referenceOrder?->ch_id ? (int) $referenceOrder->ch_id : null,
+                        ]
+                    );
                 }
             }
         });

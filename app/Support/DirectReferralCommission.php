@@ -133,6 +133,25 @@ class DirectReferralCommission
                         'wl_notes' => 'Direct referral commission released on delivered order.',
                         'wl_created_by' => $releasedBy,
                     ]);
+
+                    CustomerBonusNotification::notify(
+                        $customer,
+                        'direct_referral_commission',
+                        'Direct referral commission received',
+                        sprintf(
+                            'You received PHP %s from a referred order.',
+                            number_format((float) $earning->re_amount, 2)
+                        ),
+                        'referral_earning',
+                        (int) $earning->re_id,
+                        [
+                            'buyer_customer_id' => $earning->re_buyer_customer_id ? (int) $earning->re_buyer_customer_id : null,
+                            'order_id' => (int) $order->ch_id,
+                            'checkout_id' => (string) ($order->ch_checkout_id ?? ''),
+                            'commission_basis_amount' => (float) $earning->re_commission_basis_amount,
+                            'bonus_amount' => (float) $earning->re_amount,
+                        ]
+                    );
                 }
 
                 $earning->re_status = 'available';

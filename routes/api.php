@@ -163,6 +163,7 @@ Route::middleware('throttle:public')->group(function () {
 Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::post('/auth/logout', [AuthController::class, 'logout']);
     Route::get('/auth/me',      [AuthController::class, 'me']);
+    Route::put('/auth/me',      [AuthController::class, 'updateMe']);
     Route::get('/auth/activity', [AuthController::class, 'activity']);
     Route::post('/auth/change-password', [AuthController::class, 'changePassword']);
     Route::get('/me', [AuthController::class, 'me']);
