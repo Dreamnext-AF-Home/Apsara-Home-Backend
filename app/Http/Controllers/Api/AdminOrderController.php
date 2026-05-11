@@ -850,6 +850,10 @@ class AdminOrderController extends Controller
         }
 
         $order->save();
+        \App\Models\OrderNotification::updateStatusForCheckout(
+            (string) $order->ch_checkout_id,
+            (string) ($order->ch_fulfillment_status ?? 'pending')
+        );
 
         if ($shipmentStatus === 'delivered') {
             OrderPvPosting::postIfNeeded($order, (int) $admin->id);
