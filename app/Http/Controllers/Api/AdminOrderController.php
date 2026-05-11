@@ -87,7 +87,9 @@ class AdminOrderController extends Controller
                 'href' => (string) ($row->an_href ?? '/admin/orders'),
                 'count' => $isRead ? 0 : 1,
                 'is_read' => $isRead,
-                'updated_at' => optional($row->an_created_at)->toDateTimeString(),
+                'updated_at' => $row->an_created_at
+                    ? $row->an_created_at->timezone('Asia/Manila')->toIso8601String()
+                    : null,
                 'payload' => is_array($row->an_payload) ? $row->an_payload : null,
             ];
         })->values()->all();
@@ -105,7 +107,7 @@ class AdminOrderController extends Controller
         return response()->json([
             'unread_count' => $unreadCount,
             'items' => $items,
-            'generated_at' => now()->toDateTimeString(),
+            'generated_at' => now('Asia/Manila')->toIso8601String(),
         ]);
     }
 
