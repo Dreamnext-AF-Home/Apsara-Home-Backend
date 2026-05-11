@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Mail\Checkout\CheckoutCompletedMail;
 use App\Models\CheckoutHistory;
 use App\Models\Customer;
+use App\Models\OrderNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -104,6 +105,9 @@ class MobilePaymentController extends Controller
 
             // Send order confirmation email
             $this->sendOrderConfirmationEmail($mobileOrder, $validated);
+
+            // Create order notification with product details
+            $this->createOrderNotification($mobileOrder, $validated);
 
             return response()->json([
                 'order_id' => (int) $mobileOrder->ch_id,
@@ -591,6 +595,59 @@ class MobilePaymentController extends Controller
                 'mobile_order_id' => $order->ch_mobile_order_id,
                 'checkout_id' => $order->ch_checkout_id,
                 'recipient' => $recipient,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function createOrderNotification(CheckoutHistory $order, array $validated): void
+    {
+        $customerData = $validated['customer'] ?? [];
+        $orderData = $validated['order'] ?? [];
+
+        try {
+            $productName = $orderData['product_name'] ?? $validated['description'] ?? 'Order Item';
+            $quantity = (int) ($orderData['quantity'] ?? 1);
+            $productImage = $orderData['product_image'] ?? $order->ch_product_image ?? null;
+
+            OrderNotification::create([
+                'on_customer_id' => $order->ch_customer_id,
+                'on_checkout_id' => $order->ch_checkout_id,
+                'on_mobile_order_id' => $order->ch_mobile_order_id,
+                'on_type' => 'order_created',
+                'on_severity' => 'info',
+                'on_title' => 'Order Placed: ' . $productName,
+                'on_message' => 'Your order has been created and is pending payment. Amount: ₱' . number_format((float) $validated['amount'], 2),
+                'on_product_name' => $productName,
+                'on_product_image' => $productImage,
+                'on_product_sku' => $orderData['product_sku'] ?? $order->ch_product_sku ?? null,
+                'on_quantity' => $quantity,
+                'on_amount' => (float) $validated['amount'],
+                'on_status' => 'pending',
+                'on_payment_method' => $validated['payment_method'] ?? null,
+                'on_href' => 'purchases://pending',
+                'on_payload' => [
+                    'mobile_order_id' => $order->ch_mobile_order_id,
+                    'checkout_id' => $order->ch_checkout_id,
+                    'platform' => $validated['platform'] ?? null,
+                    'product_id' => $orderData['product_id'] ?? null,
+                    'selected_color' => $orderData['selected_color'] ?? null,
+                    'selected_size' => $orderData['selected_size'] ?? null,
+                    'selected_type' => $orderData['selected_type'] ?? null,
+                ],
+                'on_is_read' => false,
+                'on_created_at' => now(),
+            ]);
+
+            Log::info('Order notification created', [
+                'mobile_order_id' => $order->ch_mobile_order_id,
+                'checkout_id' => $order->ch_checkout_id,
+                'customer_id' => $order->ch_customer_id,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Failed to create order notification', [
+                'mobile_order_id' => $order->ch_mobile_order_id,
+                'checkout_id' => $order->ch_checkout_id,
                 'error' => $e->getMessage(),
             ]);
         }
