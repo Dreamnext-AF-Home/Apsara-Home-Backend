@@ -2373,6 +2373,12 @@ class AuthController extends Controller
             $occupation !== '' && strcasecmp($occupation, 'none') !== 0,
             $this->inferWorkLocation($country) !== null,
             $country !== '',
+            trim((string) ($customer->c_address ?? '')) !== '',
+            trim((string) ($customer->c_barangay ?? '')) !== '',
+            trim((string) ($customer->c_city ?? '')) !== '',
+            trim((string) ($customer->c_province ?? '')) !== '',
+            trim((string) ($customer->c_region ?? '')) !== '',
+            trim((string) ($customer->c_zipcode ?? '')) !== '',
         ];
 
         return (int) round((count(array_filter($checks)) / count($checks)) * 100);

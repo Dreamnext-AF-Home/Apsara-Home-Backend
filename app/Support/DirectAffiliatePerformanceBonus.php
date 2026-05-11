@@ -111,6 +111,28 @@ class DirectAffiliatePerformanceBonus
                         ),
                         'wl_created_by' => $awardedBy,
                     ]);
+
+                    CustomerBonusNotification::notify(
+                        $sponsor,
+                        'direct_affiliate_performance_bonus',
+                        'Affiliate performance bonus unlocked',
+                        sprintf(
+                            'You received PHP %s after your direct referrals reached %.2f PV.',
+                            number_format($bonusAmount, 2),
+                            $directTotalPv
+                        ),
+                        'direct_affiliate_performance_bonus',
+                        (int) $award->dapb_id,
+                        [
+                            'milestone_no' => $milestoneNo,
+                            'threshold_pv' => $thresholdPv,
+                            'direct_referrals_count' => $directCount,
+                            'direct_total_pv' => $directTotalPv,
+                            'bonus_amount' => $bonusAmount,
+                            'checkout_id' => (string) ($referenceOrder?->ch_checkout_id ?? ''),
+                            'reference_order_id' => $referenceOrder?->ch_id ? (int) $referenceOrder->ch_id : null,
+                        ]
+                    );
                 }
             }
         });
