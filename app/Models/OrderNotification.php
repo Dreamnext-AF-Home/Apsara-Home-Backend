@@ -3,6 +3,8 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Log;
+use Pusher\Pusher;
 
 class OrderNotification extends Model
 {
@@ -69,11 +71,14 @@ class OrderNotification extends Model
             default => 'info',
         };
 
+        // Track customer IDs for broadcasting
+        $customerIds = [];
+
         // Update each notification individually to include checkout_id in href
         self::query()
             ->where('on_checkout_id', $checkoutId)
             ->get()
-            ->each(function (self $notification) use ($hrefPrefix, $severity, $status) {
+            ->each(function (self $notification) use ($hrefPrefix, $severity, $status, &$customerIds) {
                 $href = $notification->on_checkout_id
                     ? $hrefPrefix . '/' . $notification->on_checkout_id
                     : $hrefPrefix;
@@ -83,6 +88,54 @@ class OrderNotification extends Model
                     'on_href' => $href,
                     'on_severity' => $severity,
                 ]);
+
+                $customerIds[] = (int) $notification->on_customer_id;
             });
+
+        // Broadcast updates to affected customers
+        foreach (array_unique($customerIds) as $customerId) {
+            self::broadcastStatusUpdate($customerId, $checkoutId, $status);
+        }
+    }
+
+    private static function broadcastStatusUpdate(int $customerId, string $checkoutId, string $status): void
+    {
+        try {
+            $key = (string) config('services.pusher.key', '');
+            $secret = (string) config('services.pusher.secret', '');
+            $appId = (string) config('services.pusher.app_id', '');
+            $cluster = (string) config('services.pusher.cluster', 'ap1');
+
+            if ($key === '' || $secret === '' || $appId === '') {
+                return;
+            }
+
+            $pusher = new Pusher($key, $secret, $appId, ['cluster' => $cluster, 'useTLS' => true]);
+            $channelName = 'private-customer-' . $customerId;
+
+            $unreadCount = self::query()
+                ->where('on_customer_id', $customerId)
+                ->where('on_is_read', false)
+                ->count();
+
+            $pusher->trigger($channelName, 'order.notification.updated', [
+                'checkout_id' => $checkoutId,
+                'status' => $status,
+                'unread_count' => (int) $unreadCount,
+                'updated_at' => now()->toDateTimeString(),
+            ]);
+
+            $pusher->trigger($channelName, 'notification.count.updated', [
+                'unread_count' => (int) $unreadCount,
+                'updated_at' => now()->toDateTimeString(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Failed to broadcast notification status update', [
+                'customer_id' => $customerId,
+                'checkout_id' => $checkoutId,
+                'status' => $status,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 }

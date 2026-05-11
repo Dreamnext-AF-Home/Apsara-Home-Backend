@@ -652,6 +652,9 @@ class MobilePaymentController extends Controller
                 'checkout_id' => $order->ch_checkout_id,
                 'customer_id' => $order->ch_customer_id,
             ]);
+
+            // Broadcast realtime notification to customer
+            $this->broadcastOrderNotification($order->ch_customer_id, $order->ch_checkout_id);
         } catch (\Throwable $e) {
             Log::error('Failed to create order notification', [
                 'mobile_order_id' => $order->ch_mobile_order_id,
@@ -722,10 +725,85 @@ class MobilePaymentController extends Controller
 
         $notification->markAsRead();
 
+        // Broadcast updated unread count
+        $this->broadcastNotificationCountUpdate((int) $notification->on_customer_id);
+
         return response()->json([
             'id' => (int) $notification->on_id,
             'is_read' => true,
             'read_at' => $notification->on_read_at?->toISOString(),
         ]);
+    }
+
+    private function broadcastOrderNotification(int $customerId, string $checkoutId): void
+    {
+        try {
+            $key = (string) config('services.pusher.key', '');
+            $secret = (string) config('services.pusher.secret', '');
+            $appId = (string) config('services.pusher.app_id', '');
+            $cluster = (string) config('services.pusher.cluster', 'ap1');
+
+            if ($key === '' || $secret === '' || $appId === '') {
+                return;
+            }
+
+            $pusher = new Pusher($key, $secret, $appId, ['cluster' => $cluster, 'useTLS' => true]);
+            $channelName = 'private-customer-' . $customerId;
+
+            // Get unread count
+            $unreadCount = OrderNotification::query()
+                ->where('on_customer_id', $customerId)
+                ->where('on_is_read', false)
+                ->count();
+
+            $pusher->trigger($channelName, 'order.notification.created', [
+                'checkout_id' => $checkoutId,
+                'unread_count' => (int) $unreadCount,
+                'created_at' => now()->toDateTimeString(),
+            ]);
+
+            $pusher->trigger($channelName, 'notification.count.updated', [
+                'unread_count' => (int) $unreadCount,
+                'updated_at' => now()->toDateTimeString(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Failed to broadcast order notification', [
+                'customer_id' => $customerId,
+                'checkout_id' => $checkoutId,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function broadcastNotificationCountUpdate(int $customerId): void
+    {
+        try {
+            $key = (string) config('services.pusher.key', '');
+            $secret = (string) config('services.pusher.secret', '');
+            $appId = (string) config('services.pusher.app_id', '');
+            $cluster = (string) config('services.pusher.cluster', 'ap1');
+
+            if ($key === '' || $secret === '' || $appId === '') {
+                return;
+            }
+
+            $pusher = new Pusher($key, $secret, $appId, ['cluster' => $cluster, 'useTLS' => true]);
+            $channelName = 'private-customer-' . $customerId;
+
+            $unreadCount = OrderNotification::query()
+                ->where('on_customer_id', $customerId)
+                ->where('on_is_read', false)
+                ->count();
+
+            $pusher->trigger($channelName, 'notification.count.updated', [
+                'unread_count' => (int) $unreadCount,
+                'updated_at' => now()->toDateTimeString(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Failed to broadcast notification count', [
+                'customer_id' => $customerId,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 }
