@@ -600,6 +600,11 @@ class AdminOrderController extends Controller
             ])->save();
         });
 
+        \App\Models\OrderNotification::updateStatusForCheckout(
+            (string) ($order->ch_checkout_id ?? ''),
+            (string) ($order->ch_fulfillment_status ?? 'pending')
+        );
+
         $this->sendCustomerOrderStatusEmail($order, 'approval_approved');
 
         return response()->json([
@@ -740,6 +745,10 @@ class AdminOrderController extends Controller
         $previousStatus = (string) ($order->ch_fulfillment_status ?? 'pending');
         $order->ch_fulfillment_status = $validated['status'];
         $order->save();
+        \App\Models\OrderNotification::updateStatusForCheckout(
+            (string) ($order->ch_checkout_id ?? ''),
+            (string) $validated['status']
+        );
 
         if ($validated['status'] === 'delivered') {
             OrderPvPosting::postIfNeeded($order, (int) $admin->id);
