@@ -52,7 +52,7 @@ class OrderNotification extends Model
 
     public static function updateStatusForCheckout(string $checkoutId, string $status): void
     {
-        $href = match ($status) {
+        $hrefPrefix = match ($status) {
             'pending' => 'purchases://pending',
             'paid', 'succeeded', 'success' => 'purchases://paid',
             'processing' => 'purchases://processing',
@@ -69,12 +69,20 @@ class OrderNotification extends Model
             default => 'info',
         };
 
+        // Update each notification individually to include mobile_order_id in href
         self::query()
             ->where('on_checkout_id', $checkoutId)
-            ->update([
-                'on_status' => $status,
-                'on_href' => $href,
-                'on_severity' => $severity,
-            ]);
+            ->get()
+            ->each(function (self $notification) use ($hrefPrefix, $severity, $status) {
+                $href = $notification->on_mobile_order_id
+                    ? $hrefPrefix . '/' . $notification->on_mobile_order_id
+                    : $hrefPrefix;
+
+                $notification->update([
+                    'on_status' => $status,
+                    'on_href' => $href,
+                    'on_severity' => $severity,
+                ]);
+            });
     }
 }
