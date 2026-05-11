@@ -47,9 +47,18 @@ use App\Http\Controllers\Api\TotpController;
 use App\Http\Controllers\Api\GeminiController;
 use App\Http\Controllers\Api\MobilePaymentController;
 use Illuminate\Support\Facades\Broadcast;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Http\Request;
 
 Route::middleware(['auth:sanctum'])->post('/broadcasting/auth', function (Request $request) {
+    Log::info('Broadcast auth request', [
+        'authorization' => $request->header('authorization'),
+        'channel_name' => $request->channel_name,
+        'socket_id' => $request->socket_id,
+        'user_id' => optional($request->user())->c_userid,
+        'user' => optional($request->user())->toArray(),
+    ]);
+
     return Broadcast::auth($request);
 });
 
