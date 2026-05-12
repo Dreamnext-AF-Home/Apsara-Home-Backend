@@ -14,6 +14,7 @@ use App\Models\Product;
 use App\Models\SystemSetting;
 use App\Models\WebPageContent;
 use App\Services\CloudinaryUploadService;
+use App\Services\ExpoPushNotificationService;
 use App\Support\DirectReferralCommission;
 use App\Support\OrderPvPosting;
 use Illuminate\Http\Request;
@@ -2089,6 +2090,39 @@ class PaymentController extends Controller
             ]);
         } catch (\Throwable $e) {
             Log::warning('Failed to publish customer realtime notification.', [
+                'customer_id' => (int) $order->ch_customer_id,
+                'checkout_id' => (string) $order->ch_checkout_id,
+                'event_type' => $eventType,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        // Send Expo push notification
+        try {
+            $expoPushService = new ExpoPushNotificationService();
+            $result = $expoPushService->sendToCustomer((int) $order->ch_customer_id, [
+                'title' => $title,
+                'body' => $description,
+                'sound' => 'default',
+                'badge' => 1,
+                'data' => [
+                    'order_id' => (int) $order->ch_id,
+                    'checkout_id' => (string) $order->ch_checkout_id,
+                    'event_type' => $eventType,
+                    'status' => $status,
+                    'type' => 'order_update',
+                ],
+            ]);
+
+            Log::info('Expo push notification sent for order status update', [
+                'customer_id' => (int) $order->ch_customer_id,
+                'checkout_id' => (string) $order->ch_checkout_id,
+                'status' => $status,
+                'sent' => $result['sent'],
+                'failed' => $result['failed'],
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('Failed to send Expo push notification for order status update.', [
                 'customer_id' => (int) $order->ch_customer_id,
                 'checkout_id' => (string) $order->ch_checkout_id,
                 'event_type' => $eventType,
