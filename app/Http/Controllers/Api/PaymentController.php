@@ -2014,15 +2014,35 @@ class PaymentController extends Controller
         $orderNotificationImage = '';
         $orderNotificationHref = '/orders';
 
+        Log::info('🔍 [DEBUG] Fetching OrderNotification for checkout', [
+            'checkout_id' => (string) $order->ch_checkout_id,
+        ]);
+
         $orderNotification = OrderNotification::query()
             ->where('on_checkout_id', (string) $order->ch_checkout_id)
             ->first();
+
+        Log::info('🔍 [DEBUG] OrderNotification query result', [
+            'checkout_id' => (string) $order->ch_checkout_id,
+            'notification_found' => $orderNotification ? 'YES' : 'NO',
+            'notification_id' => $orderNotification?->on_id,
+        ]);
 
         if ($orderNotification) {
             $customTitle = trim((string) ($orderNotification->on_title ?? ''));
             $customMessage = trim((string) ($orderNotification->on_message ?? ''));
             $customImage = trim((string) ($orderNotification->on_product_image ?? ''));
             $customHref = trim((string) ($orderNotification->on_href ?? ''));
+
+            Log::info('🔍 [DEBUG] OrderNotification data extracted', [
+                'checkout_id' => (string) $order->ch_checkout_id,
+                'title' => $customTitle ?: 'EMPTY',
+                'message' => $customMessage ?: 'EMPTY',
+                'image' => $customImage ?: 'EMPTY',
+                'image_field_raw' => (string) ($orderNotification->on_product_image ?? 'NULL'),
+                'image_field_exists' => isset($orderNotification->on_product_image) ? 'YES' : 'NO',
+                'href' => $customHref ?: 'EMPTY',
+            ]);
 
             if ($customTitle !== '') {
                 $orderNotificationTitle = $customTitle;
@@ -2036,6 +2056,17 @@ class PaymentController extends Controller
             if ($customHref !== '') {
                 $orderNotificationHref = $customHref;
             }
+
+            Log::info('📸 [DEBUG] Image assignment result', [
+                'checkout_id' => (string) $order->ch_checkout_id,
+                'orderNotificationImage_assigned' => $orderNotificationImage ?: 'EMPTY',
+                'image_is_not_empty' => !empty($orderNotificationImage),
+            ]);
+        } else {
+            Log::warning('⚠️ [DEBUG] No OrderNotification found for this checkout', [
+                'checkout_id' => (string) $order->ch_checkout_id,
+                'will_send_without_custom_image' => true,
+            ]);
         }
 
         try {
@@ -2159,21 +2190,35 @@ class PaymentController extends Controller
                 $expoData['data']['product_image'] = (string) $orderNotificationImage;
             }
 
+            // DEBUG: Log the complete notification payload being sent
+            Log::info('🔍 [DEBUG] Preparing Expo push notification', [
+                'customer_id' => (int) $order->ch_customer_id,
+                'checkout_id' => (string) $order->ch_checkout_id,
+                'title' => $orderNotificationTitle,
+                'body' => $orderNotificationMessage,
+                'product_image' => $orderNotificationImage ?? 'NO_IMAGE',
+                'image_empty_check' => empty($orderNotificationImage) ? 'TRUE (image is empty)' : 'FALSE (image exists)',
+                'full_payload' => json_encode($expoData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
+            ]);
+
             $result = $expoPushService->sendToCustomer((int) $order->ch_customer_id, $expoData);
 
-            Log::info('Expo push notification sent for order status update', [
+            Log::info('✅ Expo push notification sent for order status update', [
                 'customer_id' => (int) $order->ch_customer_id,
                 'checkout_id' => (string) $order->ch_checkout_id,
                 'status' => $status,
                 'sent' => $result['sent'],
                 'failed' => $result['failed'],
+                'product_image_included' => !empty($orderNotificationImage),
+                'image_url' => $orderNotificationImage ?? 'NONE',
             ]);
         } catch (\Throwable $e) {
-            Log::warning('Failed to send Expo push notification for order status update.', [
+            Log::warning('❌ Failed to send Expo push notification for order status update.', [
                 'customer_id' => (int) $order->ch_customer_id,
                 'checkout_id' => (string) $order->ch_checkout_id,
                 'event_type' => $eventType,
                 'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
             ]);
         }
     }

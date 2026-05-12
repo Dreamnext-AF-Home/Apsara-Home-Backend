@@ -38,14 +38,40 @@ class ExpoPushNotificationService
         $sent = 0;
         $failed = 0;
 
-        foreach (array_chunk($tokens, 100) as $chunk) {
+        // DEBUG: Log notification payload
+        Log::info('🚀 [DEBUG] sendBatch - Notification payload being sent', [
+            'total_tokens' => count($tokens),
+            'notification_keys' => array_keys($notification),
+            'has_priority' => isset($notification['priority']),
+            'priority_value' => $notification['priority'] ?? 'NOT_SET',
+            'has_channel_id' => isset($notification['channelId']),
+            'channel_id_value' => $notification['channelId'] ?? 'NOT_SET',
+            'has_product_image_in_data' => isset($notification['data']['product_image']),
+            'product_image_url' => $notification['data']['product_image'] ?? 'NO_IMAGE',
+            'full_notification_payload' => json_encode($notification, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
+        ]);
+
+        foreach (array_chunk($tokens, 100) as $chunkIndex => $chunk) {
             $messages = array_map(function (string $token) use ($notification) {
                 return array_merge(['to' => $token], $notification);
             }, $chunk);
 
+            Log::info('📤 [DEBUG] Sending batch to Expo API', [
+                'batch_index' => $chunkIndex,
+                'tokens_in_batch' => count($chunk),
+                'total_messages' => count($messages),
+                'sample_message_keys' => $messages[0] ? array_keys($messages[0]) : [],
+            ]);
+
             try {
                 $response = Http::timeout(30)
                     ->post($this->expoApiUrl, $messages);
+
+                Log::info('📨 [DEBUG] Expo API response received', [
+                    'status_code' => $response->status(),
+                    'successful' => $response->successful(),
+                    'response_body' => $response->body(),
+                ]);
 
                 if ($response->successful()) {
                     $data = $response->json();
@@ -55,19 +81,24 @@ class ExpoPushNotificationService
                                 $sent++;
                             } else {
                                 $failed++;
-                                Log::warning('Expo push notification failed', ['response' => $item]);
+                                Log::warning('❌ Expo push notification failed', ['response' => $item]);
                             }
                         }
                     }
                 } else {
                     $failed += count($chunk);
-                    Log::error('Expo API error', ['status' => $response->status(), 'body' => $response->body()]);
+                    Log::error('❌ Expo API error', ['status' => $response->status(), 'body' => $response->body()]);
                 }
             } catch (\Exception $e) {
                 $failed += count($chunk);
-                Log::error('Expo push notification error', ['error' => $e->getMessage()]);
+                Log::error('❌ Expo push notification error', ['error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
             }
         }
+
+        Log::info('📊 [DEBUG] sendBatch complete', [
+            'total_sent' => $sent,
+            'total_failed' => $failed,
+        ]);
 
         return ['sent' => $sent, 'failed' => $failed];
     }
