@@ -458,6 +458,7 @@ Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_a
     Route::post('/admin/partner-users', [PartnerUserController::class, 'store']);
     Route::put('/admin/partner-users/{id}', [PartnerUserController::class, 'update']);
     Route::delete('/admin/partner-users/{id}', [PartnerUserController::class, 'destroy']);
+    Route::get('/admin/partner-members', [MemberController::class, 'partnerMembers']);
 });
 
 Route::prefix('admin/auth')->group(function () {

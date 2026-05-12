@@ -4,9 +4,11 @@ namespace App\Http\Controllers\Api;
 
 use App\Events\CustomerAccountDeleted;
 use App\Http\Controllers\Controller;
+use App\Models\Admin;
 use App\Models\AdminNotification;
 use App\Models\Customer;
 use App\Models\CustomerWalletLedger;
+use App\Models\WebPageContent;
 use App\Support\CustomerBonusNotification;
 use App\Support\TierEvaluator;
 use Carbon\Carbon;
@@ -23,6 +25,180 @@ use Illuminate\Support\Str;
 class MemberController extends Controller
 {
     private const MEMBERS_CACHE_VERSION_KEY = 'admin:members:cache-version';
+
+    public function partnerMembers(Request $request): JsonResponse
+    {
+        $actor = $request->user();
+        if (!($actor instanceof Admin)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $level = (int) ($actor->user_level_id ?? 0);
+        if (!in_array($level, [1, 2, 4], true)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $validated = $request->validate([
+            'q' => ['nullable', 'string', 'max:120'],
+            'page' => ['nullable', 'integer', 'min:1'],
+            'per_page' => ['nullable', 'integer', 'min:1', 'max:200'],
+            'storefront_id' => ['nullable', 'integer', 'min:1'],
+        ]);
+
+        $search = trim((string) ($validated['q'] ?? ''));
+        $page = (int) ($validated['page'] ?? 1);
+        $perPage = (int) ($validated['per_page'] ?? 50);
+        $storefrontId = (int) ($validated['storefront_id'] ?? 0);
+
+        $allowedStorefrontIds = [];
+        if ($level === 4) {
+            $allowedStorefrontIds = array_values(array_unique(array_filter(array_map(
+                static fn ($id) => is_numeric($id) ? (int) $id : null,
+                is_array($actor->admin_permissions) ? $actor->admin_permissions : [],
+            ), static fn ($id) => is_int($id) && $id > 0)));
+
+            if (empty($allowedStorefrontIds)) {
+                return response()->json([
+                    'members' => [],
+                    'meta' => [
+                        'current_page' => 1,
+                        'last_page' => 1,
+                        'per_page' => $perPage,
+                        'total' => 0,
+                        'from' => null,
+                        'to' => null,
+                    ],
+                ]);
+            }
+        }
+
+        $storefrontQuery = WebPageContent::query()
+            ->whereIn('wpc_type', ['partner-storefront', 'partner-storefronts'])
+            ->when($storefrontId > 0, fn ($query) => $query->where('wpc_id', $storefrontId))
+            ->when($level === 4, fn ($query) => $query->whereIn('wpc_id', $allowedStorefrontIds))
+            ->get(['wpc_id', 'wpc_payload']);
+
+        $partnerSlugs = $storefrontQuery
+            ->map(fn (WebPageContent $storefront) => strtolower(trim((string) data_get($storefront->wpc_payload, 'fields.slug', ''))))
+            ->filter(fn ($value) => is_string($value) && $value !== '')
+            ->unique()
+            ->values();
+
+        if ($partnerSlugs->isEmpty()) {
+            return response()->json([
+                'members' => [],
+                'meta' => [
+                    'current_page' => 1,
+                    'last_page' => 1,
+                    'per_page' => $perPage,
+                    'total' => 0,
+                    'from' => null,
+                    'to' => null,
+                ],
+            ]);
+        }
+
+        $query = Customer::query()
+            ->select([
+                'tbl_customer.c_userid',
+                'tbl_customer.c_username',
+                'tbl_customer.c_fname',
+                'tbl_customer.c_mname',
+                'tbl_customer.c_lname',
+                'tbl_customer.c_email',
+                'tbl_customer.c_mobile',
+                'tbl_customer.c_avatar_url',
+                'tbl_customer.c_address',
+                'tbl_customer.c_barangay',
+                'tbl_customer.c_city',
+                'tbl_customer.c_province',
+                'tbl_customer.c_region',
+                'tbl_customer.c_zipcode',
+                'tbl_customer.c_sponsor',
+                'tbl_customer.c_partner_slug',
+                'tbl_customer.c_date_started',
+            ])
+            ->whereIn(DB::raw('LOWER(tbl_customer.c_partner_slug)'), $partnerSlugs->all())
+            ->when($search !== '', fn ($builder) => $this->applyMemberSearch($builder, $search))
+            ->orderByDesc('tbl_customer.c_date_started')
+            ->orderByDesc('tbl_customer.c_userid');
+
+        $paginator = $query->paginate($perPage, ['*'], 'page', $page);
+
+        $sponsorIds = collect($paginator->items())
+            ->pluck('c_sponsor')
+            ->map(fn ($id) => (int) $id)
+            ->filter(fn ($id) => $id > 0)
+            ->unique()
+            ->values();
+
+        $sponsorsById = $sponsorIds->isEmpty()
+            ? collect()
+            : Customer::query()
+                ->select(['c_userid', 'c_username', 'c_fname', 'c_mname', 'c_lname', 'c_avatar_url'])
+                ->whereIn('c_userid', $sponsorIds->all())
+                ->get()
+                ->keyBy('c_userid');
+
+        $members = collect($paginator->items())
+            ->map(function (Customer $customer) use ($sponsorsById): array {
+                $fullName = trim(implode(' ', array_filter([
+                    (string) $customer->c_fname,
+                    (string) $customer->c_mname,
+                    (string) $customer->c_lname,
+                ])));
+
+                if ($fullName === '') {
+                    $fullName = (string) ($customer->c_username ?: ('Member #' . $customer->c_userid));
+                }
+
+                $sponsor = $sponsorsById->get((int) ($customer->c_sponsor ?? 0));
+                $sponsorName = $sponsor instanceof Customer ? $this->displayName($sponsor) : '';
+                $addressParts = array_filter([
+                    (string) ($customer->c_address ?? ''),
+                    (string) ($customer->c_barangay ?? ''),
+                    (string) ($customer->c_city ?? ''),
+                    (string) ($customer->c_province ?? ''),
+                    (string) ($customer->c_region ?? ''),
+                    (string) ($customer->c_zipcode ?? ''),
+                ], fn ($value) => trim((string) $value) !== '');
+
+                return [
+                    'id' => (int) $customer->c_userid,
+                    'name' => $fullName,
+                    'username' => (string) ($customer->c_username ?? ''),
+                    'email' => (string) ($customer->c_email ?? ''),
+                    'avatar' => (string) ($customer->c_avatar_url ?? ''),
+                    'joinedAt' => $this->formatDate($customer->c_date_started),
+                    'createdAt' => $this->formatDate($customer->c_date_started),
+                    'created_at' => $this->formatDate($customer->c_date_started),
+                    'referredByName' => $sponsorName,
+                    'referredByUsername' => $sponsor instanceof Customer ? (string) ($sponsor->c_username ?? '') : '',
+                    'referredByAvatar' => $sponsor instanceof Customer ? (string) ($sponsor->c_avatar_url ?? '') : '',
+                    'contactNumber' => (string) ($customer->c_mobile ?? ''),
+                    'addressLine' => (string) ($customer->c_address ?? ''),
+                    'barangay' => (string) ($customer->c_barangay ?? ''),
+                    'city' => (string) ($customer->c_city ?? ''),
+                    'province' => (string) ($customer->c_province ?? ''),
+                    'region' => (string) ($customer->c_region ?? ''),
+                    'zipCode' => (string) ($customer->c_zipcode ?? ''),
+                    'fullAddress' => !empty($addressParts) ? implode(', ', $addressParts) : '',
+                ];
+            })
+            ->values();
+
+        return response()->json([
+            'members' => $members,
+            'meta' => [
+                'current_page' => $paginator->currentPage(),
+                'last_page' => $paginator->lastPage(),
+                'per_page' => $paginator->perPage(),
+                'total' => $paginator->total(),
+                'from' => $paginator->firstItem(),
+                'to' => $paginator->lastItem(),
+            ],
+        ]);
+    }
 
     public function topEarners(Request $request): JsonResponse
     {

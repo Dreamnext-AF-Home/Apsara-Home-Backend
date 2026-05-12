@@ -10,23 +10,26 @@ use RuntimeException;
 
 class CloudinaryUploadService
 {
-    public function uploadImage(UploadedFile $file, string $folder = 'afhome/expenses/invoices'): array
+    public function uploadImage(UploadedFile $file, string $folder = 'afhome/expenses/invoices', bool $requireCloudinary = false): array
     {
-        return $this->uploadFile($file, $folder, 'image');
+        return $this->uploadFile($file, $folder, 'image', $requireCloudinary);
     }
 
-    public function uploadVideo(UploadedFile $file, string $folder = 'afhome/reviews/videos'): array
+    public function uploadVideo(UploadedFile $file, string $folder = 'afhome/reviews/videos', bool $requireCloudinary = false): array
     {
-        return $this->uploadFile($file, $folder, 'video');
+        return $this->uploadFile($file, $folder, 'video', $requireCloudinary);
     }
 
-    private function uploadFile(UploadedFile $file, string $folder, string $resourceType): array
+    private function uploadFile(UploadedFile $file, string $folder, string $resourceType, bool $requireCloudinary = false): array
     {
-        $cloudName = trim((string) env('CLOUDINARY_CLOUD_NAME', ''));
-        $apiKey = trim((string) env('CLOUDINARY_API_KEY', ''));
-        $apiSecret = trim((string) env('CLOUDINARY_API_SECRET', ''));
+        $cloudName = trim((string) config('services.cloudinary.cloud_name', env('CLOUDINARY_CLOUD_NAME', '')));
+        $apiKey = trim((string) config('services.cloudinary.api_key', env('CLOUDINARY_API_KEY', '')));
+        $apiSecret = trim((string) config('services.cloudinary.api_secret', env('CLOUDINARY_API_SECRET', '')));
 
         if ($cloudName === '' || $apiKey === '' || $apiSecret === '') {
+            if ($requireCloudinary) {
+                throw new RuntimeException('Cloudinary is not configured. Please set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.');
+            }
             return $this->uploadToLocalPublicDisk($file, $folder, $resourceType);
         }
 
