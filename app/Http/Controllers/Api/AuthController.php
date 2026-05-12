@@ -160,23 +160,34 @@ class AuthController extends Controller
 
     public function verifyRegistrationOtp(Request $request)
     {
+        $debugId = (string) Str::uuid();
+        $fail = function (string $field, string $message) use ($debugId): void {
+            throw ValidationException::withMessages([
+                $field => [sprintf('%s (Ref: %s)', $message, $debugId)],
+            ]);
+        };
+
         $validated = $request->validate([
             'verification_token' => 'required|string',
             'otp' => 'required|string|size:4',
+            'debug_trace_id' => 'nullable|string|max:120',
+        ]);
+        $traceId = trim((string) ($validated['debug_trace_id'] ?? ''));
+
+        Log::info('verifyRegistrationOtp:start', [
+            'debug_id' => $debugId,
+            'trace_id' => $traceId !== '' ? $traceId : null,
+            'verification_token_prefix' => substr((string) $validated['verification_token'], 0, 8),
         ]);
 
         $cached = Cache::get($this->registrationOtpCacheKey($validated['verification_token']));
 
         if (!is_array($cached) || empty($cached['otp_hash']) || empty($cached['payload'])) {
-            throw ValidationException::withMessages([
-                'otp' => ['The verification code has expired. Please register again.'],
-            ]);
+            $fail('otp', 'The verification code has expired. Please register again.');
         }
 
         if (!Hash::check((string) $validated['otp'], (string) $cached['otp_hash'])) {
-            throw ValidationException::withMessages([
-                'otp' => ['Invalid verification code.'],
-            ]);
+            $fail('otp', 'Invalid verification code.');
         }
 
         $payload = json_decode(Crypt::decryptString((string) $cached['payload']), true, 512, JSON_THROW_ON_ERROR);
@@ -184,21 +195,33 @@ class AuthController extends Controller
         $referrerUserId = (int) ($payload['referrer_user_id'] ?? 0);
 
         if (empty($registration['email']) || empty($registration['username'])) {
-            throw ValidationException::withMessages([
-                'otp' => ['The verification payload is invalid. Please register again.'],
-            ]);
+            $fail('otp', 'The verification payload is invalid. Please register again.');
         }
 
-        if (Customer::query()->where('c_email', (string) $registration['email'])->exists()) {
-            throw ValidationException::withMessages([
-                'email' => ['This email is already registered.'],
-            ]);
+        $existingByEmail = Customer::query()
+            ->whereRaw('LOWER(c_email) = ?', [mb_strtolower((string) $registration['email'], 'UTF-8')])
+            ->first();
+        $existingByUsername = Customer::query()
+            ->whereRaw('LOWER(c_username) = ?', [mb_strtolower((string) $registration['username'], 'UTF-8')])
+            ->first();
+
+        // Idempotency: if the same account is already created for this OTP payload,
+        // return success instead of failing the client with a duplicate error.
+        if ($existingByEmail instanceof Customer && $existingByUsername instanceof Customer
+            && (int) $existingByEmail->c_userid === (int) $existingByUsername->c_userid) {
+            Cache::forget($this->registrationOtpCacheKey($validated['verification_token']));
+            return response()->json([
+                'message' => 'Registration complete. You can now sign in.',
+                'user' => $this->transformCustomer($existingByEmail),
+            ], 201);
         }
 
-        if (Customer::query()->where('c_username', (string) $registration['username'])->exists()) {
-            throw ValidationException::withMessages([
-                'username' => ['This username is already taken.'],
-            ]);
+        if ($existingByEmail instanceof Customer) {
+            $fail('email', 'This email is already registered.');
+        }
+
+        if ($existingByUsername instanceof Customer) {
+            $fail('username', 'This username is already taken.');
         }
 
         $customer = DB::transaction(function () use ($registration, $referrerUserId) {
@@ -238,48 +261,79 @@ class AuthController extends Controller
                 'c_city_code'    => $registration['city_code'] ?? null,
                 'c_barangay_code'=> $registration['barangay_code'] ?? null,
                 'c_zipcode'      => $registration['zip_code'] ?? null,
+                'c_partner_slug' => ($slug = strtolower(trim((string) ($registration['partner_slug'] ?? '')))) !== '' ? $slug : null,
             ]);
         });
 
-        $this->createPrimaryAddressRecord($customer);
-        $referrer = Customer::query()->where('c_userid', $referrerUserId)->first();
-        if ($referrer instanceof Customer) {
-            $this->notifyReferrerAboutRegistration($referrer, $customer);
-            TierEvaluator::evaluate($referrer);
-        }
-        $this->notifyAdminsAboutNewRegistration($customer);
-
-        // Log registration activity
-        try {
-            MemberActivityLog::create([
-                'mal_customer_id' => (int) $customer->c_userid,
-                'mal_activity_type' => 'registration',
-                'mal_action' => MemberActivityLog::ACTION_CREATE,
-                'mal_description' => 'New member registered',
-                'mal_resource_type' => 'account',
-                'mal_resource_id' => (int) $customer->c_userid,
-                'mal_details' => [
-                    'username' => $customer->c_username,
-                    'email' => $customer->c_email,
-                    'referrer_id' => $referrerUserId,
-                ],
-                'mal_ip_address' => request()->ip(),
-                'mal_user_agent' => request()->userAgent(),
-                'mal_created_at' => now(),
-            ]);
-        } catch (\Throwable $e) {
-            Log::warning('Failed to log registration activity', [
-                'customer_id' => (int) $customer->c_userid,
-                'error' => $e->getMessage(),
-            ]);
-        }
-
+        $requestIp = request()->ip();
+        $requestUserAgent = request()->userAgent();
         Cache::forget($this->registrationOtpCacheKey($validated['verification_token']));
 
-        return response()->json([
+        Log::info('verifyRegistrationOtp:success', [
+            'debug_id' => $debugId,
+            'trace_id' => $traceId !== '' ? $traceId : null,
+            'customer_id' => (int) $customer->c_userid,
+        ]);
+
+        $response = response()->json([
             'message' => 'Registration complete. You can now sign in.',
             'user' => $this->transformCustomer($customer),
+            'debug_id' => $debugId,
         ], 201);
+
+        // Avoid corrupting JSON responses in local/dev when heavy post-registration
+        // hooks can hit timeouts. Enable explicitly when infra can handle it.
+        $runPostRegistrationHooks = (bool) env('AUTH_RUN_POST_REGISTRATION_HOOKS', false);
+        if ($runPostRegistrationHooks) {
+            dispatch(function () use ($customer, $referrerUserId, $requestIp, $requestUserAgent): void {
+                try {
+                    $this->createPrimaryAddressRecord($customer);
+                    $referrer = Customer::query()->where('c_userid', $referrerUserId)->first();
+                    if ($referrer instanceof Customer) {
+                        $this->notifyReferrerAboutRegistration($referrer, $customer);
+                        TierEvaluator::evaluate($referrer);
+                    }
+                    $this->notifyAdminsAboutNewRegistration($customer);
+                } catch (\Throwable $e) {
+                    Log::warning('Post-registration hooks failed after account creation', [
+                        'customer_id' => (int) $customer->c_userid,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+
+                try {
+                    MemberActivityLog::create([
+                        'mal_customer_id' => (int) $customer->c_userid,
+                        'mal_activity_type' => 'registration',
+                        'mal_action' => MemberActivityLog::ACTION_CREATE,
+                        'mal_description' => 'New member registered',
+                        'mal_resource_type' => 'account',
+                        'mal_resource_id' => (int) $customer->c_userid,
+                        'mal_details' => [
+                            'username' => $customer->c_username,
+                            'email' => $customer->c_email,
+                            'referrer_id' => $referrerUserId,
+                        ],
+                        'mal_ip_address' => $requestIp,
+                        'mal_user_agent' => $requestUserAgent,
+                        'mal_created_at' => now(),
+                    ]);
+                } catch (\Throwable $e) {
+                    Log::warning('Failed to log registration activity', [
+                        'customer_id' => (int) $customer->c_userid,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            })->afterResponse();
+        } else {
+            Log::info('verifyRegistrationOtp:post-hooks-skipped', [
+                'debug_id' => $debugId,
+                'trace_id' => $traceId !== '' ? $traceId : null,
+                'customer_id' => (int) $customer->c_userid,
+            ]);
+        }
+
+        return $response;
     }
 
     public function resendRegistrationOtp(Request $request)
@@ -1325,10 +1379,12 @@ class AuthController extends Controller
         $validated = $request->validate([
             'file' => 'required|image|mimes:jpeg,jpg,png,webp,gif|max:5120',
             'original_file' => 'nullable|image|mimes:jpeg,jpg,png,webp,gif|max:5120',
+            'require_cloudinary' => 'nullable|boolean',
         ]);
+        $requireCloudinary = (bool) ($validated['require_cloudinary'] ?? false);
 
         try {
-            $upload = $cloudinary->uploadImage($validated['file'], 'apsara/profile');
+            $upload = $cloudinary->uploadImage($validated['file'], 'apsara/profile', $requireCloudinary);
             $avatarUrl = (string) ($upload['secure_url'] ?? '');
 
             if ($avatarUrl === '') {
@@ -1338,7 +1394,7 @@ class AuthController extends Controller
             $customer->c_avatar_url = $avatarUrl;
             $avatarOriginalUrl = null;
             if ($request->hasFile('original_file') && Schema::hasColumn('tbl_customer', 'c_avatar_original_url')) {
-                $originalUpload = $cloudinary->uploadImage($request->file('original_file'), 'apsara/profile/originals');
+                $originalUpload = $cloudinary->uploadImage($request->file('original_file'), 'apsara/profile/originals', $requireCloudinary);
                 $avatarOriginalUrl = (string) ($originalUpload['secure_url'] ?? '');
                 $customer->c_avatar_original_url = $avatarOriginalUrl !== '' ? $avatarOriginalUrl : null;
             }
