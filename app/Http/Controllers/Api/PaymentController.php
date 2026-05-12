@@ -2103,8 +2103,8 @@ class PaymentController extends Controller
         try {
             $expoPushService = new ExpoPushNotificationService();
             $result = $expoPushService->sendToCustomer((int) $order->ch_customer_id, [
-                'title' => $title,
-                'body' => $description,
+                'title' => (string) $notification->cn_title,
+                'body' => (string) $notification->cn_message,
                 'sound' => 'default',
                 'badge' => 1,
                 'data' => [
@@ -2113,6 +2113,12 @@ class PaymentController extends Controller
                     'event_type' => $eventType,
                     'status' => $status,
                     'type' => 'order_update',
+                    'href' => '/orders',
+                    'screen' => 'OrderDetail',
+                    'params' => json_encode([
+                        'orderId' => (int) $order->ch_id,
+                        'checkoutId' => (string) $order->ch_checkout_id,
+                    ]),
                 ],
             ]);
 
