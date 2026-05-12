@@ -609,17 +609,11 @@ class AdminOrderController extends Controller
 
         $this->sendCustomerOrderStatusEmail($order, 'approval_approved');
 
-        $notificationData = $this->getOrderNotificationData((string) ($order->ch_checkout_id ?? ''));
-        $title = $notificationData['title'] ?? 'Order Approved';
-        $message = $notificationData['message'] ?? 'Your order has been approved and is now being processed.';
-        $productImage = $notificationData['image'] ?? null;
-
         $this->notifyCustomerOrderStatusUpdateSafely(
             $order,
             'approval_approved',
-            $title,
-            $message,
-            $productImage
+            'Order Approved',
+            'Your order has been approved and is now being processed.'
         );
 
         return response()->json([
@@ -736,17 +730,11 @@ class AdminOrderController extends Controller
 
         $this->sendCustomerOrderStatusEmail($order, 'approval_rejected');
 
-        $notificationData = $this->getOrderNotificationData((string) ($order->ch_checkout_id ?? ''));
-        $title = $notificationData['title'] ?? 'Order Rejected';
-        $message = $notificationData['message'] ?? 'Your order was not approved. Please contact AF Home support for assistance.';
-        $productImage = $notificationData['image'] ?? null;
-
         $this->notifyCustomerOrderStatusUpdateSafely(
             $order,
             'approval_rejected',
-            $title,
-            $message,
-            $productImage
+            'Order Rejected',
+            'Your order was not approved. Please contact AF Home support for assistance.'
         );
 
         return response()->json(['message' => 'Order rejected.']);
@@ -1708,11 +1696,10 @@ class AdminOrderController extends Controller
         CheckoutHistory $order,
         string $eventType,
         string $title,
-        string $description,
-        ?string $productImage = null
+        string $description
     ): void {
         try {
-            (new PaymentController())->notifyCustomerOrderStatusUpdate($order, $eventType, $title, $description, $productImage);
+            (new PaymentController())->notifyCustomerOrderStatusUpdate($order, $eventType, $title, $description);
         } catch (\Throwable $e) {
             Log::warning('Order status update continued after customer notification failed.', [
                 'order_id' => (int) $order->ch_id,
@@ -1732,35 +1719,6 @@ class AdminOrderController extends Controller
             'shipment_status' => 'shipment:' . strtolower((string) ($order->ch_shipment_status ?? '')),
             default => '',
         };
-    }
-
-    private function getOrderNotificationData(string $checkoutId): array
-    {
-        if ($checkoutId === '') {
-            return [];
-        }
-
-        try {
-            $notification = \App\Models\OrderNotification::query()
-                ->where('on_checkout_id', $checkoutId)
-                ->first();
-
-            if (!$notification) {
-                return [];
-            }
-
-            return [
-                'title' => (string) ($notification->on_title ?? $notification->cn_title ?? ''),
-                'message' => (string) ($notification->on_custom_message ?? $notification->cn_message ?? ''),
-                'image' => (string) ($notification->on_product_image ?? $notification->product_image ?? ''),
-            ];
-        } catch (\Throwable $e) {
-            Log::warning('Failed to fetch order notification data.', [
-                'checkout_id' => $checkoutId,
-                'error' => $e->getMessage(),
-            ]);
-            return [];
-        }
     }
 
     private function buildOrderStatusEmailPayload(CheckoutHistory $order, string $eventType): ?array

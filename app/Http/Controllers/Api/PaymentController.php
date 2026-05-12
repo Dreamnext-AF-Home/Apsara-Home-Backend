@@ -1992,7 +1992,7 @@ class PaymentController extends Controller
         Cache::put($cacheKey, true, now()->addDays(7));
     }
 
-    public function notifyCustomerOrderStatusUpdate(CheckoutHistory $order, string $eventType, string $title, string $description, ?string $productImage = null): void
+    public function notifyCustomerOrderStatusUpdate(CheckoutHistory $order, string $eventType, string $title, string $description): void
     {
         if ((int) $order->ch_customer_id === 0) {
             return; // Skip guest checkouts
@@ -2099,12 +2099,34 @@ class PaymentController extends Controller
             ]);
         }
 
-        // Send Expo push notification
+        // Send Expo push notification with custom message from OrderNotification
         try {
             $expoPushService = new ExpoPushNotificationService();
+
+            // Fetch custom message and image from OrderNotification for Expo push
+            $expoTitle = (string) $notification->cn_title;
+            $expoBody = (string) $notification->cn_message;
+            $expoImage = '';
+
+            $orderNotification = OrderNotification::query()
+                ->where('on_checkout_id', (string) $order->ch_checkout_id)
+                ->first();
+
+            if ($orderNotification) {
+                $customMessage = trim((string) ($orderNotification->on_custom_message ?? ''));
+                $customImage = trim((string) ($orderNotification->on_product_image ?? ''));
+
+                if ($customMessage !== '') {
+                    $expoBody = $customMessage;
+                }
+                if ($customImage !== '') {
+                    $expoImage = $customImage;
+                }
+            }
+
             $expoData = [
-                'title' => (string) $notification->cn_title,
-                'body' => (string) $notification->cn_message,
+                'title' => $expoTitle,
+                'body' => $expoBody,
                 'sound' => 'default',
                 'badge' => 1,
                 'data' => [
@@ -2122,9 +2144,9 @@ class PaymentController extends Controller
                 ],
             ];
 
-            if (!empty($productImage)) {
+            if (!empty($expoImage)) {
                 $expoData['big'] = [
-                    'picture' => (string) $productImage,
+                    'picture' => (string) $expoImage,
                 ];
             }
 
