@@ -55,6 +55,17 @@ class DirectReferralCommission
             return;
         }
 
+        // Only trigger on the buyer's first purchase with this referrer
+        $firstPurchaseAlreadyRecorded = ReferralEarning::query()
+            ->where('re_buyer_customer_id', $buyerCustomerId)
+            ->where('re_referrer_customer_id', $referrerCustomerId)
+            ->whereNotIn('re_status', ['cancelled'])
+            ->exists();
+        if ($firstPurchaseAlreadyRecorded) {
+            return;
+        }
+
+        // Guard: don't double-create for the same order
         $existing = ReferralEarning::query()
             ->where('re_order_id', (int) $order->ch_id)
             ->where('re_referrer_customer_id', $referrerCustomerId)
@@ -65,12 +76,16 @@ class DirectReferralCommission
 
         $basisAmount = max(0, (float) ($order->ch_commission_basis_amount ?? 0));
         $rate = max(0, (float) env('DIRECT_REFERRAL_COMMISSION_RATE', 1));
-        $amount = round($basisAmount * $rate, 2);
-        if ($amount <= 0) {
+        $totalAmount = round($basisAmount * $rate, 2);
+        if ($totalAmount <= 0) {
             return;
         }
 
-        ReferralEarning::create([
+        // 50% cash + 50% e-GC per PDF spec
+        $cashAmount = round($totalAmount * 0.5, 2);
+        $egcAmount = round($totalAmount - $cashAmount, 2);
+
+        $shared = [
             're_order_id' => (int) $order->ch_id,
             're_checkout_id' => (string) ($order->ch_checkout_id ?? ''),
             're_buyer_customer_id' => $buyerCustomerId > 0 ? $buyerCustomerId : null,
@@ -80,12 +95,22 @@ class DirectReferralCommission
             're_quantity' => max(1, (int) ($order->ch_quantity ?? 1)),
             're_order_amount' => (float) ($order->ch_amount ?? 0),
             're_commission_basis_amount' => $basisAmount,
-            're_amount' => $amount,
             're_status' => 'pending',
             're_source_type' => $sourceType ?: null,
             're_reference_no' => (string) ($order->ch_checkout_id ?? ''),
-            're_notes' => 'Direct referral commission created on paid order.',
-        ]);
+        ];
+
+        ReferralEarning::create(array_merge($shared, [
+            're_wallet_type' => 'cash',
+            're_amount' => $cashAmount,
+            're_notes' => 'Direct referral commission (cash 50%) — first purchase only.',
+        ]));
+
+        ReferralEarning::create(array_merge($shared, [
+            're_wallet_type' => 'egc',
+            're_amount' => $egcAmount,
+            're_notes' => 'Direct referral commission (e-GC 50%) — first purchase only.',
+        ]));
     }
 
     public static function releaseAvailableForOrder(CheckoutHistory $order, ?int $releasedBy = null): void
@@ -111,8 +136,10 @@ class DirectReferralCommission
                     continue;
                 }
 
+                $walletType = (string) ($earning->re_wallet_type ?? 'cash');
+
                 $alreadyCredited = CustomerWalletLedger::query()
-                    ->where('wl_wallet_type', 'cash')
+                    ->where('wl_wallet_type', $walletType)
                     ->where('wl_entry_type', 'credit')
                     ->where('wl_source_type', 'referral_earning')
                     ->where('wl_source_id', (int) $earning->re_id)
@@ -124,13 +151,16 @@ class DirectReferralCommission
 
                     CustomerWalletLedger::create([
                         'wl_customer_id' => (int) $customer->c_userid,
-                        'wl_wallet_type' => 'cash',
+                        'wl_wallet_type' => $walletType,
                         'wl_entry_type' => 'credit',
                         'wl_amount' => (float) $earning->re_amount,
                         'wl_source_type' => 'referral_earning',
                         'wl_source_id' => (int) $earning->re_id,
                         'wl_reference_no' => (string) ($earning->re_reference_no ?? $order->ch_checkout_id ?? ''),
-                        'wl_notes' => 'Direct referral commission released on delivered order.',
+                        'wl_notes' => sprintf(
+                            'Direct referral commission (%s) released on delivered order.',
+                            $walletType === 'egc' ? 'e-GC 50%' : 'cash 50%'
+                        ),
                         'wl_created_by' => $releasedBy,
                     ]);
 
