@@ -2008,10 +2008,11 @@ class PaymentController extends Controller
             default => 'info',
         };
 
-        // Fetch OrderNotification data first for custom messages and images
+        // Fetch OrderNotification data first for custom messages, images, and deep links
         $orderNotificationTitle = $title;
         $orderNotificationMessage = $description;
         $orderNotificationImage = '';
+        $orderNotificationHref = '/orders';
 
         $orderNotification = OrderNotification::query()
             ->where('on_checkout_id', (string) $order->ch_checkout_id)
@@ -2021,6 +2022,7 @@ class PaymentController extends Controller
             $customTitle = trim((string) ($orderNotification->on_title ?? ''));
             $customMessage = trim((string) ($orderNotification->on_message ?? ''));
             $customImage = trim((string) ($orderNotification->on_product_image ?? ''));
+            $customHref = trim((string) ($orderNotification->on_href ?? ''));
 
             if ($customTitle !== '') {
                 $orderNotificationTitle = $customTitle;
@@ -2030,6 +2032,9 @@ class PaymentController extends Controller
             }
             if ($customImage !== '') {
                 $orderNotificationImage = $customImage;
+            }
+            if ($customHref !== '') {
+                $orderNotificationHref = $customHref;
             }
         }
 
@@ -2139,7 +2144,7 @@ class PaymentController extends Controller
                     'event_type' => $eventType,
                     'status' => $status,
                     'type' => 'order_update',
-                    'href' => '/orders',
+                    'href' => $orderNotificationHref,
                     'screen' => 'OrderDetail',
                     'params' => json_encode([
                         'orderId' => (int) $order->ch_id,
