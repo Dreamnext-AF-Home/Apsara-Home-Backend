@@ -8,6 +8,8 @@ use App\Models\Customer;
 use App\Models\CustomerNotification;
 use App\Models\CustomerVerificationRequest;
 use App\Models\EncashmentRequest;
+use App\Models\ExpoDeviceToken;
+use App\Services\ExpoPushNotificationService;
 use App\Support\CustomerCashWallet;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -379,7 +381,7 @@ class CustomerNotificationController extends Controller
 
         $channelName = (string) $validated['channel_name'];
         $expectedChannel = 'private-customer-' . (int) $customer->c_userid;
-        
+
         if ($channelName !== $expectedChannel) {
             return response()->json(['message' => 'Forbidden channel.'], 403);
         }
@@ -397,5 +399,138 @@ class CustomerNotificationController extends Controller
         return response()->json([
             'auth' => $key . ':' . $signature,
         ]);
+    }
+
+    public function registerExpoToken(Request $request)
+    {
+        $customer = $request->user();
+        if (!$customer instanceof Customer) {
+            return response()->json(['message' => 'Only customer accounts can register devices.'], 403);
+        }
+
+        $validated = $request->validate([
+            'token' => 'required|string|max:255',
+            'device_name' => 'nullable|string|max:255',
+            'platform' => 'nullable|string|in:ios,android,web',
+        ]);
+
+        $service = new ExpoPushNotificationService();
+        $token = (string) $validated['token'];
+
+        if (!$service->validateToken($token)) {
+            return response()->json(['message' => 'Invalid Expo push token format.'], 422);
+        }
+
+        $customerId = (int) $customer->c_userid;
+
+        ExpoDeviceToken::updateOrCreate(
+            [
+                'edt_customer_id' => $customerId,
+                'edt_token' => $token,
+            ],
+            [
+                'edt_device_name' => $validated['device_name'] ?? null,
+                'edt_platform' => $validated['platform'] ?? 'ios',
+                'edt_is_active' => true,
+                'edt_updated_at' => now(),
+            ]
+        );
+
+        return response()->json([
+            'message' => 'Device token registered successfully.',
+            'token' => $token,
+        ], 201);
+    }
+
+    public function unregisterExpoToken(Request $request)
+    {
+        $customer = $request->user();
+        if (!$customer instanceof Customer) {
+            return response()->json(['message' => 'Only customer accounts can unregister devices.'], 403);
+        }
+
+        $validated = $request->validate([
+            'token' => 'required|string|max:255',
+        ]);
+
+        $customerId = (int) $customer->c_userid;
+        $token = (string) $validated['token'];
+
+        ExpoDeviceToken::where('edt_customer_id', $customerId)
+            ->where('edt_token', $token)
+            ->update(['edt_is_active' => false]);
+
+        return response()->json(['message' => 'Device token unregistered successfully.']);
+    }
+
+    public function getExpoTokens(Request $request)
+    {
+        $customer = $request->user();
+        if (!$customer instanceof Customer) {
+            return response()->json(['message' => 'Only customer accounts can access device tokens.'], 403);
+        }
+
+        $customerId = (int) $customer->c_userid;
+
+        $tokens = ExpoDeviceToken::query()
+            ->where('edt_customer_id', $customerId)
+            ->where('edt_is_active', true)
+            ->get()
+            ->map(fn (ExpoDeviceToken $token) => [
+                'id' => (int) $token->edt_id,
+                'token' => (string) $token->edt_token,
+                'device_name' => (string) ($token->edt_device_name ?? 'Unknown Device'),
+                'platform' => (string) $token->edt_platform,
+                'registered_at' => $token->edt_created_at?->toIso8601String(),
+            ])
+            ->values();
+
+        return response()->json([
+            'tokens' => $tokens,
+            'count' => $tokens->count(),
+        ]);
+    }
+
+    public function sendPushNotification(Request $request)
+    {
+        $user = $request->user();
+        if (!$user instanceof Customer) {
+            return response()->json(['message' => 'Only customer accounts can send notifications.'], 403);
+        }
+
+        $validated = $request->validate([
+            'title' => 'required|string|max:255',
+            'body' => 'required|string|max:500',
+            'data' => 'nullable|array',
+            'sound' => 'nullable|string',
+            'badge' => 'nullable|integer',
+        ]);
+
+        $service = new ExpoPushNotificationService();
+
+        $notification = [
+            'title' => (string) $validated['title'],
+            'body' => (string) $validated['body'],
+        ];
+
+        if (!empty($validated['data'])) {
+            $notification['data'] = (array) $validated['data'];
+        }
+
+        if (isset($validated['sound'])) {
+            $notification['sound'] = (string) $validated['sound'];
+        }
+
+        if (isset($validated['badge'])) {
+            $notification['badge'] = (int) $validated['badge'];
+        }
+
+        $result = $service->sendToCustomer((int) $user->c_userid, $notification);
+
+        return response()->json([
+            'message' => 'Push notification queued for delivery.',
+            'sent' => $result['sent'],
+            'failed' => $result['failed'],
+        ], 201);
     }
 }
