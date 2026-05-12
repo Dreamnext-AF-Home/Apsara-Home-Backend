@@ -2019,7 +2019,7 @@ class PaymentController extends Controller
 
         if ($orderNotification) {
             $customTitle = trim((string) ($orderNotification->on_title ?? ''));
-            $customMessage = trim((string) ($orderNotification->on_custom_message ?? ''));
+            $customMessage = trim((string) ($orderNotification->on_message ?? ''));
             $customImage = trim((string) ($orderNotification->on_product_image ?? ''));
 
             if ($customTitle !== '') {
