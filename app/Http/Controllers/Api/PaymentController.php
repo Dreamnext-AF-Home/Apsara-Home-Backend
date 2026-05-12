@@ -2061,26 +2061,28 @@ class PaymentController extends Controller
             );
 
             $channelName = 'private-customer-' . (int) $order->ch_customer_id;
-            
+
+            // ✅ Use the actual stored notification message
             $pusher->trigger($channelName, 'order.status.updated', [
                 'order_id' => (int) $order->ch_id,
                 'checkout_id' => (string) $order->ch_checkout_id,
                 'event_type' => $eventType,
-                'title' => $title,
-                'description' => $description,
+                'title' => (string) $notification->cn_title,
+                'description' => (string) $notification->cn_message,
                 'status' => $status,
                 'payment_status' => (string) $order->ch_status,
                 'tracking_number' => $this->resolveOrderTrackingNumber($order),
                 'created_at' => $createdAt->toIso8601String(),
             ]);
 
+            // ✅ Use the actual stored notification message
             $pusher->trigger($channelName, 'notification.created', [
                 'id' => 'customer_notification:' . (int) $notification->cn_id,
                 'type' => 'order_update',
-                'title' => $title,
-                'description' => $description,
+                'title' => (string) $notification->cn_title,
+                'description' => (string) $notification->cn_message,
                 'count' => 1,
-                'severity' => $severity,
+                'severity' => (string) $notification->cn_severity,
                 'href' => $href,
                 'latest_at' => $createdAt->toIso8601String(),
                 'order_id' => (int) $order->ch_id,
