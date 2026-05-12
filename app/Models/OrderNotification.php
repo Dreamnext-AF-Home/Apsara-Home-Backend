@@ -171,9 +171,17 @@ class OrderNotification extends Model
                 ->where('on_is_read', false)
                 ->count();
 
+            // Get the notification message from the first notification
+            $notification = self::query()
+                ->where('on_checkout_id', $checkoutId)
+                ->where('on_customer_id', $customerId)
+                ->first();
+
             $pusher->trigger($channelName, 'order.notification.updated', [
                 'checkout_id' => $checkoutId,
                 'status' => $status,
+                'message' => $notification?->on_message ?? "Order status updated to: {$status}",
+                'title' => $notification?->on_title ?? 'Order Status Updated',
                 'unread_count' => (int) $unreadCount,
                 'updated_at' => now()->toDateTimeString(),
             ]);
