@@ -47,12 +47,24 @@ class DirectAffiliatePerformanceBonus
                 return;
             }
 
-            $directReferrals = Customer::query()
-                ->where('c_sponsor', (int) $sponsor->c_userid)
-                ->get(['c_userid', 'c_gpv']);
+            // Current month PV only — resets on the 1st per PDF spec
+            $tz = 'Asia/Manila';
+            $monthStart = now($tz)->startOfMonth();
+            $monthEnd = now($tz)->endOfMonth();
 
-            $directCount = $directReferrals->count();
-            $directTotalPv = (float) $directReferrals->sum(fn (Customer $row) => (float) ($row->c_gpv ?? 0));
+            $directIds = Customer::query()
+                ->where('c_sponsor', (int) $sponsor->c_userid)
+                ->pluck('c_userid');
+
+            $directCount = $directIds->count();
+            $directTotalPv = $directIds->isEmpty() ? 0.0 : (float) CheckoutHistory::query()
+                ->whereIn('ch_customer_id', $directIds)
+                ->where('ch_earned_pv', '>', 0)
+                ->whereNotNull('ch_pv_posted_at')
+                ->whereNotIn('ch_status', ['failed', 'cancelled', 'expired'])
+                ->whereBetween('ch_pv_posted_at', [$monthStart->toDateTimeString(), $monthEnd->toDateTimeString()])
+                ->sum('ch_earned_pv');
+
             $thresholdPv = self::thresholdPv();
             $bonusAmount = self::bonusAmount();
             $qualifiedMilestones = (int) floor($directTotalPv / $thresholdPv);
@@ -61,8 +73,11 @@ class DirectAffiliatePerformanceBonus
                 return;
             }
 
+            // Only look at milestones awarded THIS month — resets on the 1st
             $alreadyAwardedMilestones = DirectAffiliatePerformanceBonusAward::query()
                 ->where('dapb_customer_id', (int) $sponsor->c_userid)
+                ->whereYear('dapb_awarded_at', now($tz)->year)
+                ->whereMonth('dapb_awarded_at', now($tz)->month)
                 ->pluck('dapb_milestone_no')
                 ->map(fn ($value) => (int) $value)
                 ->all();
