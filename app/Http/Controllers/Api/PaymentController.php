@@ -2138,6 +2138,7 @@ class PaymentController extends Controller
                 'body' => $orderNotificationMessage,
                 'sound' => 'default',
                 'badge' => 1,
+                'mutableContent' => true,
                 'data' => [
                     'order_id' => (int) $order->ch_id,
                     'checkout_id' => (string) $order->ch_checkout_id,
@@ -2153,10 +2154,9 @@ class PaymentController extends Controller
                 ],
             ];
 
+            // Include product image in notification payload
             if (!empty($orderNotificationImage)) {
-                $expoData['big'] = [
-                    'picture' => (string) $orderNotificationImage,
-                ];
+                $expoData['data']['product_image'] = (string) $orderNotificationImage;
             }
 
             $result = $expoPushService->sendToCustomer((int) $order->ch_customer_id, $expoData);

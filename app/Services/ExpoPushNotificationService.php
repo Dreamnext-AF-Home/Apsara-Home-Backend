@@ -23,6 +23,9 @@ class ExpoPushNotificationService
             return ['sent' => 0, 'failed' => 0];
         }
 
+        // Ensure critical fields for background/closed app notifications
+        $notification = $this->ensureNotificationFields($notification);
+
         return $this->sendBatch($tokens, $notification);
     }
 
@@ -72,6 +75,8 @@ class ExpoPushNotificationService
     public function sendToToken(string $token, array $notification): bool
     {
         try {
+            // Ensure critical fields for background/closed app notifications
+            $notification = $this->ensureNotificationFields($notification);
             $message = array_merge(['to' => $token], $notification);
 
             $response = Http::timeout(30)
@@ -97,5 +102,24 @@ class ExpoPushNotificationService
     public function validateToken(string $token): bool
     {
         return preg_match('/^ExponentPushToken\[.+\]$/', $token) === 1;
+    }
+
+    /**
+     * Ensure critical notification fields for proper delivery when app is closed/background.
+     * Sets priority to high and channelId for Android to properly display notifications.
+     */
+    private function ensureNotificationFields(array $notification): array
+    {
+        // Set priority to 'high' for immediate delivery on Android when app is closed
+        if (!isset($notification['priority'])) {
+            $notification['priority'] = 'high';
+        }
+
+        // Set channelId for Android to use the default notification channel
+        if (!isset($notification['channelId'])) {
+            $notification['channelId'] = 'default';
+        }
+
+        return $notification;
     }
 }

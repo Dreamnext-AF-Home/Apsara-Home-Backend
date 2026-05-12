@@ -165,7 +165,7 @@ class CustomerNotificationController extends Controller
             ->limit(25)
             ->get()
             ->map(function (CustomerNotification $notification) {
-                return [
+                $item = [
                     'id' => 'customer_notification:' . (int) $notification->cn_id,
                     'title' => (string) ($notification->cn_title ?? 'Account Update'),
                     'description' => (string) ($notification->cn_message ?? ''),
@@ -176,6 +176,22 @@ class CustomerNotificationController extends Controller
                         ? $notification->cn_created_at->timezone('Asia/Manila')->toIso8601String()
                         : null,
                 ];
+
+                // Fetch product image from OrderNotification if this is an order update
+                if ($notification->cn_type === 'order_update' && is_array($notification->cn_payload)) {
+                    $checkoutId = $notification->cn_payload['checkout_id'] ?? null;
+                    if ($checkoutId) {
+                        $orderNotification = \App\Models\OrderNotification::query()
+                            ->where('on_checkout_id', (string) $checkoutId)
+                            ->first();
+
+                        if ($orderNotification && !empty($orderNotification->on_product_image)) {
+                            $item['product_image'] = (string) $orderNotification->on_product_image;
+                        }
+                    }
+                }
+
+                return $item;
             })
             ->values()
             ->all();
@@ -504,6 +520,8 @@ class CustomerNotificationController extends Controller
             'data' => 'nullable|array',
             'sound' => 'nullable|string',
             'badge' => 'nullable|integer',
+            'priority' => 'nullable|string|in:default,high',
+            'channelId' => 'nullable|string|max:255',
         ]);
 
         $service = new ExpoPushNotificationService();
@@ -523,6 +541,14 @@ class CustomerNotificationController extends Controller
 
         if (isset($validated['badge'])) {
             $notification['badge'] = (int) $validated['badge'];
+        }
+
+        if (isset($validated['priority'])) {
+            $notification['priority'] = (string) $validated['priority'];
+        }
+
+        if (isset($validated['channelId'])) {
+            $notification['channelId'] = (string) $validated['channelId'];
         }
 
         $result = $service->sendToCustomer((int) $user->c_userid, $notification);
