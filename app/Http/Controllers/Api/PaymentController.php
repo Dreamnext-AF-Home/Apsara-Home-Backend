@@ -2008,13 +2008,38 @@ class PaymentController extends Controller
             default => 'info',
         };
 
+        // Fetch OrderNotification data first for custom messages and images
+        $orderNotificationTitle = $title;
+        $orderNotificationMessage = $description;
+        $orderNotificationImage = '';
+
+        $orderNotification = OrderNotification::query()
+            ->where('on_checkout_id', (string) $order->ch_checkout_id)
+            ->first();
+
+        if ($orderNotification) {
+            $customTitle = trim((string) ($orderNotification->on_title ?? ''));
+            $customMessage = trim((string) ($orderNotification->on_custom_message ?? ''));
+            $customImage = trim((string) ($orderNotification->on_product_image ?? ''));
+
+            if ($customTitle !== '') {
+                $orderNotificationTitle = $customTitle;
+            }
+            if ($customMessage !== '') {
+                $orderNotificationMessage = $customMessage;
+            }
+            if ($customImage !== '') {
+                $orderNotificationImage = $customImage;
+            }
+        }
+
         try {
             $notification = CustomerNotification::query()->create([
                 'cn_customer_id' => (int) $order->ch_customer_id,
                 'cn_type' => 'order_update',
                 'cn_severity' => $severity,
-                'cn_title' => $title,
-                'cn_message' => $description,
+                'cn_title' => $orderNotificationTitle,
+                'cn_message' => $orderNotificationMessage,
                 'cn_href' => $href,
                 'cn_payload' => [
                     'order_id' => (int) $order->ch_id,
@@ -2062,7 +2087,7 @@ class PaymentController extends Controller
 
             $channelName = 'private-customer-' . (int) $order->ch_customer_id;
 
-            // ✅ Use the actual stored notification message
+            // Use custom message from OrderNotification if available
             $pusher->trigger($channelName, 'order.status.updated', [
                 'order_id' => (int) $order->ch_id,
                 'checkout_id' => (string) $order->ch_checkout_id,
@@ -2075,7 +2100,7 @@ class PaymentController extends Controller
                 'created_at' => $createdAt->toIso8601String(),
             ]);
 
-            // ✅ Use the actual stored notification message
+            // Use custom message from OrderNotification if available
             $pusher->trigger($channelName, 'notification.created', [
                 'id' => 'customer_notification:' . (int) $notification->cn_id,
                 'type' => 'order_update',
@@ -2099,34 +2124,13 @@ class PaymentController extends Controller
             ]);
         }
 
-        // Send Expo push notification with custom message from OrderNotification
+        // Send Expo push notification with custom message and image from OrderNotification
         try {
             $expoPushService = new ExpoPushNotificationService();
 
-            // Fetch custom message and image from OrderNotification for Expo push
-            $expoTitle = (string) $notification->cn_title;
-            $expoBody = (string) $notification->cn_message;
-            $expoImage = '';
-
-            $orderNotification = OrderNotification::query()
-                ->where('on_checkout_id', (string) $order->ch_checkout_id)
-                ->first();
-
-            if ($orderNotification) {
-                $customMessage = trim((string) ($orderNotification->on_custom_message ?? ''));
-                $customImage = trim((string) ($orderNotification->on_product_image ?? ''));
-
-                if ($customMessage !== '') {
-                    $expoBody = $customMessage;
-                }
-                if ($customImage !== '') {
-                    $expoImage = $customImage;
-                }
-            }
-
             $expoData = [
-                'title' => $expoTitle,
-                'body' => $expoBody,
+                'title' => $orderNotificationTitle,
+                'body' => $orderNotificationMessage,
                 'sound' => 'default',
                 'badge' => 1,
                 'data' => [
@@ -2144,9 +2148,9 @@ class PaymentController extends Controller
                 ],
             ];
 
-            if (!empty($expoImage)) {
+            if (!empty($orderNotificationImage)) {
                 $expoData['big'] = [
-                    'picture' => (string) $expoImage,
+                    'picture' => (string) $orderNotificationImage,
                 ];
             }
 
