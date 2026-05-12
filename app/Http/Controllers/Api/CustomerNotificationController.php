@@ -411,7 +411,7 @@ class CustomerNotificationController extends Controller
         $validated = $request->validate([
             'token' => 'required|string|max:255',
             'device_name' => 'nullable|string|max:255',
-            'platform' => 'nullable|string|in:ios,android,web',
+            'platform' => 'required|string|in:ios,android,web',
         ]);
 
         $service = new ExpoPushNotificationService();
@@ -430,7 +430,7 @@ class CustomerNotificationController extends Controller
             ],
             [
                 'edt_device_name' => $validated['device_name'] ?? null,
-                'edt_platform' => $validated['platform'] ?? 'ios',
+                'edt_platform' => $validated['platform'] ?? 'android',
                 'edt_is_active' => true,
                 'edt_updated_at' => now(),
             ]
