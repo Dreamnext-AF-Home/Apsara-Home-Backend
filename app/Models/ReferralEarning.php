@@ -21,6 +21,7 @@ class ReferralEarning extends Model
         're_commission_basis_amount',
         're_amount',
         're_status',
+        're_wallet_type',
         're_source_type',
         're_reference_no',
         're_notes',
