@@ -1992,7 +1992,7 @@ class PaymentController extends Controller
         Cache::put($cacheKey, true, now()->addDays(7));
     }
 
-    public function notifyCustomerOrderStatusUpdate(CheckoutHistory $order, string $eventType, string $title, string $description): void
+    public function notifyCustomerOrderStatusUpdate(CheckoutHistory $order, string $eventType, string $title, string $description, ?string $productImage = null): void
     {
         if ((int) $order->ch_customer_id === 0) {
             return; // Skip guest checkouts
@@ -2102,7 +2102,7 @@ class PaymentController extends Controller
         // Send Expo push notification
         try {
             $expoPushService = new ExpoPushNotificationService();
-            $result = $expoPushService->sendToCustomer((int) $order->ch_customer_id, [
+            $expoData = [
                 'title' => (string) $notification->cn_title,
                 'body' => (string) $notification->cn_message,
                 'sound' => 'default',
@@ -2120,7 +2120,15 @@ class PaymentController extends Controller
                         'checkoutId' => (string) $order->ch_checkout_id,
                     ]),
                 ],
-            ]);
+            ];
+
+            if (!empty($productImage)) {
+                $expoData['big'] = [
+                    'picture' => (string) $productImage,
+                ];
+            }
+
+            $result = $expoPushService->sendToCustomer((int) $order->ch_customer_id, $expoData);
 
             Log::info('Expo push notification sent for order status update', [
                 'customer_id' => (int) $order->ch_customer_id,
