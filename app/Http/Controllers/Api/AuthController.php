@@ -959,6 +959,8 @@ class AuthController extends Controller
 
         $tokenIds = $tokenRows->pluck('id')->map(fn ($id) => (int) $id)->filter(fn (int $id) => $id > 0)->values();
 
+        $resolvedLocation = $this->resolveRequestLocation($request);
+
         $sessionsByToken = collect();
         if ($this->isSessionTrackingReady() && $tokenIds->isNotEmpty()) {
             $sessionsByToken = CustomerLoginSession::query()
@@ -972,7 +974,7 @@ class AuthController extends Controller
         }
 
         $items = $tokenRows
-            ->map(function (PersonalAccessToken $token) use ($sessionsByToken, $currentTokenId): array {
+            ->map(function (PersonalAccessToken $token) use ($sessionsByToken, $currentTokenId, $resolvedLocation): array {
                 $tokenId = (int) $token->id;
                 /** @var CustomerLoginSession|null $session */
                 $session = $sessionsByToken->get($tokenId);
@@ -980,7 +982,11 @@ class AuthController extends Controller
                 $platform = (string) ($session?->cls_platform ?? 'Unknown OS');
                 $browser = (string) ($session?->cls_browser ?? 'Unknown Browser');
                 $device = (string) ($session?->cls_device ?? 'Desktop');
-                $location = (string) ($session?->cls_location ?? 'Unknown location');
+                $locationRaw = (string) ($session?->cls_location ?? 'Unknown location');
+                $location = $locationRaw;
+                if ($locationRaw === 'Current location' || trim($locationRaw) === '') {
+                    $location = $resolvedLocation;
+                }
                 $ipAddress = (string) ($session?->cls_ip_address ?? '');
                 $userAgent = (string) ($session?->cls_user_agent ?? '');
 
@@ -1010,7 +1016,10 @@ class AuthController extends Controller
             })
             ->values();
 
-        if ($items->isEmpty()) {
+        // Fallback only when there are no tokens at all.
+        // If tokens exist but session-tracking rows are missing, we already build per-token items above
+        // (with Unknown device/platform/browser fields) so Active Sessions still shows multiple devices.
+        if ($items->isEmpty() && $tokenIds->isEmpty()) {
             [$platform, $browser, $device] = $this->detectDeviceInfo((string) $request->userAgent());
             $items = collect([[
                 'id' => 0,
@@ -1018,7 +1027,7 @@ class AuthController extends Controller
                 'device' => $device !== '' ? $device : 'Current Device',
                 'platform' => $platform !== '' ? $platform : 'Unknown OS',
                 'browser' => $browser !== '' ? $browser : 'Unknown Browser',
-                'location' => 'Current location',
+                'location' => $this->resolveRequestLocation($request),
                 'ip_address' => (string) $request->ip(),
                 'user_agent' => (string) $request->userAgent(),
                 'created_at' => now()->toIso8601String(),
