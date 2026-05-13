@@ -16,16 +16,30 @@ class FirebaseMessagingService
     {
         try {
             $credentialsPath = config('services.firebase.credentials');
+
+            // Handle both absolute and relative paths
+            if (!file_exists($credentialsPath)) {
+                $credentialsPath = base_path($credentialsPath);
+            }
+
             if (!file_exists($credentialsPath)) {
                 Log::warning('Firebase credentials file not found', ['path' => $credentialsPath]);
                 return;
             }
 
+            $credentialsJson = json_decode(file_get_contents($credentialsPath), true);
+
+            if (!$credentialsJson) {
+                Log::error('Invalid Firebase credentials JSON');
+                return;
+            }
+
             $factory = (new Factory)
-                ->withServiceAccount($credentialsPath);
+                ->withServiceAccount($credentialsJson);
             $this->messaging = $factory->createMessaging();
+            Log::info('✅ Firebase initialized successfully');
         } catch (\Exception $e) {
-            Log::error('Firebase initialization error:', ['error' => $e->getMessage()]);
+            Log::error('Firebase initialization error:', ['error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
         }
     }
 
@@ -62,6 +76,11 @@ class FirebaseMessagingService
         try {
             if (empty($tokens)) {
                 return ['sent' => 0, 'failed' => 0];
+            }
+
+            if (!$this->messaging) {
+                Log::error('Firebase messaging not initialized');
+                return ['sent' => 0, 'failed' => count($tokens)];
             }
 
             Log::info('📤 Sending batch FCM notifications', [
@@ -105,6 +124,11 @@ class FirebaseMessagingService
     public function sendToToken(string $token, array $notification): bool
     {
         try {
+            if (!$this->messaging) {
+                Log::error('Firebase messaging not initialized');
+                return false;
+            }
+
             Log::info('📤 Sending FCM to single token', ['token' => substr($token, 0, 20) . '...']);
 
             $title = $notification['title'] ?? $notification['headings']['en'] ?? 'Notification';
