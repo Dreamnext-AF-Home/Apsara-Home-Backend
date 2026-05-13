@@ -15,6 +15,7 @@ use App\Services\OneSignalPushNotificationService;
 use App\Support\CustomerCashWallet;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Str;
 use Pusher\Pusher;
 
@@ -564,43 +565,88 @@ class CustomerNotificationController extends Controller
 
     public function registerOneSignalToken(Request $request)
     {
-        $customer = $request->user();
-        if (!$customer instanceof Customer) {
-            return response()->json(['message' => 'Only customer accounts can register devices.'], 403);
+        try {
+            Log::info('[registerOneSignalToken] Starting device registration', [
+                'request_data' => $request->all(),
+            ]);
+
+            $customer = $request->user();
+            if (!$customer instanceof Customer) {
+                Log::warning('[registerOneSignalToken] Unauthorized access attempt', [
+                    'user' => $customer?->c_userid,
+                ]);
+                return response()->json(['message' => 'Only customer accounts can register devices.'], 403);
+            }
+
+            Log::info('[registerOneSignalToken] Customer authenticated', [
+                'customer_id' => $customer->c_userid,
+            ]);
+
+            $validated = $request->validate([
+                'player_id' => 'required|string|max:255',
+                'device_name' => 'nullable|string|max:255',
+                'platform' => 'required|string|in:ios,android,web',
+            ]);
+
+            Log::info('[registerOneSignalToken] Validation passed', [
+                'validated_data' => $validated,
+            ]);
+
+            $service = new OneSignalPushNotificationService();
+            $playerId = (string) $validated['player_id'];
+
+            if (!$service->validatePlayerId($playerId)) {
+                Log::warning('[registerOneSignalToken] Invalid player ID format', [
+                    'player_id' => $playerId,
+                ]);
+                return response()->json(['message' => 'Invalid OneSignal player ID format.'], 422);
+            }
+
+            $customerId = (int) $customer->c_userid;
+
+            Log::info('[registerOneSignalToken] Attempting to save device token', [
+                'customer_id' => $customerId,
+                'player_id' => $playerId,
+                'device_name' => $validated['device_name'] ?? null,
+                'platform' => $validated['platform'] ?? 'android',
+            ]);
+
+            OneSignalDeviceToken::updateOrCreate(
+                [
+                    'odt_customer_id' => $customerId,
+                    'odt_player_id' => $playerId,
+                ],
+                [
+                    'odt_device_name' => $validated['device_name'] ?? null,
+                    'odt_platform' => $validated['platform'] ?? 'android',
+                    'odt_is_active' => true,
+                    'odt_updated_at' => now(),
+                ]
+            );
+
+            Log::info('[registerOneSignalToken] Device token saved successfully', [
+                'customer_id' => $customerId,
+                'player_id' => $playerId,
+            ]);
+
+            return response()->json([
+                'message' => 'OneSignal device registered successfully.',
+                'player_id' => $playerId,
+            ], 201);
+        } catch (\Throwable $e) {
+            Log::error('[registerOneSignalToken] Exception occurred', [
+                'error_message' => $e->getMessage(),
+                'error_code' => $e->getCode(),
+                'error_file' => $e->getFile(),
+                'error_line' => $e->getLine(),
+                'stack_trace' => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'message' => 'Failed to register device. ' . $e->getMessage(),
+                'error' => class_basename($e),
+            ], 500);
         }
-
-        $validated = $request->validate([
-            'player_id' => 'required|string|max:255',
-            'device_name' => 'nullable|string|max:255',
-            'platform' => 'required|string|in:ios,android,web',
-        ]);
-
-        $service = new OneSignalPushNotificationService();
-        $playerId = (string) $validated['player_id'];
-
-        if (!$service->validatePlayerId($playerId)) {
-            return response()->json(['message' => 'Invalid OneSignal player ID format.'], 422);
-        }
-
-        $customerId = (int) $customer->c_userid;
-
-        OneSignalDeviceToken::updateOrCreate(
-            [
-                'odt_customer_id' => $customerId,
-                'odt_player_id' => $playerId,
-            ],
-            [
-                'odt_device_name' => $validated['device_name'] ?? null,
-                'odt_platform' => $validated['platform'] ?? 'android',
-                'odt_is_active' => true,
-                'odt_updated_at' => now(),
-            ]
-        );
-
-        return response()->json([
-            'message' => 'OneSignal device registered successfully.',
-            'player_id' => $playerId,
-        ], 201);
     }
 
     public function unregisterOneSignalToken(Request $request)
