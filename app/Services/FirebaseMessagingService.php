@@ -15,8 +15,14 @@ class FirebaseMessagingService
     public function __construct()
     {
         try {
+            $credentialsPath = config('services.firebase.credentials');
+            if (!file_exists($credentialsPath)) {
+                Log::warning('Firebase credentials file not found', ['path' => $credentialsPath]);
+                return;
+            }
+
             $factory = (new Factory)
-                ->withServiceAccount(config('services.firebase.credentials'));
+                ->withServiceAccount($credentialsPath);
             $this->messaging = $factory->createMessaging();
         } catch (\Exception $e) {
             Log::error('Firebase initialization error:', ['error' => $e->getMessage()]);
@@ -68,8 +74,9 @@ class FirebaseMessagingService
             $data = $notification['data'] ?? [];
 
             $notif = Notification::create($title, $body);
+
             if ($image) {
-                $notif = $notif->withImage($image);
+                $data['image'] = $image;
             }
 
             $message = CloudMessage::new()
@@ -106,8 +113,9 @@ class FirebaseMessagingService
             $data = $notification['data'] ?? [];
 
             $notif = Notification::create($title, $body);
+
             if ($image) {
-                $notif = $notif->withImage($image);
+                $data['image'] = $image;
             }
 
             $message = CloudMessage::new()
