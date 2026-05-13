@@ -9,8 +9,10 @@ use App\Models\CustomerNotification;
 use App\Models\CustomerVerificationRequest;
 use App\Models\EncashmentRequest;
 use App\Models\ExpoDeviceToken;
+use App\Models\FcmDeviceToken;
 use App\Models\OneSignalDeviceToken;
 use App\Services\ExpoPushNotificationService;
+use App\Services\FirebaseMessagingService;
 use App\Services\OneSignalPushNotificationService;
 use App\Support\CustomerCashWallet;
 use Illuminate\Http\Request;
@@ -776,6 +778,152 @@ class CustomerNotificationController extends Controller
             'notification' => [
                 'title' => '🎉 Test Notification',
                 'body' => 'This is a test notification from Apsara Home! Your account is ready.',
+                'image' => 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=400',
+            ],
+            'sent' => $result['sent'],
+            'failed' => $result['failed'],
+        ], 201);
+    }
+
+    public function registerFcmToken(Request $request)
+    {
+        try {
+            Log::info('[registerFcmToken] Starting FCM token registration', [
+                'request_data' => $request->all(),
+            ]);
+
+            $customer = $request->user();
+            if (!$customer instanceof Customer) {
+                Log::warning('[registerFcmToken] Unauthorized access attempt');
+                return response()->json(['message' => 'Only customer accounts can register devices.'], 403);
+            }
+
+            Log::info('[registerFcmToken] Customer authenticated', [
+                'customer_id' => $customer->c_userid,
+            ]);
+
+            $validated = $request->validate([
+                'fcm_token' => 'required|string|max:500',
+                'device_name' => 'nullable|string|max:255',
+                'platform' => 'required|string|in:ios,android,web',
+            ]);
+
+            Log::info('[registerFcmToken] Validation passed', [
+                'validated_data' => $validated,
+            ]);
+
+            $customerId = (int) $customer->c_userid;
+
+            Log::info('[registerFcmToken] Attempting to save FCM token', [
+                'customer_id' => $customerId,
+                'fcm_token' => substr($validated['fcm_token'], 0, 20) . '...',
+                'platform' => $validated['platform'] ?? 'android',
+            ]);
+
+            FcmDeviceToken::updateOrCreate(
+                [
+                    'fdt_customer_id' => $customerId,
+                    'fdt_fcm_token' => $validated['fcm_token'],
+                ],
+                [
+                    'fdt_device_name' => $validated['device_name'] ?? null,
+                    'fdt_platform' => $validated['platform'] ?? 'android',
+                    'fdt_is_active' => true,
+                    'fdt_updated_at' => now(),
+                ]
+            );
+
+            Log::info('[registerFcmToken] FCM token saved successfully', [
+                'customer_id' => $customerId,
+            ]);
+
+            return response()->json([
+                'message' => 'FCM token registered successfully.',
+                'fcm_token' => $validated['fcm_token'],
+            ], 201);
+        } catch (\Throwable $e) {
+            Log::error('[registerFcmToken] Exception occurred', [
+                'error_message' => $e->getMessage(),
+                'error_file' => $e->getFile(),
+                'error_line' => $e->getLine(),
+                'stack_trace' => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'message' => 'Failed to register FCM token. ' . $e->getMessage(),
+                'error' => class_basename($e),
+            ], 500);
+        }
+    }
+
+    public function sendFcmNotification(Request $request)
+    {
+        $user = $request->user();
+        if (!$user instanceof Customer) {
+            return response()->json(['message' => 'Only customer accounts can send notifications.'], 403);
+        }
+
+        $validated = $request->validate([
+            'title' => 'required|string|max:255',
+            'body' => 'required|string|max:500',
+            'image' => 'nullable|url',
+            'data' => 'nullable|array',
+        ]);
+
+        $service = new FirebaseMessagingService();
+
+        $notification = [
+            'title' => (string) $validated['title'],
+            'body' => (string) $validated['body'],
+        ];
+
+        if (isset($validated['image'])) {
+            $notification['image'] = (string) $validated['image'];
+        }
+
+        if (!empty($validated['data'])) {
+            $notification['data'] = (array) $validated['data'];
+        }
+
+        $result = $service->sendToCustomer((int) $user->c_userid, $notification);
+
+        return response()->json([
+            'message' => 'FCM notification sent successfully.',
+            'sent' => $result['sent'],
+            'failed' => $result['failed'],
+        ], 201);
+    }
+
+    public function sendTestFcmNotification(Request $request)
+    {
+        $user = $request->user();
+        if (!$user instanceof Customer) {
+            return response()->json(['message' => 'Only customer accounts can send notifications.'], 403);
+        }
+
+        $service = new FirebaseMessagingService();
+
+        $notification = [
+            'title' => '🎉 Test FCM Notification',
+            'body' => 'This is a test notification with image support!',
+            'image' => 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=400',
+            'data' => [
+                'href' => 'purchases://pending/test-order-123',
+                'type' => 'test',
+            ],
+        ];
+
+        Log::info('📤 Sending test FCM notification to customer', [
+            'customer_id' => (int) $user->c_userid,
+        ]);
+
+        $result = $service->sendToCustomer((int) $user->c_userid, $notification);
+
+        return response()->json([
+            'message' => '✅ Test FCM notification sent successfully!',
+            'notification' => [
+                'title' => '🎉 Test FCM Notification',
+                'body' => 'This is a test notification with image support!',
                 'image' => 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=400',
             ],
             'sent' => $result['sent'],

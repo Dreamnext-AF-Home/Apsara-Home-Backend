@@ -200,4 +200,8 @@ return [
         'rest_api_key' => env('ONESIGNAL_REST_API_KEY'),
     ],
 
+    'firebase' => [
+        'credentials' => env('FIREBASE_CREDENTIALS_PATH', storage_path('firebase-credentials.json')),
+    ],
+
 ];

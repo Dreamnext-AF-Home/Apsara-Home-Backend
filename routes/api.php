@@ -225,6 +225,9 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::get('/notifications/onesignal/tokens', [CustomerNotificationController::class, 'getOneSignalTokens']);
     Route::post('/notifications/onesignal/send', [CustomerNotificationController::class, 'sendOneSignalNotification']);
     Route::post('/notifications/onesignal/test', [CustomerNotificationController::class, 'sendTestNotification']);
+    Route::post('/notifications/fcm/register-token', [CustomerNotificationController::class, 'registerFcmToken']);
+    Route::post('/notifications/fcm/send', [CustomerNotificationController::class, 'sendFcmNotification']);
+    Route::post('/notifications/fcm/test', [CustomerNotificationController::class, 'sendTestFcmNotification']);
     Route::post('/interior-requests', [InteriorRequestController::class, 'store']);
     Route::get('/interior-requests', [InteriorRequestController::class, 'myRequests']);
     Route::get('/interior-requests/{id}', [InteriorRequestController::class, 'show']);
