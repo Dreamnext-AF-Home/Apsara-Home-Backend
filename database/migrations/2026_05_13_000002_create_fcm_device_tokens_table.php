@@ -22,13 +22,6 @@ return new class extends Migration
                 $table->unique(['fdt_customer_id', 'fdt_fcm_token'], 'unique_customer_fcm_token');
                 $table->index('fdt_customer_id', 'idx_fdt_customer');
                 $table->index('fdt_is_active', 'idx_fdt_is_active');
-
-                // Foreign key constraint
-                $table->foreign('fdt_customer_id', 'fk_fdt_customer_id')
-                    ->references('c_userid')
-                    ->on('tbl_customers')
-                    ->onDelete('cascade')
-                    ->onUpdate('cascade');
             });
         }
     }

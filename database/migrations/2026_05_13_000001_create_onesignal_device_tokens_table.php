@@ -22,13 +22,6 @@ return new class extends Migration
                 $table->unique(['odt_customer_id', 'odt_player_id'], 'unique_customer_player_id');
                 $table->index('odt_customer_id', 'idx_odt_customer');
                 $table->index('odt_is_active', 'idx_odt_is_active');
-
-                // Foreign key constraint
-                $table->foreign('odt_customer_id', 'fk_odt_customer_id')
-                    ->references('c_userid')
-                    ->on('tbl_customers')
-                    ->onDelete('cascade')
-                    ->onUpdate('cascade');
             });
         }
     }
