@@ -20,18 +20,46 @@ class OneSignalPushNotificationService
 
     public function sendToCustomer(int $customerId, array $notification): array
     {
-        $playerIds = OneSignalDeviceToken::query()
-            ->where('odt_customer_id', $customerId)
-            ->where('odt_is_active', true)
-            ->pluck('odt_player_id')
-            ->toArray();
+        try {
+            Log::info('📤 Sending notification to customer via external user ID', [
+                'customer_id' => $customerId,
+            ]);
 
-        if (empty($playerIds)) {
-            Log::info("No active OneSignal tokens for customer {$customerId}");
-            return ['sent' => 0, 'failed' => 0];
+            $payload = array_merge(
+                [
+                    'app_id' => $this->oneSignalAppId,
+                    'include_external_user_ids' => [(string) $customerId],
+                ],
+                $notification
+            );
+
+            $response = Http::timeout(30)
+                ->withHeaders([
+                    'Authorization' => 'Basic ' . $this->oneSignalApiKey,
+                    'Content-Type' => 'application/json; charset=utf-8',
+                ])
+                ->post($this->oneSignalApiUrl, $payload);
+
+            if ($response->successful()) {
+                Log::info('✅ Notification sent successfully to customer', [
+                    'customer_id' => $customerId,
+                    'notification_id' => $response->json()['body']['notification_id'] ?? null,
+                ]);
+                return ['sent' => 1, 'failed' => 0];
+            } else {
+                Log::error('❌ OneSignal API error', [
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                ]);
+                return ['sent' => 0, 'failed' => 1];
+            }
+        } catch (\Exception $e) {
+            Log::error('❌ Error sending notification to customer', [
+                'customer_id' => $customerId,
+                'error' => $e->getMessage(),
+            ]);
+            return ['sent' => 0, 'failed' => 1];
         }
-
-        return $this->sendBatch($playerIds, $notification);
     }
 
     public function sendBatch(array $playerIds, array $notification): array
