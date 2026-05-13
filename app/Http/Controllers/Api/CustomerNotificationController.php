@@ -9,7 +9,9 @@ use App\Models\CustomerNotification;
 use App\Models\CustomerVerificationRequest;
 use App\Models\EncashmentRequest;
 use App\Models\ExpoDeviceToken;
+use App\Models\OneSignalDeviceToken;
 use App\Services\ExpoPushNotificationService;
+use App\Services\OneSignalPushNotificationService;
 use App\Support\CustomerCashWallet;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -555,6 +557,181 @@ class CustomerNotificationController extends Controller
 
         return response()->json([
             'message' => 'Push notification queued for delivery.',
+            'sent' => $result['sent'],
+            'failed' => $result['failed'],
+        ], 201);
+    }
+
+    public function registerOneSignalToken(Request $request)
+    {
+        $customer = $request->user();
+        if (!$customer instanceof Customer) {
+            return response()->json(['message' => 'Only customer accounts can register devices.'], 403);
+        }
+
+        $validated = $request->validate([
+            'player_id' => 'required|string|max:255',
+            'device_name' => 'nullable|string|max:255',
+            'platform' => 'required|string|in:ios,android,web',
+        ]);
+
+        $service = new OneSignalPushNotificationService();
+        $playerId = (string) $validated['player_id'];
+
+        if (!$service->validatePlayerId($playerId)) {
+            return response()->json(['message' => 'Invalid OneSignal player ID format.'], 422);
+        }
+
+        $customerId = (int) $customer->c_userid;
+
+        OneSignalDeviceToken::updateOrCreate(
+            [
+                'odt_customer_id' => $customerId,
+                'odt_player_id' => $playerId,
+            ],
+            [
+                'odt_device_name' => $validated['device_name'] ?? null,
+                'odt_platform' => $validated['platform'] ?? 'android',
+                'odt_is_active' => true,
+                'odt_updated_at' => now(),
+            ]
+        );
+
+        return response()->json([
+            'message' => 'OneSignal device registered successfully.',
+            'player_id' => $playerId,
+        ], 201);
+    }
+
+    public function unregisterOneSignalToken(Request $request)
+    {
+        $customer = $request->user();
+        if (!$customer instanceof Customer) {
+            return response()->json(['message' => 'Only customer accounts can unregister devices.'], 403);
+        }
+
+        $validated = $request->validate([
+            'player_id' => 'required|string|max:255',
+        ]);
+
+        $customerId = (int) $customer->c_userid;
+        $playerId = (string) $validated['player_id'];
+
+        OneSignalDeviceToken::where('odt_customer_id', $customerId)
+            ->where('odt_player_id', $playerId)
+            ->update(['odt_is_active' => false]);
+
+        return response()->json(['message' => 'OneSignal device unregistered successfully.']);
+    }
+
+    public function getOneSignalTokens(Request $request)
+    {
+        $customer = $request->user();
+        if (!$customer instanceof Customer) {
+            return response()->json(['message' => 'Only customer accounts can access device tokens.'], 403);
+        }
+
+        $customerId = (int) $customer->c_userid;
+
+        $tokens = OneSignalDeviceToken::query()
+            ->where('odt_customer_id', $customerId)
+            ->where('odt_is_active', true)
+            ->get()
+            ->map(fn (OneSignalDeviceToken $token) => [
+                'id' => (int) $token->odt_id,
+                'player_id' => (string) $token->odt_player_id,
+                'device_name' => (string) ($token->odt_device_name ?? 'Unknown Device'),
+                'platform' => (string) $token->odt_platform,
+                'registered_at' => $token->odt_created_at?->toIso8601String(),
+            ])
+            ->values();
+
+        return response()->json([
+            'tokens' => $tokens,
+            'count' => $tokens->count(),
+        ]);
+    }
+
+    public function sendOneSignalNotification(Request $request)
+    {
+        $user = $request->user();
+        if (!$user instanceof Customer) {
+            return response()->json(['message' => 'Only customer accounts can send notifications.'], 403);
+        }
+
+        $validated = $request->validate([
+            'headings' => 'required|string|max:255',
+            'contents' => 'required|string|max:500',
+            'data' => 'nullable|array',
+            'big_picture' => 'nullable|url',
+            'ios_attachments' => 'nullable|array',
+        ]);
+
+        $service = new OneSignalPushNotificationService();
+
+        $notification = [
+            'headings' => ['en' => (string) $validated['headings']],
+            'contents' => ['en' => (string) $validated['contents']],
+        ];
+
+        if (!empty($validated['data'])) {
+            $notification['data'] = (array) $validated['data'];
+        }
+
+        if (isset($validated['big_picture'])) {
+            $notification['big_picture'] = (string) $validated['big_picture'];
+        }
+
+        if (isset($validated['ios_attachments'])) {
+            $notification['ios_attachments'] = (array) $validated['ios_attachments'];
+        }
+
+        $result = $service->sendToCustomer((int) $user->c_userid, $notification);
+
+        return response()->json([
+            'message' => 'OneSignal push notification queued for delivery.',
+            'sent' => $result['sent'],
+            'failed' => $result['failed'],
+        ], 201);
+    }
+
+    public function sendTestNotification(Request $request)
+    {
+        $user = $request->user();
+        if (!$user instanceof Customer) {
+            return response()->json(['message' => 'Only customer accounts can send notifications.'], 403);
+        }
+
+        $service = new OneSignalPushNotificationService();
+
+        // Sample notification with image
+        $notification = [
+            'headings' => ['en' => '🎉 Test Notification'],
+            'contents' => ['en' => 'This is a test notification from Apsara Home! Your account is ready.'],
+            'data' => [
+                'href' => 'purchases://pending/test-order-123',
+                'type' => 'test',
+            ],
+            'big_picture' => 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=400',
+            'ios_attachments' => [
+                'image' => 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=400',
+            ],
+        ];
+
+        Log::info('📤 Sending test OneSignal notification to customer', [
+            'customer_id' => (int) $user->c_userid,
+            'notification' => $notification,
+        ]);
+
+        $result = $service->sendToCustomer((int) $user->c_userid, $notification);
+
+        return response()->json([
+            'message' => '✅ Test notification sent successfully!',
+            'notification' => [
+                'title' => '🎉 Test Notification',
+                'body' => 'This is a test notification from Apsara Home! Your account is ready.',
+                'image' => 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=400',
+            ],
             'sent' => $result['sent'],
             'failed' => $result['failed'],
         ], 201);

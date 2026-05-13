@@ -220,6 +220,11 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::post('/notifications/expo/unregister-token', [CustomerNotificationController::class, 'unregisterExpoToken']);
     Route::get('/notifications/expo/tokens', [CustomerNotificationController::class, 'getExpoTokens']);
     Route::post('/notifications/expo/send', [CustomerNotificationController::class, 'sendPushNotification']);
+    Route::post('/notifications/onesignal/register-token', [CustomerNotificationController::class, 'registerOneSignalToken']);
+    Route::post('/notifications/onesignal/unregister-token', [CustomerNotificationController::class, 'unregisterOneSignalToken']);
+    Route::get('/notifications/onesignal/tokens', [CustomerNotificationController::class, 'getOneSignalTokens']);
+    Route::post('/notifications/onesignal/send', [CustomerNotificationController::class, 'sendOneSignalNotification']);
+    Route::post('/notifications/onesignal/test', [CustomerNotificationController::class, 'sendTestNotification']);
     Route::post('/interior-requests', [InteriorRequestController::class, 'store']);
     Route::get('/interior-requests', [InteriorRequestController::class, 'myRequests']);
     Route::get('/interior-requests/{id}', [InteriorRequestController::class, 'show']);
