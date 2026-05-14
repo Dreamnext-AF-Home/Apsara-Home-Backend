@@ -86,6 +86,12 @@ class AppServiceProvider extends ServiceProvider
             Limit::perMinute(120)->by($req->ip())
         );
 
+        // Partner storefront/public web-page content is read frequently by multiple
+        // components during navigation, so keep it on a dedicated, higher bucket.
+        RateLimiter::for('storefront-read', fn (Request $req) =>
+            Limit::perMinute(600)->by($req->ip())
+        );
+
         // Admin or authenticated write-heavy endpoints
         RateLimiter::for('admin-write', fn (Request $req) =>
             Limit::perMinute(60)->by(($req->user()?->id ? 'u:' . $req->user()->id . '|' : '') . 'ip:' . $req->ip())
