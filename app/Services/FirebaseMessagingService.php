@@ -102,10 +102,44 @@ class FirebaseMessagingService
                 ->withNotification($notif)
                 ->withData($data);
 
-            $report = $this->messaging->sendMulticast($message, $tokens);
+            try {
+                $report = $this->messaging->sendMulticast($message, $tokens);
 
-            $successful = $report->successes()->count();
-            $failed = $report->failures()->count();
+                $successful = $report->successes()->count();
+                $failed = $report->failures()->count();
+
+                Log::info('📊 FCM Report Details', [
+                    'successful_count' => $successful,
+                    'failed_count' => $failed,
+                    'tokens_sent' => count($tokens),
+                ]);
+
+                // Log failure details
+                if ($failed > 0) {
+                    $failureDetails = [];
+                    foreach ($report->failures()->getItems() as $failure) {
+                        $failureDetails[] = [
+                            'token' => method_exists($failure, 'target') ? $failure->target()->value() : null,
+                            'error' => $failure->error()->getMessage(),
+                            'error_class' => get_class($failure->error()),
+                        ];
+                    }
+
+                    Log::error('❌ FCM batch failures', [
+                        'valid_tokens' => $report->validTokens(),
+                        'invalid_tokens' => $report->invalidTokens(),
+                        'unknown_tokens' => $report->unknownTokens(),
+                        'failure_details' => $failureDetails,
+                    ]);
+                }
+            } catch (\Exception $e) {
+                Log::error('💥 FCM SendMulticast Exception', [
+                    'message' => $e->getMessage(),
+                    'code' => $e->getCode(),
+                    'trace' => $e->getTraceAsString(),
+                ]);
+                return ['sent' => 0, 'failed' => count($tokens)];
+            }
 
             Log::info('✅ FCM batch sent', [
                 'sent' => $successful,
