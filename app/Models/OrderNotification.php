@@ -113,6 +113,33 @@ class OrderNotification extends Model
             $amount = number_format((float) ($notification->on_amount ?? 0), 2);
             $paymentMethod = ucfirst($notification->on_payment_method ?? 'the payment method');
 
+            // Build dynamic title with status and emoji
+            $statusEmoji = match ($status) {
+                'paid', 'succeeded', 'success' => '✅',
+                'processing' => '⚙️',
+                'to_ship', 'packed' => '📦',
+                'shipped' => '🚚',
+                'to_receive', 'out_for_delivery' => '🚗',
+                'delivered', 'completed' => '✨',
+                'cancelled' => '❌',
+                'refunded' => '💰',
+                default => '📋',
+            };
+
+            $statusLabel = match ($status) {
+                'paid', 'succeeded', 'success' => 'Payment Confirmed',
+                'processing' => 'Processing',
+                'to_ship', 'packed' => 'Ready to Ship',
+                'shipped' => 'Shipped',
+                'to_receive', 'out_for_delivery' => 'Out for Delivery',
+                'delivered', 'completed' => 'Delivered',
+                'cancelled' => 'Cancelled',
+                'refunded' => 'Refunded',
+                default => 'Order Updated',
+            };
+
+            $title = "Order: {$statusLabel} {$statusEmoji}";
+
             $message = match ($status) {
                 'paid', 'succeeded', 'success' => "Payment confirmed via {$paymentMethod}! Your order amounting to ₱{$amount} has been paid and is being processed.",
                 'processing' => "Your order {$productName} is now being prepared for shipment.",
@@ -126,6 +153,7 @@ class OrderNotification extends Model
                 'on_status' => $status,
                 'on_href' => $href,
                 'on_severity' => $severity,
+                'on_title' => $title,
             ];
 
             // Update message if we have a specific one for this status
