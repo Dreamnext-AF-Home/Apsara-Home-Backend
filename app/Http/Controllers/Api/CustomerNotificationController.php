@@ -907,6 +907,7 @@ class CustomerNotificationController extends Controller
             'title' => '🎉 Test FCM Notification',
             'body' => 'This is a test notification with image support!',
             'image' => 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=400',
+            'color' => '#0284c7',
             'data' => [
                 'href' => 'purchases://pending/test-order-123',
                 'type' => 'test',

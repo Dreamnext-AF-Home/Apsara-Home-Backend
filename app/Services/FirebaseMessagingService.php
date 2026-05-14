@@ -6,7 +6,6 @@ use App\Models\FcmDeviceToken;
 use Illuminate\Support\Facades\Log;
 use Kreait\Firebase\Factory;
 use Kreait\Firebase\Messaging\CloudMessage;
-use Kreait\Firebase\Messaging\Notification;
 
 class FirebaseMessagingService
 {
@@ -106,20 +105,41 @@ class FirebaseMessagingService
                 'token_count' => count($tokens),
             ]);
 
+            // Ensure critical fields for background/closed app notifications
+            $notification = $this->ensureNotificationFields($notification);
+
             $title = $notification['title'] ?? $notification['headings']['en'] ?? 'Notification';
             $body = $notification['body'] ?? $notification['contents']['en'] ?? '';
             $image = $notification['image'] ?? $notification['big_picture'] ?? null;
+            $color = $notification['color'] ?? '#0284c7';
             $data = $notification['data'] ?? [];
-
-            $notif = Notification::create($title, $body);
 
             if ($image) {
                 $data['image'] = $image;
             }
 
-            $message = CloudMessage::new()
-                ->withNotification($notif)
-                ->withData($data);
+            $messagePayload = [
+                'notification' => [
+                    'title' => $title,
+                    'body' => $body,
+                ],
+                'data' => $data,
+                'android' => [
+                    'priority' => 'high',
+                    'notification' => [
+                        'image' => $image,
+                        'channel_id' => $notification['channelId'] ?? 'default',
+                        'color' => $color,
+                    ],
+                ],
+                'apns' => [
+                    'headers' => [
+                        'apns-priority' => '10',
+                    ],
+                ],
+            ];
+
+            $message = CloudMessage::fromArray($messagePayload);
 
             try {
                 $report = $this->messaging->sendMulticast($message, $tokens);
@@ -184,22 +204,43 @@ class FirebaseMessagingService
 
             Log::info('📤 Sending FCM to single token', ['token' => substr($token, 0, 20) . '...']);
 
+            // Ensure critical fields for background/closed app notifications
+            $notification = $this->ensureNotificationFields($notification);
+
             $title = $notification['title'] ?? $notification['headings']['en'] ?? 'Notification';
             $body = $notification['body'] ?? $notification['contents']['en'] ?? '';
             $image = $notification['image'] ?? $notification['big_picture'] ?? null;
+            $color = $notification['color'] ?? '#0284c7';
             $data = $notification['data'] ?? [];
-
-            $notif = Notification::create($title, $body);
 
             if ($image) {
                 $data['image'] = $image;
             }
 
-            $message = CloudMessage::new()
-                ->withNotification($notif)
-                ->withData($data);
+            $messagePayload = [
+                'token' => $token,
+                'notification' => [
+                    'title' => $title,
+                    'body' => $body,
+                ],
+                'data' => $data,
+                'android' => [
+                    'priority' => 'high',
+                    'notification' => [
+                        'image' => $image,
+                        'channel_id' => $notification['channelId'] ?? 'default',
+                        'color' => $color,
+                    ],
+                ],
+                'apns' => [
+                    'headers' => [
+                        'apns-priority' => '10',
+                    ],
+                ],
+            ];
 
-            $this->messaging->send($message, $token);
+            $message = CloudMessage::fromArray($messagePayload);
+            $this->messaging->send($message);
 
             Log::info('✅ FCM sent to token');
             return true;
@@ -209,5 +250,18 @@ class FirebaseMessagingService
             ]);
             return false;
         }
+    }
+
+    private function ensureNotificationFields(array $notification): array
+    {
+        if (!isset($notification['priority'])) {
+            $notification['priority'] = 'high';
+        }
+
+        if (!isset($notification['channelId'])) {
+            $notification['channelId'] = 'default';
+        }
+
+        return $notification;
     }
 }
