@@ -2685,7 +2685,7 @@ class PaymentController extends Controller
         // Fetch OrderNotification for custom messages and images (same as actual method)
         $orderNotificationTitle = 'Order Status Updated';
         $orderNotificationMessage = "Your order #{$checkoutId} status has been updated.";
-        $orderNotificationImage = '';
+        $orderNotificationImage = $order->ch_product_image ?: '/Images/HeroSection/sofas.jpg';
         $orderNotificationHref = '/orders';
 
         $orderNotification = OrderNotification::query()

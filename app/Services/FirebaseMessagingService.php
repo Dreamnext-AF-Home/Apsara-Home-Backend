@@ -174,18 +174,21 @@ class FirebaseMessagingService
                 $androidNotification['image'] = (string) $image;
             }
 
+            // Send data-only notification so app can handle via notifee with buttons
+            // Include notification data in the data payload for app to use
+            $dataPayload = array_merge($data, [
+                'title' => $title,
+                'body' => $body,
+                'image' => $image ?: '',
+            ]);
+
             $payload = [
                 'message' => [
                     'token' => $token,
-                    'notification' => [
-                        'title' => $title,
-                        'body' => $body,
-                    ],
-                    'data' => $data,
+                    'data' => $dataPayload,
                     'android' => [
                         'priority' => 'HIGH',
                         'ttl' => '3600s',
-                        'notification' => $androidNotification,
                     ],
                     'apns' => [
                         'headers' => [
