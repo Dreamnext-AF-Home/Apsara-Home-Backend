@@ -1244,6 +1244,10 @@ class PaymentController extends Controller
                     'shipping_fee' => (float) ($order->ch_shipping_fee ?? 0),
                     'payment_method' => $this->formatPaymentMethod((string) ($order->ch_payment_method ?? '')),
                     'tracking_number' => $trackingNo,
+                    'refund_reason' => $order->ch_refund_reason ?: null,
+                    'refund_image_urls' => is_array($order->ch_refund_image_urls) ? array_values($order->ch_refund_image_urls) : [],
+                    'refund_video_urls' => is_array($order->ch_refund_video_urls) ? array_values($order->ch_refund_video_urls) : [],
+                    'refund_requested_at' => optional($order->ch_refund_requested_at)->toDateTimeString(),
                     'created_at' => optional($order->ch_paid_at ?? $order->created_at)->toDateTimeString(),
                 ];
             })->values()->all();
@@ -1408,6 +1412,91 @@ class PaymentController extends Controller
 
         return response()->json([
             'message' => 'Order confirmed and review submitted.',
+        ]);
+    }
+
+    public function refundOrder(Request $request, int $id): \Illuminate\Http\JsonResponse
+    {
+        $customer = $request->user();
+        if (!$customer) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        $validated = $request->validate([
+            'reason' => 'required|string|min:3|max:2000',
+            'refund_images' => 'nullable|array|max:10',
+            'refund_images.*' => 'image|max:10240',
+            'refund_videos' => 'nullable|array|max:5',
+            'refund_videos.*' => 'file|mimetypes:video/mp4,video/quicktime,video/webm|max:102400',
+        ]);
+
+        $order = CheckoutHistory::query()
+            ->where('ch_id', $id)
+            ->where('ch_customer_id', (int) $customer->getAuthIdentifier())
+            ->first();
+
+        if (!$order) {
+            return response()->json(['message' => 'Order not found.'], 404);
+        }
+
+        if ($order->ch_fulfillment_status !== 'out_for_delivery') {
+            return response()->json(['message' => 'Order is not eligible for refund at this stage.'], 422);
+        }
+
+        $refundImageUrls = [];
+        if ($request->hasFile('refund_images')) {
+            try {
+                $cloudinary = app(CloudinaryUploadService::class);
+                foreach ((array) $request->file('refund_images') as $imageFile) {
+                    if (!$imageFile) {
+                        continue;
+                    }
+                    $upload = $cloudinary->uploadImage($imageFile, 'afhome/refunds/images');
+                    $refundImageUrls[] = (string) ($upload['secure_url'] ?? '');
+                }
+            } catch (RuntimeException $exception) {
+                return response()->json(['message' => $exception->getMessage()], 422);
+            }
+        }
+
+        $refundVideoUrls = [];
+        if ($request->hasFile('refund_videos')) {
+            try {
+                $cloudinary = app(CloudinaryUploadService::class);
+                foreach ((array) $request->file('refund_videos') as $videoFile) {
+                    if (!$videoFile) {
+                        continue;
+                    }
+                    $upload = $cloudinary->uploadVideo($videoFile, 'afhome/refunds/videos');
+                    $refundVideoUrls[] = (string) ($upload['secure_url'] ?? '');
+                }
+            } catch (RuntimeException $exception) {
+                return response()->json(['message' => $exception->getMessage()], 422);
+            }
+        }
+
+        $refundImageUrls = array_values(array_unique(array_filter($refundImageUrls)));
+        $refundVideoUrls = array_values(array_unique(array_filter($refundVideoUrls)));
+
+        $order->ch_fulfillment_status = 'refunded';
+        if (empty($order->ch_shipment_status) || $order->ch_shipment_status === 'out_for_delivery') {
+            $order->ch_shipment_status = 'refunded';
+        }
+        $order->ch_refund_reason = (string) $validated['reason'];
+        $order->ch_refund_image_urls = !empty($refundImageUrls) ? $refundImageUrls : null;
+        $order->ch_refund_video_urls = !empty($refundVideoUrls) ? $refundVideoUrls : null;
+        $order->ch_refund_requested_at = now();
+        $order->save();
+
+        $this->notifyCustomerOrderStatusUpdate(
+            $order,
+            'order_refund_requested',
+            'Refund requested',
+            'Your refund request was submitted and is now under review.',
+        );
+
+        return response()->json([
+            'message' => 'Refund request submitted successfully.',
         ]);
     }
 
@@ -2547,6 +2636,10 @@ class PaymentController extends Controller
             'source_url' => $order->ch_source_url ?: null,
             'created_at' => optional($order->ch_paid_at ?? $order->created_at)->toDateTimeString(),
             'estimated_delivery' => null,
+            'refund_reason' => $order->ch_refund_reason ?: null,
+            'refund_image_urls' => is_array($order->ch_refund_image_urls) ? array_values($order->ch_refund_image_urls) : [],
+            'refund_video_urls' => is_array($order->ch_refund_video_urls) ? array_values($order->ch_refund_video_urls) : [],
+            'refund_requested_at' => optional($order->ch_refund_requested_at)->toDateTimeString(),
         ];
 
         if ($includeGuestFields) {
