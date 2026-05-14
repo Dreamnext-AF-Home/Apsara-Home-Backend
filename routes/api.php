@@ -46,6 +46,7 @@ use App\Http\Controllers\Api\SearchController;
 use App\Http\Controllers\Api\TotpController;
 use App\Http\Controllers\Api\GeminiController;
 use App\Http\Controllers\Api\MobilePaymentController;
+use App\Http\Controllers\Api\FollowerController;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Http\Request;
@@ -236,6 +237,13 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::post('/notifications/fcm/register-token', [CustomerNotificationController::class, 'registerFcmToken']);
     Route::post('/notifications/fcm/send', [CustomerNotificationController::class, 'sendFcmNotification']);
     Route::post('/notifications/fcm/test', [CustomerNotificationController::class, 'sendTestFcmNotification']);
+
+    // Follower routes
+    Route::post('/followers/follow', [FollowerController::class, 'follow']);
+    Route::post('/followers/unfollow', [FollowerController::class, 'unfollow']);
+    Route::get('/followers/following', [FollowerController::class, 'getFollowing']);
+    Route::post('/followers/is-following', [FollowerController::class, 'isFollowing']);
+
     Route::post('/interior-requests', [InteriorRequestController::class, 'store']);
     Route::get('/interior-requests', [InteriorRequestController::class, 'myRequests']);
     Route::get('/interior-requests/{id}', [InteriorRequestController::class, 'show']);
