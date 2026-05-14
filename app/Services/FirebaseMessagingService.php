@@ -16,6 +16,25 @@ class FirebaseMessagingService
     {
         try {
             $credentialsPath = config('services.firebase.credentials');
+            $rawJsonCredentials = env('FIREBASE_CREDENTIALS_JSON');
+
+            if (is_string($rawJsonCredentials) && trim($rawJsonCredentials) !== '') {
+                $resolvedCredentialsPath = $credentialsPath;
+                if (!str_starts_with($resolvedCredentialsPath, DIRECTORY_SEPARATOR)) {
+                    $resolvedCredentialsPath = base_path($resolvedCredentialsPath);
+                }
+
+                if (!file_exists($resolvedCredentialsPath)) {
+                    $credentialsDir = dirname($resolvedCredentialsPath);
+                    if (!is_dir($credentialsDir)) {
+                        @mkdir($credentialsDir, 0755, true);
+                    }
+                    @file_put_contents($resolvedCredentialsPath, $rawJsonCredentials);
+                    @chmod($resolvedCredentialsPath, 0600);
+                }
+
+                $credentialsPath = $resolvedCredentialsPath;
+            }
 
             // Handle both absolute and relative paths
             if (!file_exists($credentialsPath)) {
