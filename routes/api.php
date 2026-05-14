@@ -203,6 +203,7 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::get('/orders/history', [PaymentController::class, 'checkoutHistory']);
     Route::get('/orders/counts', [PaymentController::class, 'orderCounts']);
     Route::post('/orders/{id}/confirm', [PaymentController::class, 'confirmOrder']);
+    Route::post('/orders/{id}/refund', [PaymentController::class, 'refundOrder']);
     
     // Mobile payment endpoints
     Route::middleware('throttle:10,1')->group(function () {
