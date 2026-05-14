@@ -43,6 +43,23 @@ class AppServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        $firebaseCredentialsJson = env('FIREBASE_CREDENTIALS_JSON');
+        $firebaseCredentialsPath = config('services.firebase.credentials', 'storage/firebase-credentials.json');
+        if (is_string($firebaseCredentialsJson) && trim($firebaseCredentialsJson) !== '') {
+            $resolvedPath = str_starts_with($firebaseCredentialsPath, DIRECTORY_SEPARATOR)
+                ? $firebaseCredentialsPath
+                : base_path($firebaseCredentialsPath);
+
+            if (!file_exists($resolvedPath)) {
+                $credentialsDir = dirname($resolvedPath);
+                if (!is_dir($credentialsDir)) {
+                    @mkdir($credentialsDir, 0755, true);
+                }
+                @file_put_contents($resolvedPath, $firebaseCredentialsJson);
+                @chmod($resolvedPath, 0600);
+            }
+        }
+
         // Member login lockout: 3 attempts per 60 seconds per IP.
         RateLimiter::for('member-login', fn (Request $req) =>
             Limit::perMinute(3)

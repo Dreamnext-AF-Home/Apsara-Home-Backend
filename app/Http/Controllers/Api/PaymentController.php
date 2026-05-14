@@ -14,7 +14,7 @@ use App\Models\Product;
 use App\Models\SystemSetting;
 use App\Models\WebPageContent;
 use App\Services\CloudinaryUploadService;
-use App\Services\ExpoPushNotificationService;
+use App\Services\FirebaseMessagingService;
 use App\Support\DirectReferralCommission;
 use App\Support\OrderPvPosting;
 use Illuminate\Http\Request;
@@ -2251,21 +2251,21 @@ class PaymentController extends Controller
 
         // Send Expo push notification with custom message and image from OrderNotification
         try {
-            $expoPushService = new ExpoPushNotificationService();
+            $fcmService = new FirebaseMessagingService();
 
-            $expoData = [
+            $fcmData = [
                 'title' => $orderNotificationTitle,
                 'body' => $orderNotificationMessage,
                 'sound' => 'default',
                 'badge' => 1,
                 'mutableContent' => true,
                 'data' => [
-                    'order_id' => (int) $order->ch_id,
+                    'order_id' => (string) $order->ch_id,
                     'checkout_id' => (string) $order->ch_checkout_id,
-                    'event_type' => $eventType,
-                    'status' => $status,
+                    'event_type' => (string) $eventType,
+                    'status' => (string) $status,
                     'type' => 'order_update',
-                    'href' => $orderNotificationHref,
+                    'href' => (string) $orderNotificationHref,
                     'screen' => 'OrderDetail',
                     'params' => json_encode([
                         'orderId' => (int) $order->ch_id,
@@ -2276,23 +2276,23 @@ class PaymentController extends Controller
 
             // Include product image in notification payload
             if (!empty($orderNotificationImage)) {
-                $expoData['data']['product_image'] = (string) $orderNotificationImage;
+                $fcmData['image'] = (string) $orderNotificationImage;
             }
 
             // DEBUG: Log the complete notification payload being sent
-            Log::info('🔍 [DEBUG] Preparing Expo push notification', [
+            Log::info('DEBUG Preparing FCM push notification', [
                 'customer_id' => (int) $order->ch_customer_id,
                 'checkout_id' => (string) $order->ch_checkout_id,
                 'title' => $orderNotificationTitle,
                 'body' => $orderNotificationMessage,
                 'product_image' => $orderNotificationImage ?? 'NO_IMAGE',
                 'image_empty_check' => empty($orderNotificationImage) ? 'TRUE (image is empty)' : 'FALSE (image exists)',
-                'full_payload' => json_encode($expoData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
+                'full_payload' => json_encode($fcmData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
             ]);
 
-            $result = $expoPushService->sendToCustomer((int) $order->ch_customer_id, $expoData);
+            $result = $fcmService->sendToCustomer((int) $order->ch_customer_id, $fcmData);
 
-            Log::info('✅ Expo push notification sent for order status update', [
+            Log::info('FCM push notification sent for order status update', [
                 'customer_id' => (int) $order->ch_customer_id,
                 'checkout_id' => (string) $order->ch_checkout_id,
                 'status' => $status,
@@ -2302,7 +2302,7 @@ class PaymentController extends Controller
                 'image_url' => $orderNotificationImage ?? 'NONE',
             ]);
         } catch (\Throwable $e) {
-            Log::warning('❌ Failed to send Expo push notification for order status update.', [
+            Log::warning('Failed to send FCM push notification for order status update.', [
                 'customer_id' => (int) $order->ch_customer_id,
                 'checkout_id' => (string) $order->ch_checkout_id,
                 'event_type' => $eventType,
@@ -2728,5 +2728,187 @@ class PaymentController extends Controller
             ->whereRaw('LOWER(c_username) = ?', [strtolower($referral)])
             ->where('c_lockstatus', 0)
             ->first();
+    }
+
+    public function testOrderStatusUpdateWithFcn(Request $request)
+    {
+        $customer = auth('sanctum')->user();
+        if (!$customer || !isset($customer->c_userid)) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        $validated = $request->validate([
+            'checkout_id' => 'required|string',
+            'status' => 'required|string|in:processing,packed,shipped,out_for_delivery,delivered,cancelled,refunded',
+        ]);
+
+        $checkoutId = (string) $validated['checkout_id'];
+        $status = (string) $validated['status'];
+        $customerId = (int) $customer->c_userid;
+
+        Log::info('TEST: Customer testing order status update', [
+            'checkout_id' => $checkoutId,
+            'status' => $status,
+            'customer_id' => $customerId,
+        ]);
+
+        $order = CheckoutHistory::query()
+            ->where('ch_checkout_id', $checkoutId)
+            ->where('ch_customer_id', $customerId)
+            ->first();
+
+        if (!$order) {
+            Log::warning('TEST: Order not found or does not belong to customer', [
+                'checkout_id' => $checkoutId,
+                'customer_id' => $customerId,
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Order not found or does not belong to you',
+                'checkout_id' => $checkoutId,
+            ], 404);
+        }
+
+        Log::info('TEST: Order found', [
+            'order_id' => $order->ch_id,
+            'customer_id' => $order->ch_customer_id,
+            'current_status' => $order->ch_fulfillment_status,
+        ]);
+
+        // Fetch OrderNotification for custom messages and images (same as actual method)
+        $orderNotificationTitle = 'Order Status Updated';
+        $orderNotificationMessage = "Your order #{$checkoutId} status has been updated.";
+        $orderNotificationImage = $order->ch_product_image ?: '/Images/HeroSection/sofas.jpg';
+        $orderNotificationHref = '/orders';
+
+        $orderNotification = OrderNotification::query()
+            ->where('on_checkout_id', (string) $order->ch_checkout_id)
+            ->first();
+
+        if ($orderNotification) {
+            $customTitle = trim((string) ($orderNotification->on_title ?? ''));
+            $customMessage = trim((string) ($orderNotification->on_message ?? ''));
+            $customImage = trim((string) ($orderNotification->on_product_image ?? ''));
+            $customHref = trim((string) ($orderNotification->on_href ?? ''));
+
+            Log::info('TEST: OrderNotification data found', [
+                'checkout_id' => (string) $order->ch_checkout_id,
+                'title' => $customTitle ?: 'EMPTY',
+                'message' => $customMessage ?: 'EMPTY',
+                'image' => $customImage ?: 'EMPTY',
+                'href' => $customHref ?: 'EMPTY',
+            ]);
+
+            if ($customTitle !== '') {
+                $orderNotificationTitle = $customTitle;
+            }
+            if ($customMessage !== '') {
+                $orderNotificationMessage = $customMessage;
+            }
+            if ($customImage !== '') {
+                $orderNotificationImage = $customImage;
+            }
+            if ($customHref !== '') {
+                $orderNotificationHref = $customHref;
+            }
+        } else {
+            Log::warning('TEST: No OrderNotification found, using defaults', [
+                'checkout_id' => (string) $order->ch_checkout_id,
+            ]);
+        }
+
+        $order->update([
+            'ch_fulfillment_status' => $status,
+        ]);
+
+        Log::info('TEST: Order status updated in database', [
+            'order_id' => $order->ch_id,
+            'new_status' => $status,
+        ]);
+
+        Log::info('TEST: Sending FCM notification with OrderNotification data', [
+            'order_id' => $order->ch_id,
+            'customer_id' => $order->ch_customer_id,
+            'title' => $orderNotificationTitle,
+            'message' => $orderNotificationMessage,
+            'image' => $orderNotificationImage ?: 'NO_IMAGE',
+        ]);
+
+        try {
+            $fcmService = new FirebaseMessagingService();
+
+            $fcmData = [
+                'title' => $orderNotificationTitle,
+                'body' => $orderNotificationMessage,
+                'sound' => 'default',
+                'badge' => 1,
+                'mutableContent' => true,
+                'data' => [
+                    'order_id' => (string) $order->ch_id,
+                    'checkout_id' => (string) $order->ch_checkout_id,
+                    'event_type' => 'status_update',
+                    'status' => (string) $status,
+                    'type' => 'order_update',
+                    'href' => (string) $orderNotificationHref,
+                    'screen' => 'OrderDetail',
+                    'params' => json_encode([
+                        'orderId' => (int) $order->ch_id,
+                        'checkoutId' => (string) $order->ch_checkout_id,
+                    ]),
+                ],
+            ];
+
+            if (!empty($orderNotificationImage)) {
+                $fcmData['image'] = (string) $orderNotificationImage;
+            }
+
+            $result = $fcmService->sendToCustomer((int) $order->ch_customer_id, $fcmData);
+
+            Log::info('TEST: FCM notification result', [
+                'customer_id' => (int) $order->ch_customer_id,
+                'checkout_id' => (string) $order->ch_checkout_id,
+                'sent' => $result['sent'],
+                'failed' => $result['failed'],
+                'image_included' => !empty($orderNotificationImage),
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Order status updated and FCM notification sent',
+                'order' => [
+                    'id' => $order->ch_id,
+                    'checkout_id' => $order->ch_checkout_id,
+                    'customer_id' => $order->ch_customer_id,
+                    'status' => $status,
+                ],
+                'notification' => [
+                    'title' => $orderNotificationTitle,
+                    'message' => $orderNotificationMessage,
+                    'image' => $orderNotificationImage ?: 'none',
+                    'href' => $orderNotificationHref,
+                ],
+                'notification_result' => [
+                    'sent' => $result['sent'],
+                    'failed' => $result['failed'],
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('TEST: Error sending FCM notification', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Order status updated but FCM notification failed',
+                'error' => $e->getMessage(),
+                'order' => [
+                    'id' => $order->ch_id,
+                    'checkout_id' => $order->ch_checkout_id,
+                    'customer_id' => $order->ch_customer_id,
+                    'status' => $status,
+                ],
+            ], 500);
+        }
     }
 }
