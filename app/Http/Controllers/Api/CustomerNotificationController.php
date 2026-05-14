@@ -813,21 +813,37 @@ class CustomerNotificationController extends Controller
             ]);
 
             $customerId = (int) $customer->c_userid;
+            $platform = $validated['platform'] ?? 'android';
+            $deviceName = $validated['device_name'] ?? null;
 
             Log::info('[registerFcmToken] Attempting to save FCM token', [
                 'customer_id' => $customerId,
                 'fcm_token' => substr($validated['fcm_token'], 0, 20) . '...',
-                'platform' => $validated['platform'] ?? 'android',
+                'platform' => $platform,
+                'device_name' => $deviceName,
             ]);
 
+            // Deactivate all other tokens from the same device (platform)
+            FcmDeviceToken::query()
+                ->where('fdt_customer_id', $customerId)
+                ->where('fdt_platform', $platform)
+                ->where('fdt_fcm_token', '!=', $validated['fcm_token'])
+                ->update(['fdt_is_active' => false]);
+
+            Log::info('[registerFcmToken] Deactivated old tokens for platform', [
+                'customer_id' => $customerId,
+                'platform' => $platform,
+            ]);
+
+            // Create or update the current token (only one per platform will be active)
             FcmDeviceToken::updateOrCreate(
                 [
                     'fdt_customer_id' => $customerId,
                     'fdt_fcm_token' => $validated['fcm_token'],
                 ],
                 [
-                    'fdt_device_name' => $validated['device_name'] ?? null,
-                    'fdt_platform' => $validated['platform'] ?? 'android',
+                    'fdt_device_name' => $deviceName,
+                    'fdt_platform' => $platform,
                     'fdt_is_active' => true,
                     'fdt_updated_at' => now(),
                 ]
