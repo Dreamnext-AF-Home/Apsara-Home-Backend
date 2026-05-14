@@ -151,10 +151,14 @@ Route::middleware('throttle:public')->group(function () {
     Route::get('/products/{id}/brand', [ProductController::class, 'brand']);
     Route::get('/products', [ProductController::class, 'index']);
     Route::get('/shipping-rates', [ShippingRateController::class, 'publicIndex']);
+    Route::get('/settings/general', [AdminSettingsController::class, 'publicGeneral']);
+});
+
+// Storefront/public web-page endpoints: dedicated higher read limit.
+Route::middleware('throttle:storefront-read')->group(function () {
     Route::get('/web-pages/home', [WebPageController::class, 'home']);
     Route::get('/web-pages/adds-content', [AddsContentController::class, 'publicIndex']);
     Route::get('/web-pages/{type}', [WebPageController::class, 'publicIndex']);
-    Route::get('/settings/general', [AdminSettingsController::class, 'publicGeneral']);
 });
 
 // Product brands endpoints (outside throttle to avoid Redis issues)
