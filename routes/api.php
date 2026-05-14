@@ -139,17 +139,20 @@ Route::middleware('throttle:webhooks')->group(function () {
     Route::post('/jnt/webhook/order-status', [JntWebhookController::class, 'productionOrderStatus']);
 });
 
-// Public read endpoints: 120 requests/min per IP
+// Product catalog reads are intentionally unthrottled to avoid storefront
+// navigation lockouts when pages issue multiple parallel reads.
+Route::get('/rooms', [ProductController::class, 'rooms']);
+Route::get('/products/slug/{slug}', [ProductController::class, 'showBySlug']);
+Route::get('/products/cards', [ProductController::class, 'indexCards']);
+Route::get('/products/{id}/reviews', [ProductController::class, 'reviews']);
+Route::get('/products/{id}/summary', [ProductController::class, 'showSummary']);
+Route::get('/products/{id}', [ProductController::class, 'show']);
+Route::get('/products/{id}/brand', [ProductController::class, 'brand']);
+Route::get('/products', [ProductController::class, 'index']);
+
+// Other public reads stay rate-limited.
 Route::middleware('throttle:public')->group(function () {
-    Route::get('/rooms', [ProductController::class, 'rooms']);
     Route::get('/categories', [CategoryController::class, 'index']);
-    Route::get('/products/slug/{slug}', [ProductController::class, 'showBySlug']);
-    Route::get('/products/cards', [ProductController::class, 'indexCards']);
-    Route::get('/products/{id}/reviews', [ProductController::class, 'reviews']);
-    Route::get('/products/{id}/summary', [ProductController::class, 'showSummary']);
-    Route::get('/products/{id}', [ProductController::class, 'show']);
-    Route::get('/products/{id}/brand', [ProductController::class, 'brand']);
-    Route::get('/products', [ProductController::class, 'index']);
     Route::get('/shipping-rates', [ShippingRateController::class, 'publicIndex']);
     Route::get('/settings/general', [AdminSettingsController::class, 'publicGeneral']);
 });
