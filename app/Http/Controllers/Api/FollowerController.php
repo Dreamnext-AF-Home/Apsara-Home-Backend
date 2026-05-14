@@ -12,7 +12,7 @@ class FollowerController extends Controller
     {
         $user = $request->user();
         $validated = $request->validate([
-            'brand_id' => 'required|integer|exists:tbl_partners,partner_id',
+            'brand_id' => 'required|integer',
         ]);
 
         $existing = Follower::where('user_id', $user->c_userid)
