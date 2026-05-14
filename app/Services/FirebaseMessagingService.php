@@ -62,7 +62,7 @@ class FirebaseMessagingService
     public function sendToCustomer(int $customerId, array $notification): array
     {
         try {
-            Log::info('Sending FCM notification to customer', ['customer_id' => $customerId]);
+            Log::info('FCM: Starting sendToCustomer', ['customer_id' => $customerId]);
 
             $tokens = FcmDeviceToken::query()
                 ->where('fdt_customer_id', $customerId)
@@ -70,14 +70,24 @@ class FirebaseMessagingService
                 ->pluck('fdt_fcm_token')
                 ->toArray();
 
+            Log::info('FCM: Tokens retrieved', [
+                'customer_id' => $customerId,
+                'token_count' => count($tokens),
+                'tokens' => $tokens,
+            ]);
+
             if (empty($tokens)) {
-                Log::info('No active FCM tokens for customer', ['customer_id' => $customerId]);
+                Log::warning('FCM: No active FCM tokens for customer', ['customer_id' => $customerId]);
                 return ['sent' => 0, 'failed' => 0];
             }
 
             return $this->sendBatch($tokens, $notification);
         } catch (\Exception $e) {
-            Log::error('Error sending notification', ['customer_id' => $customerId, 'error' => $e->getMessage()]);
+            Log::error('FCM: Error in sendToCustomer', [
+                'customer_id' => $customerId,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
             return ['sent' => 0, 'failed' => count($tokens ?? [])];
         }
     }
@@ -90,13 +100,18 @@ class FirebaseMessagingService
             }
 
             if (!$this->projectId) {
-                Log::error('Firebase project ID not configured');
+                Log::error('FCM: Project ID not configured');
                 return ['sent' => 0, 'failed' => count($tokens)];
             }
 
             $notification = $this->ensureNotificationFields($notification);
             $sent = 0;
             $failed = 0;
+
+            Log::info('FCM: Starting batch send', [
+                'token_count' => count($tokens),
+                'notification_title' => $notification['title'] ?? 'N/A',
+            ]);
 
             foreach ($tokens as $token) {
                 if ($this->sendToToken($token, $notification)) {
@@ -106,10 +121,18 @@ class FirebaseMessagingService
                 }
             }
 
-            Log::info('FCM batch sent', ['sent' => $sent, 'failed' => $failed]);
+            Log::info('FCM: Batch send complete', [
+                'sent' => $sent,
+                'failed' => $failed,
+                'total_tokens' => count($tokens),
+            ]);
             return ['sent' => $sent, 'failed' => $failed];
         } catch (\Exception $e) {
-            Log::error('FCM batch error', ['error' => $e->getMessage()]);
+            Log::error('FCM: Batch error', [
+                'error' => $e->getMessage(),
+                'token_count' => count($tokens),
+                'trace' => $e->getTraceAsString(),
+            ]);
             return ['sent' => 0, 'failed' => count($tokens)];
         }
     }
@@ -118,7 +141,7 @@ class FirebaseMessagingService
     {
         try {
             if (!$this->projectId) {
-                Log::error('Firebase project ID not configured');
+                Log::error('FCM: Project ID not configured');
                 return false;
             }
 
@@ -134,6 +157,23 @@ class FirebaseMessagingService
                 $data['image'] = $image;
             }
 
+            $androidNotification = [
+                'title' => $title,
+                'body' => $body,
+                'channel_id' => 'default',
+                'click_action' => 'FLUTTER_NOTIFICATION_CLICK',
+                'color' => $color,
+                'notification_priority' => 'PRIORITY_MAX',
+                'sound' => 'default',
+                'tag' => 'firebase-notification',
+                'ticker' => $title,
+            ];
+
+            // Only add image if it exists and is not empty
+            if ($image && trim((string) $image) !== '') {
+                $androidNotification['image'] = (string) $image;
+            }
+
             $payload = [
                 'message' => [
                     'token' => $token,
@@ -145,18 +185,7 @@ class FirebaseMessagingService
                     'android' => [
                         'priority' => 'HIGH',
                         'ttl' => '3600s',
-                        'notification' => [
-                            'title' => $title,
-                            'body' => $body,
-                            'channel_id' => 'default',
-                            'click_action' => 'FLUTTER_NOTIFICATION_CLICK',
-                            'color' => $color,
-                            'image' => $image,
-                            'notification_priority' => 'PRIORITY_MAX',
-                            'sound' => 'default',
-                            'tag' => 'firebase-notification',
-                            'ticker' => $title,
-                        ],
+                        'notification' => $androidNotification,
                     ],
                     'apns' => [
                         'headers' => [
@@ -168,9 +197,17 @@ class FirebaseMessagingService
 
             $accessToken = $this->getAccessToken();
             if (!$accessToken) {
-                Log::error('Failed to get Firebase access token');
+                Log::error('FCM: Failed to get access token for token: ' . substr($token, 0, 20) . '...');
                 return false;
             }
+
+            Log::info('FCM: Sending message', [
+                'token' => substr($token, 0, 20) . '...',
+                'title' => $title,
+                'body' => $body,
+                'has_image' => !empty($image),
+                'image_url' => !empty($image) ? substr($image, 0, 50) . '...' : 'NONE',
+            ]);
 
             $response = Http::withToken($accessToken)
                 ->post(
@@ -179,14 +216,24 @@ class FirebaseMessagingService
                 );
 
             if ($response->successful()) {
-                Log::info('FCM sent to token');
+                Log::info('FCM: Message sent successfully', [
+                    'token' => substr($token, 0, 20) . '...',
+                    'response' => $response->body(),
+                ]);
                 return true;
             } else {
-                Log::error('FCM send error', ['status' => $response->status(), 'body' => $response->body()]);
+                Log::error('FCM: Send failed', [
+                    'token' => substr($token, 0, 20) . '...',
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                ]);
                 return false;
             }
         } catch (\Exception $e) {
-            Log::error('FCM send error', ['error' => $e->getMessage()]);
+            Log::error('FCM: Exception in sendToToken', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
             return false;
         }
     }
