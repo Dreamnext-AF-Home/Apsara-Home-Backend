@@ -14,7 +14,7 @@ use App\Models\Product;
 use App\Models\SystemSetting;
 use App\Models\WebPageContent;
 use App\Services\CloudinaryUploadService;
-use App\Services\ExpoPushNotificationService;
+use App\Services\FirebaseMessagingService;
 use App\Support\DirectReferralCommission;
 use App\Support\OrderPvPosting;
 use Illuminate\Http\Request;
@@ -2162,9 +2162,9 @@ class PaymentController extends Controller
 
         // Send Expo push notification with custom message and image from OrderNotification
         try {
-            $expoPushService = new ExpoPushNotificationService();
+            $fcmService = new FirebaseMessagingService();
 
-            $expoData = [
+            $fcmData = [
                 'title' => $orderNotificationTitle,
                 'body' => $orderNotificationMessage,
                 'sound' => 'default',
@@ -2187,7 +2187,7 @@ class PaymentController extends Controller
 
             // Include product image in notification payload
             if (!empty($orderNotificationImage)) {
-                $expoData['data']['product_image'] = (string) $orderNotificationImage;
+                $fcmData['image'] = (string) $orderNotificationImage;
             }
 
             // DEBUG: Log the complete notification payload being sent
@@ -2201,7 +2201,7 @@ class PaymentController extends Controller
                 'full_payload' => json_encode($expoData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
             ]);
 
-            $result = $expoPushService->sendToCustomer((int) $order->ch_customer_id, $expoData);
+            $result = $fcmService->sendToCustomer((int) $order->ch_customer_id, $fcmData);
 
             Log::info('✅ Expo push notification sent for order status update', [
                 'customer_id' => (int) $order->ch_customer_id,
