@@ -169,13 +169,12 @@ class FirebaseMessagingService
                 'ticker' => $title,
             ];
 
-            // Only add image if it exists and is not empty
+            // Only add image if it exists and is not empty (shows as big picture in banner)
             if ($image && trim((string) $image) !== '') {
                 $androidNotification['image'] = (string) $image;
             }
 
-            // Send data-only notification so app can handle via notifee with buttons
-            // Include notification data in the data payload for app to use
+            // Include data in payload for app to use
             $deeplink = $data['href'] ?? $data['deeplink'] ?? '/orders';
             $dataPayload = array_merge($data, [
                 'title' => $title,
@@ -189,13 +188,31 @@ class FirebaseMessagingService
                 'message' => [
                     'token' => $token,
                     'data' => $dataPayload,
+                    // Add notification payload for background/closed state display
+                    'notification' => [
+                        'title' => $title,
+                        'body' => $body,
+                        'image' => $image && trim((string) $image) !== '' ? (string) $image : null,
+                    ],
                     'android' => [
                         'priority' => 'HIGH',
                         'ttl' => '3600s',
+                        'direct_boot_ok' => true,
+                        'notification' => $androidNotification,
                     ],
                     'apns' => [
                         'headers' => [
                             'apns-priority' => '10',
+                        ],
+                        'payload' => [
+                            'aps' => [
+                                'alert' => [
+                                    'title' => $title,
+                                    'body' => $body,
+                                ],
+                                'sound' => 'default',
+                                'badge' => 1,
+                            ],
                         ],
                     ],
                 ],
