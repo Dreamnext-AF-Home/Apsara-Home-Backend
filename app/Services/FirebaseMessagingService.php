@@ -176,10 +176,13 @@ class FirebaseMessagingService
 
             // Send data-only notification so app can handle via notifee with buttons
             // Include notification data in the data payload for app to use
+            $deeplink = $data['href'] ?? $data['deeplink'] ?? '/orders';
             $dataPayload = array_merge($data, [
                 'title' => $title,
                 'body' => $body,
                 'image' => $image ?: '',
+                'href' => $deeplink,
+                'deeplink' => $deeplink,
             ]);
 
             $payload = [
@@ -210,6 +213,8 @@ class FirebaseMessagingService
                 'body' => $body,
                 'has_image' => !empty($image),
                 'image_url' => !empty($image) ? substr($image, 0, 50) . '...' : 'NONE',
+                'deeplink' => $deeplink,
+                'data_keys' => array_keys($dataPayload),
             ]);
 
             $response = Http::withToken($accessToken)
