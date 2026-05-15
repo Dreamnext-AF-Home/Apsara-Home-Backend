@@ -1829,4 +1829,21 @@ class MemberController extends Controller
             // Ignore cache bust failures in local/dev when Redis is unavailable.
         }
     }
+
+    public function getEmails(Request $request): JsonResponse
+    {
+        $actor = $request->user();
+        if (!($actor instanceof Admin)) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        $emails = Customer::query()
+            ->pluck('c_email')
+            ->toArray();
+
+        return response()->json([
+            'emails' => $emails,
+            'total' => count($emails),
+        ]);
+    }
 }

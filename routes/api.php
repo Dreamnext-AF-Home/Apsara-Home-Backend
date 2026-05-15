@@ -32,6 +32,7 @@ use App\Http\Controllers\Api\PartnerUserController;
 use App\Http\Controllers\Api\CartController;
 use App\Http\Controllers\Api\AdminSettingsController;
 use App\Http\Controllers\Api\AdminPaymentController;
+use App\Http\Controllers\Api\AdminEmailBlastController;
 use App\Http\Controllers\Api\ExpenseCategoryController;
 use App\Http\Controllers\Api\ExpenseController;
 use App\Http\Controllers\Api\CustomerConversationController;
@@ -303,6 +304,7 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
 
 Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_admin,admin,csr'])->group(function () {
     Route::get('/admin/members', [MemberController::class, 'index']);
+    Route::get('/admin/members/emails', [MemberController::class, 'getEmails']);
     Route::get('/admin/members/top-earners', [MemberController::class, 'topEarners']);
     Route::get('/admin/members/stats', [MemberController::class, 'stats']);
     Route::get('/admin/members/stats/{stat}', [MemberController::class, 'statDetails']);
@@ -403,6 +405,10 @@ Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_a
     Route::get('/admin/member-tiers/{id}', [MemberTierController::class, 'show']);
     Route::patch('/admin/member-tiers/{id}', [MemberTierController::class, 'update']);
     Route::delete('/admin/member-tiers/{id}', [MemberTierController::class, 'destroy']);
+
+    // Email Blast
+    Route::post('/admin/email-blast/send', [AdminEmailBlastController::class, 'send']);
+    Route::get('/admin/email-blast/recipients', [AdminEmailBlastController::class, 'getRecipients']);
 });
 
 Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_admin,admin,csr,merchant_admin,web_content'])->group(function () {
