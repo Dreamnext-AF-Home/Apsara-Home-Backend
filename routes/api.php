@@ -115,6 +115,12 @@ Route::prefix('auth')->group(function () {
         Route::post('/unlink/{provider}', [AuthController::class, 'unlinkSocialAccount'])->where('provider', 'google|facebook');
         Route::get('/linked-accounts', [AuthController::class, 'getLinkedAccounts']);
     });
+
+    // Mobile app specific endpoints
+    Route::middleware(['auth:sanctum', 'throttle:auth'])->prefix('mobile')->group(function () {
+        Route::post('/link-account', [AuthController::class, 'linkMobileAccount']);
+        Route::post('/unlink-account', [AuthController::class, 'unlinkMobileAccount']);
+    });
 });
 
 // Checkout and payment initiation: 20 requests/min per IP

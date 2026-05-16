@@ -3184,6 +3184,153 @@ class AuthController extends Controller
         ]);
     }
 
+    // ========================
+    // Mobile Account Linking
+    // ========================
+
+    public function linkMobileAccount(Request $request)
+    {
+        $validated = $request->validate([
+            'id_token' => 'required|string',
+        ]);
+
+        try {
+            // Decode the JWT ID token
+            $tokenParts = explode('.', $validated['id_token']);
+
+            if (count($tokenParts) !== 3) {
+                return response()->json(['message' => 'Invalid ID token format.'], 400);
+            }
+
+            // Decode the payload
+            $payload = json_decode(base64_decode(str_replace(['-', '_'], ['+', '/'], $tokenParts[1])), true);
+
+            if (!$payload) {
+                return response()->json(['message' => 'Failed to decode ID token.'], 400);
+            }
+
+            // Validate required fields
+            if (empty($payload['email']) || empty($payload['sub'])) {
+                return response()->json(['message' => 'Invalid ID token payload.'], 400);
+            }
+
+            // Check if token is expired
+            if (isset($payload['exp']) && $payload['exp'] < time()) {
+                return response()->json(['message' => 'ID token has expired.'], 400);
+            }
+
+            // Verify audience (your Google Client ID)
+            if (isset($payload['aud']) && $payload['aud'] !== config('services.google.client_id')) {
+                return response()->json(['message' => 'Invalid token audience.'], 400);
+            }
+
+            // Extract user information
+            $email = strtolower($payload['email']);
+            $providerId = $payload['sub'];
+            $name = $payload['name'] ?? null;
+            $firstName = $payload['given_name'] ?? null;
+            $lastName = $payload['family_name'] ?? null;
+            $picture = $payload['picture'] ?? null;
+            $emailVerified = $payload['email_verified'] ?? false;
+
+            /** @var Customer $customer */
+            $customer = $request->user();
+
+            // Validate that the social account email matches the user's account email
+            $socialEmail = strtolower(trim($email));
+            $userEmail = strtolower(trim((string) ($customer->c_email ?? '')));
+
+            if ($socialEmail !== $userEmail) {
+                return response()->json([
+                    'message' => 'Email mismatch. The account email does not match your account email.',
+                    'social_email' => $socialEmail,
+                    'account_email' => $userEmail,
+                ], 400);
+            }
+
+            // Check if this provider account is already linked to anyone
+            $existing = \App\Models\CustomerSocialAccount::query()
+                ->where('csa_provider', 'google')
+                ->where('csa_provider_id', $providerId)
+                ->first();
+
+            if ($existing) {
+                if ((int) $existing->csa_customer_id === (int) $customer->c_userid) {
+                    return response()->json(['message' => 'Account already linked.'], 200);
+                }
+
+                return response()->json(['message' => 'This account is linked to another user.'], 409);
+            }
+
+            // Check if customer already has a Google account linked
+            $existingForProvider = \App\Models\CustomerSocialAccount::query()
+                ->where('csa_customer_id', $customer->c_userid)
+                ->where('csa_provider', 'google')
+                ->first();
+
+            if ($existingForProvider) {
+                return response()->json([
+                    'message' => 'You already have a Google account linked. Unlink it first before linking a different one.',
+                ], 409);
+            }
+
+            // Create social account link
+            \App\Models\CustomerSocialAccount::create([
+                'csa_customer_id' => $customer->c_userid,
+                'csa_provider' => 'google',
+                'csa_provider_id' => $providerId,
+                'csa_token' => $validated['id_token'],
+                'csa_provider_data' => [
+                    'id' => $providerId,
+                    'email' => $email,
+                    'name' => $name,
+                    'given_name' => $firstName,
+                    'family_name' => $lastName,
+                    'picture' => $picture,
+                    'verified' => $emailVerified,
+                ],
+            ]);
+
+            return response()->json([
+                'message' => 'Google account linked successfully.',
+                'user' => [
+                    'id' => $customer->c_userid,
+                    'email' => $customer->c_email,
+                    'name' => $customer->c_fname . ' ' . $customer->c_lname,
+                ],
+            ], 200);
+
+        } catch (\Exception $e) {
+            Log::error('[Mobile Link Account] Error:', ['error' => $e->getMessage()]);
+            return response()->json(['message' => 'Failed to link account. Please try again.'], 500);
+        }
+    }
+
+    public function unlinkMobileAccount(Request $request)
+    {
+        try {
+            /** @var Customer $customer */
+            $customer = $request->user();
+
+            $deleted = \App\Models\CustomerSocialAccount::query()
+                ->where('csa_customer_id', $customer->c_userid)
+                ->where('csa_provider', 'google')
+                ->delete();
+
+            if ($deleted === 0) {
+                return response()->json(['message' => 'No linked account found.'], 404);
+            }
+
+            return response()->json([
+                'message' => 'Google account unlinked successfully.',
+            ], 200);
+
+        } catch (\Exception $e) {
+            Log::error('[Mobile Unlink Account] Error:', ['error' => $e->getMessage()]);
+            return response()->json(['message' => 'Failed to unlink account. Please try again.'], 500);
+        }
+    }
+
     public function getLinkedAccounts(Request $request)
     {
         /** @var Customer $customer */
