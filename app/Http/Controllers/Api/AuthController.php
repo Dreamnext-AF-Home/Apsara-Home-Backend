@@ -3356,6 +3356,311 @@ class AuthController extends Controller
         }
     }
 
+    /**
+     * Mobile-specific Google Login
+     * Optimized for React Native mobile applications
+     * Supports FCM token registration for push notifications
+     */
+    public function mobileGoogleLogin(Request $request)
+    {
+        $validated = $request->validate([
+            'id_token' => 'required|string',
+            'fcm_token' => 'nullable|string',
+        ]);
+
+        try {
+            Log::info('[Mobile Google Login] Starting', [
+                'ip' => $request->ip(),
+                'user_agent' => $request->userAgent(),
+            ]);
+
+            // Decode the JWT ID token
+            $tokenParts = explode('.', $validated['id_token']);
+
+            if (count($tokenParts) !== 3) {
+                Log::warning('[Mobile Google Login] Invalid token format');
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Invalid ID token format.'
+                ], 400);
+            }
+
+            // Decode the payload
+            $payload = json_decode(base64_decode(str_replace(['-', '_'], ['+', '/'], $tokenParts[1])), true);
+
+            if (!$payload) {
+                Log::warning('[Mobile Google Login] Failed to decode token');
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Failed to decode ID token.'
+                ], 400);
+            }
+
+            // Basic validation
+            if (empty($payload['email']) || empty($payload['sub'])) {
+                Log::warning('[Mobile Google Login] Missing required fields in token');
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Invalid ID token payload.'
+                ], 400);
+            }
+
+            // Check if token is expired
+            if (isset($payload['exp']) && $payload['exp'] < time()) {
+                Log::warning('[Mobile Google Login] Token expired');
+                return response()->json([
+                    'success' => false,
+                    'message' => 'ID token has expired.'
+                ], 400);
+            }
+
+            // Verify audience (your Google Client ID)
+            $expectedClientId = config('services.google.client_id');
+            if (isset($payload['aud']) && $payload['aud'] !== $expectedClientId) {
+                Log::warning('[Mobile Google Login] Client ID mismatch', [
+                    'expected' => $expectedClientId,
+                    'received' => $payload['aud']
+                ]);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Invalid token audience.'
+                ], 400);
+            }
+
+            // Extract user information
+            $email = strtolower($payload['email']);
+            $googleId = $payload['sub'];
+            $firstName = $payload['given_name'] ?? null;
+            $lastName = $payload['family_name'] ?? null;
+            $picture = $payload['picture'] ?? null;
+            $emailVerified = $payload['email_verified'] ?? false;
+
+            // Check if this Google account is already linked
+            $existingSocial = \App\Models\CustomerSocialAccount::query()
+                ->where('csa_provider', 'google')
+                ->where('csa_provider_id', $googleId)
+                ->first();
+
+            if ($existingSocial) {
+                $customer = Customer::query()->where('c_userid', $existingSocial->csa_customer_id)->first();
+
+                if ($customer) {
+                    Log::info('[Mobile Google Login] Existing Google account found', [
+                        'customer_id' => $customer->c_userid,
+                        'email' => $email,
+                    ]);
+
+                    // Update provider data
+                    $existingSocial->update([
+                        'csa_provider_data' => [
+                            'id' => $googleId,
+                            'email' => $email,
+                            'first_name' => $firstName,
+                            'last_name' => $lastName,
+                            'picture' => $picture,
+                            'verified' => $emailVerified,
+                        ],
+                    ]);
+
+                    // Register FCM token if provided
+                    if ($validated['fcm_token']) {
+                        $this->registerFcmToken($customer->c_userid, $validated['fcm_token']);
+                    }
+
+                    return $this->completeMobileGoogleLogin($customer, $request);
+                }
+            }
+
+            // Check if customer exists with this email
+            $customer = Customer::query()
+                ->whereRaw('LOWER(c_email) = ?', [$email])
+                ->first();
+
+            if ($customer) {
+                Log::info('[Mobile Google Login] Existing customer with email found', [
+                    'customer_id' => $customer->c_userid,
+                    'email' => $email,
+                ]);
+
+                // Link Google account to existing customer
+                \App\Models\CustomerSocialAccount::create([
+                    'csa_customer_id' => $customer->c_userid,
+                    'csa_provider' => 'google',
+                    'csa_provider_id' => $googleId,
+                    'csa_token' => $validated['id_token'],
+                    'csa_provider_data' => [
+                        'id' => $googleId,
+                        'email' => $email,
+                        'first_name' => $firstName,
+                        'last_name' => $lastName,
+                        'picture' => $picture,
+                        'verified' => $emailVerified,
+                    ],
+                ]);
+
+                // Register FCM token if provided
+                if ($validated['fcm_token']) {
+                    $this->registerFcmToken($customer->c_userid, $validated['fcm_token']);
+                }
+
+                return $this->completeMobileGoogleLogin($customer, $request);
+            }
+
+            // Create new customer account
+            Log::info('[Mobile Google Login] Creating new customer', [
+                'email' => $email,
+            ]);
+
+            $customer = DB::transaction(function () use ($email, $firstName, $lastName) {
+                if (DB::connection()->getDriverName() === 'pgsql') {
+                    DB::statement('LOCK TABLE tbl_customer IN EXCLUSIVE MODE');
+                }
+
+                $nextCustomerId = ((int) DB::table('tbl_customer')->whereNotNull('c_userid')->max('c_userid')) + 1;
+                $username = $this->generateUniqueUsernameFromEmail($email);
+
+                return Customer::create([
+                    'c_userid' => $nextCustomerId,
+                    'c_fname' => $firstName,
+                    'c_lname' => $lastName,
+                    'c_username' => $username,
+                    'c_email' => $email,
+                    'c_mobile' => '0',
+                    'c_password' => Hash::make(Str::random(32)),
+                    'c_password_pin' => '',
+                    'c_password_change_required' => false,
+                    'c_rank' => 0,
+                    'c_accnt_status' => 0,
+                    'c_lockstatus' => 0,
+                    'c_sponsor' => 0,
+                    'c_date_started' => now(),
+                ]);
+            });
+
+            // Create social account link
+            \App\Models\CustomerSocialAccount::create([
+                'csa_customer_id' => $customer->c_userid,
+                'csa_provider' => 'google',
+                'csa_provider_id' => $googleId,
+                'csa_token' => $validated['id_token'],
+                'csa_provider_data' => [
+                    'id' => $googleId,
+                    'email' => $email,
+                    'first_name' => $firstName,
+                    'last_name' => $lastName,
+                    'picture' => $picture,
+                    'verified' => $emailVerified,
+                ],
+            ]);
+
+            // Register FCM token if provided
+            if ($validated['fcm_token']) {
+                $this->registerFcmToken($customer->c_userid, $validated['fcm_token']);
+            }
+
+            return $this->completeMobileGoogleLogin($customer, $request);
+
+        } catch (\Throwable $e) {
+            Log::error('[Mobile Google Login] Exception', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Authentication failed. Please try again later.'
+            ], 500);
+        }
+    }
+
+    /**
+     * Complete mobile Google login - generate token and return user data
+     */
+    private function completeMobileGoogleLogin(Customer $customer, Request $request)
+    {
+        // Check if account is banned
+        if ((int) ($customer->c_lockstatus ?? 0) === 1) {
+            Log::warning('[Mobile Google Login] Account banned', [
+                'customer_id' => $customer->c_userid,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Your account has been banned. Please contact support.',
+            ], 403);
+        }
+
+        // Create API token
+        $tokenResult = $customer->createToken('google-login-mobile');
+        $token = $tokenResult->plainTextToken;
+
+        // Log the login activity
+        try {
+            MemberActivityLog::create([
+                'mal_customer_id' => (int) $customer->c_userid,
+                'mal_activity_type' => 'login',
+                'mal_action' => 'create',
+                'mal_description' => 'Member logged in via Google (Mobile)',
+                'mal_resource_type' => 'account',
+                'mal_resource_id' => (int) $customer->c_userid,
+                'mal_ip_address' => $request->ip(),
+                'mal_user_agent' => $request->userAgent(),
+                'mal_created_at' => now(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('[Mobile Google Login] Failed to log activity', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        Log::info('[Mobile Google Login] Success', [
+            'customer_id' => $customer->c_userid,
+            'email' => $customer->c_email,
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Login successful.',
+            'data' => [
+                'token' => $token,
+                'user' => $this->transformCustomer($customer),
+            ]
+        ], 200);
+    }
+
+    /**
+     * Register or update FCM device token for push notifications
+     */
+    private function registerFcmToken(int $customerId, string $fcmToken): void
+    {
+        try {
+            if (empty(trim($fcmToken))) {
+                return;
+            }
+
+            \App\Models\FcmDeviceToken::updateOrCreate(
+                [
+                    'fdt_customer_id' => $customerId,
+                    'fdt_fcm_token' => $fcmToken,
+                ],
+                [
+                    'fdt_is_active' => true,
+                    'fdt_created_at' => now(),
+                ]
+            );
+
+            Log::info('[FCM Token] Registered', [
+                'customer_id' => $customerId,
+                'token' => substr($fcmToken, 0, 20) . '...',
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('[FCM Token] Failed to register', [
+                'customer_id' => $customerId,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
     public function googleCallback(Request $request)
     {
         $validated = $request->validate([

@@ -102,6 +102,9 @@ Route::prefix('auth')->group(function () {
     Route::post('/callback/google', [AuthController::class, 'googleCallback']);
     Route::post('/callback/facebook', [AuthController::class, 'facebookCallback']);
 
+    // Mobile-specific Google login endpoint
+    Route::post('/mobile/google-login', [AuthController::class, 'mobileGoogleLogin']);
+
     // Facebook data deletion callback (required by Facebook Platform Policy)
     Route::post('/facebook/data-deletion', [AuthController::class, 'facebookDataDeletion']);
     Route::get('/facebook/data-deletion/status', [AuthController::class, 'facebookDataDeletionStatus']);
