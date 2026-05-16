@@ -120,6 +120,7 @@ Route::prefix('auth')->group(function () {
     Route::middleware(['auth:sanctum', 'throttle:auth'])->prefix('mobile')->group(function () {
         Route::post('/link-account', [AuthController::class, 'linkMobileAccount']);
         Route::post('/unlink-account', [AuthController::class, 'unlinkMobileAccount']);
+        Route::get('/check-google-linked', [AuthController::class, 'checkGoogleLinked']);
         Route::post('/enable-biometric', [AuthController::class, 'enableBiometric']);
         Route::post('/login-biometric', [AuthController::class, 'loginBiometric']);
         Route::post('/disable-biometric', [AuthController::class, 'disableBiometric']);

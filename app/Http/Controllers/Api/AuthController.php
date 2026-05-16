@@ -3331,21 +3331,76 @@ class AuthController extends Controller
         }
     }
 
+    public function checkGoogleLinked(Request $request)
+    {
+        try {
+            /** @var Customer $customer */
+            $customer = $request->user();
+
+            $linkedAccount = \App\Models\CustomerSocialAccount::query()
+                ->where('csa_customer_id', $customer->c_userid)
+                ->where('csa_provider', 'google')
+                ->first();
+
+            if ($linkedAccount) {
+                Log::info('[Check Google Linked] Account found', [
+                    'customer_id' => $customer->c_userid,
+                    'provider' => $linkedAccount->csa_provider,
+                ]);
+
+                return response()->json([
+                    'linked' => true,
+                    'provider' => $linkedAccount->csa_provider,
+                    'linked_at' => $linkedAccount->created_at->toIso8601String(),
+                ], 200);
+            }
+
+            Log::info('[Check Google Linked] No account found', ['customer_id' => $customer->c_userid]);
+
+            return response()->json([
+                'linked' => false,
+                'provider' => null,
+                'linked_at' => null,
+            ], 200);
+
+        } catch (\Exception $e) {
+            Log::error('[Check Google Linked] Error:', ['error' => $e->getMessage()]);
+            return response()->json(['message' => 'Failed to check account status.'], 500);
+        }
+    }
+
     // ========================
     // Mobile Biometric Auth
     // ========================
 
     public function enableBiometric(Request $request)
     {
-        $validated = $request->validate([
-            'device_id' => 'required|string|max:255',
-            'device_name' => 'required|string|max:255',
-            'device_type' => 'required|in:ios,android',
-        ]);
-
         try {
+            Log::info('[Enable Biometric] Request started', [
+                'customer_id' => $request->user()?->c_userid,
+                'payload' => $request->all(),
+            ]);
+
+            $validated = $request->validate([
+                'device_id' => 'required|string|max:255',
+                'device_name' => 'required|string|max:255',
+                'device_type' => 'required|in:ios,android',
+            ]);
+
+            Log::info('[Enable Biometric] Validation passed', ['validated' => $validated]);
+
             /** @var Customer $customer */
             $customer = $request->user();
+
+            if (!$customer) {
+                Log::error('[Enable Biometric] Customer not authenticated');
+                return response()->json(['message' => 'Unauthorized.'], 401);
+            }
+
+            Log::info('[Enable Biometric] Customer found', [
+                'customer_id' => $customer->c_userid,
+                'customer_email' => $customer->c_email,
+            ]);
 
             // Check if device is already registered for this customer
             $existing = \App\Models\CustomerBiometricMobile::query()
@@ -3354,8 +3409,14 @@ class AuthController extends Controller
                 ->first();
 
             if ($existing) {
+                Log::warning('[Enable Biometric] Device already registered', [
+                    'customer_id' => $customer->c_userid,
+                    'device_id' => $validated['device_id'],
+                ]);
                 return response()->json(['message' => 'Device already registered for biometric login.'], 409);
             }
+
+            Log::info('[Enable Biometric] Device check passed, generating token');
 
             // Generate credential token
             $credentialToken = Str::random(64);
@@ -3370,14 +3431,43 @@ class AuthController extends Controller
                 'cbm_is_active' => true,
             ]);
 
+            Log::info('[Enable Biometric] Biometric record created successfully', [
+                'customer_id' => $customer->c_userid,
+                'device_id' => $biometric->cbm_device_id,
+                'device_name' => $biometric->cbm_device_name,
+                'device_type' => $biometric->cbm_device_type,
+            ]);
+
             return response()->json([
                 'message' => 'Biometric authentication enabled.',
                 'credential_token' => $credentialToken,
                 'device_id' => $biometric->cbm_device_id,
             ], 200);
 
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            Log::error('[Enable Biometric] Validation error', [
+                'errors' => $e->errors(),
+                'message' => $e->getMessage(),
+            ]);
+            return response()->json(['message' => 'Validation failed.', 'errors' => $e->errors()], 422);
+
+        } catch (\Illuminate\Database\QueryException $e) {
+            Log::error('[Enable Biometric] Database error', [
+                'message' => $e->getMessage(),
+                'sql' => $e->getSql(),
+                'bindings' => $e->getBindings(),
+                'code' => $e->getCode(),
+            ]);
+            return response()->json(['message' => 'Database error occurred.'], 500);
+
         } catch (\Exception $e) {
-            Log::error('[Enable Biometric] Error:', ['error' => $e->getMessage()]);
+            Log::error('[Enable Biometric] Unexpected error', [
+                'message' => $e->getMessage(),
+                'code' => $e->getCode(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'trace' => $e->getTraceAsString(),
+            ]);
             return response()->json(['message' => 'Failed to enable biometric authentication.'], 500);
         }
     }
