@@ -3331,6 +3331,198 @@ class AuthController extends Controller
         }
     }
 
+    // ========================
+    // Mobile Biometric Auth
+    // ========================
+
+    public function enableBiometric(Request $request)
+    {
+        $validated = $request->validate([
+            'device_id' => 'required|string|max:255',
+            'device_name' => 'required|string|max:255',
+            'device_type' => 'required|in:ios,android',
+        ]);
+
+        try {
+            /** @var Customer $customer */
+            $customer = $request->user();
+
+            // Check if device is already registered for this customer
+            $existing = \App\Models\CustomerBiometricMobile::query()
+                ->where('cbm_customer_id', $customer->c_userid)
+                ->where('cbm_device_id', $validated['device_id'])
+                ->first();
+
+            if ($existing) {
+                return response()->json(['message' => 'Device already registered for biometric login.'], 409);
+            }
+
+            // Generate credential token
+            $credentialToken = Str::random(64);
+
+            // Create biometric record
+            $biometric = \App\Models\CustomerBiometricMobile::create([
+                'cbm_customer_id' => $customer->c_userid,
+                'cbm_device_id' => $validated['device_id'],
+                'cbm_device_name' => $validated['device_name'],
+                'cbm_device_type' => $validated['device_type'],
+                'cbm_credential_token' => $credentialToken,
+                'cbm_is_active' => true,
+            ]);
+
+            return response()->json([
+                'message' => 'Biometric authentication enabled.',
+                'credential_token' => $credentialToken,
+                'device_id' => $biometric->cbm_device_id,
+            ], 200);
+
+        } catch (\Exception $e) {
+            Log::error('[Enable Biometric] Error:', ['error' => $e->getMessage()]);
+            return response()->json(['message' => 'Failed to enable biometric authentication.'], 500);
+        }
+    }
+
+    public function loginBiometric(Request $request)
+    {
+        $validated = $request->validate([
+            'device_id' => 'required|string|max:255',
+            'credential_token' => 'required|string|max:255',
+        ]);
+
+        try {
+            // Find biometric record
+            $biometric = \App\Models\CustomerBiometricMobile::query()
+                ->where('cbm_device_id', $validated['device_id'])
+                ->where('cbm_credential_token', $validated['credential_token'])
+                ->where('cbm_is_active', true)
+                ->first();
+
+            if (!$biometric) {
+                return response()->json(['message' => 'Invalid device or credential token.'], 401);
+            }
+
+            $customer = Customer::query()
+                ->where('c_userid', $biometric->cbm_customer_id)
+                ->first();
+
+            if (!$customer) {
+                return response()->json(['message' => 'Customer not found.'], 404);
+            }
+
+            if ((int) ($customer->c_lockstatus ?? 0) === 1) {
+                return response()->json([
+                    'message' => 'Your account has been banned.',
+                    'reason' => 'banned',
+                ], 403);
+            }
+
+            // Update last used time
+            $biometric->update(['cbm_last_used_at' => now()]);
+
+            // Create auth token
+            $token = $customer->createToken('mobile-biometric')->plainTextToken;
+
+            return response()->json([
+                'message' => 'Biometric login successful.',
+                'token' => $token,
+                'user' => [
+                    'id' => $customer->c_userid,
+                    'email' => $customer->c_email,
+                    'name' => $customer->c_fname . ' ' . $customer->c_lname,
+                    'avatar_url' => $customer->c_profile_picture_url ?? null,
+                ],
+            ], 200);
+
+        } catch (\Exception $e) {
+            Log::error('[Biometric Login] Error:', ['error' => $e->getMessage()]);
+            return response()->json(['message' => 'Biometric login failed.'], 500);
+        }
+    }
+
+    public function disableBiometric(Request $request)
+    {
+        $validated = $request->validate([
+            'device_id' => 'required|string|max:255',
+        ]);
+
+        try {
+            /** @var Customer $customer */
+            $customer = $request->user();
+
+            $deleted = \App\Models\CustomerBiometricMobile::query()
+                ->where('cbm_customer_id', $customer->c_userid)
+                ->where('cbm_device_id', $validated['device_id'])
+                ->delete();
+
+            if ($deleted === 0) {
+                return response()->json(['message' => 'Biometric device not found.'], 404);
+            }
+
+            return response()->json([
+                'message' => 'Biometric authentication disabled for this device.',
+            ], 200);
+
+        } catch (\Exception $e) {
+            Log::error('[Disable Biometric] Error:', ['error' => $e->getMessage()]);
+            return response()->json(['message' => 'Failed to disable biometric authentication.'], 500);
+        }
+    }
+
+    public function getBiometricDevices(Request $request)
+    {
+        try {
+            /** @var Customer $customer */
+            $customer = $request->user();
+
+            $devices = \App\Models\CustomerBiometricMobile::query()
+                ->where('cbm_customer_id', $customer->c_userid)
+                ->where('cbm_is_active', true)
+                ->get()
+                ->map(function ($device) {
+                    return [
+                        'device_id' => $device->cbm_device_id,
+                        'device_name' => $device->cbm_device_name,
+                        'device_type' => $device->cbm_device_type,
+                        'created_at' => $device->created_at->toIso8601String(),
+                        'last_used_at' => $device->cbm_last_used_at?->toIso8601String(),
+                    ];
+                });
+
+            return response()->json([
+                'devices' => $devices,
+            ], 200);
+
+        } catch (\Exception $e) {
+            Log::error('[Get Biometric Devices] Error:', ['error' => $e->getMessage()]);
+            return response()->json(['message' => 'Failed to retrieve biometric devices.'], 500);
+        }
+    }
+
+    public function deleteBiometricDevice(Request $request, string $device_id)
+    {
+        try {
+            /** @var Customer $customer */
+            $customer = $request->user();
+
+            $deleted = \App\Models\CustomerBiometricMobile::query()
+                ->where('cbm_customer_id', $customer->c_userid)
+                ->where('cbm_device_id', $device_id)
+                ->delete();
+
+            if ($deleted === 0) {
+                return response()->json(['message' => 'Biometric device not found.'], 404);
+            }
+
+            return response()->json([
+                'message' => 'Biometric device removed successfully.',
+            ], 200);
+
+        } catch (\Exception $e) {
+            Log::error('[Delete Biometric Device] Error:', ['error' => $e->getMessage()]);
+            return response()->json(['message' => 'Failed to remove biometric device.'], 500);
+        }
+    }
+
     public function getLinkedAccounts(Request $request)
     {
         /** @var Customer $customer */
