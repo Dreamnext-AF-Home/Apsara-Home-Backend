@@ -4,11 +4,13 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Customer;
+use App\Models\CustomerLoginSession;
 use App\Models\CustomerPasskey;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
@@ -232,7 +234,15 @@ class PasskeyAuthController extends Controller
         $passkey->cp_last_used_at = now();
         $passkey->save();
 
-        $token = $customer->createToken('auth_token')->plainTextToken;
+        $tokenResult = $customer->createToken('auth_token');
+        $token = $tokenResult->plainTextToken;
+        $plainTokenId = (int) ($tokenResult->accessToken->id ?? 0);
+
+        try {
+            $this->recordLoginSession($customer, $request, $plainTokenId > 0 ? $plainTokenId : null);
+        } catch (\Throwable $e) {
+            report($e);
+        }
 
         return response()->json([
             'user' => $this->transformCustomerForLogin($customer),
@@ -505,6 +515,99 @@ class PasskeyAuthController extends Controller
     private function loginChallengeCacheKey(string $token): string
     {
         return 'passkey:login:' . $token;
+    }
+
+    private function recordLoginSession(Customer $customer, Request $request, ?int $tokenId = null): void
+    {
+        if (! $this->isSessionTrackingReady()) {
+            return;
+        }
+
+        $userAgent = trim((string) ($request->userAgent() ?? ''));
+        [$platform, $browser, $device] = $this->detectDeviceInfo($userAgent);
+        $location = $this->resolveRequestLocation($request);
+
+        CustomerLoginSession::create([
+            'cls_customer_id' => (int) $customer->c_userid,
+            'cls_token_id' => $tokenId,
+            'cls_device' => $device,
+            'cls_platform' => $platform,
+            'cls_browser' => $browser,
+            'cls_location' => $location,
+            'cls_ip_address' => (string) ($request->ip() ?? ''),
+            'cls_user_agent' => $userAgent,
+            'cls_last_active_at' => now(),
+            'cls_created_at' => now(),
+        ]);
+    }
+
+    private function isSessionTrackingReady(): bool
+    {
+        try {
+            return Schema::hasTable('tbl_customer_login_sessions');
+        } catch (\Throwable $e) {
+            report($e);
+            return false;
+        }
+    }
+
+    private function resolveRequestLocation(Request $request): string
+    {
+        $city = trim((string) ($request->header('X-App-City') ?? $request->header('X-City') ?? ''));
+        $region = trim((string) ($request->header('X-App-Region') ?? $request->header('X-Region') ?? ''));
+        $country = trim((string) ($request->header('CF-IPCountry') ?? $request->header('X-App-Country') ?? $request->header('X-Country') ?? ''));
+
+        $parts = array_values(array_filter([$city, $region, $country], fn (string $v): bool => $v !== ''));
+        if (! empty($parts)) {
+            return implode(', ', $parts);
+        }
+
+        $ip = (string) ($request->ip() ?? '');
+        if ($ip === '127.0.0.1' || $ip === '::1' || strtolower($ip) === 'localhost') {
+            return 'Localhost';
+        }
+
+        return $ip !== '' ? $ip : 'Unknown location';
+    }
+
+    private function detectDeviceInfo(string $userAgent): array
+    {
+        $ua = strtolower($userAgent);
+        $platform = 'Unknown OS';
+        $browser = 'Unknown Browser';
+        $device = 'Desktop';
+
+        if (str_contains($ua, 'windows')) {
+            $platform = 'Windows';
+        } elseif (str_contains($ua, 'mac os') || str_contains($ua, 'macintosh')) {
+            $platform = 'macOS';
+        } elseif (str_contains($ua, 'android')) {
+            $platform = 'Android';
+            $device = 'Mobile';
+        } elseif (str_contains($ua, 'iphone') || str_contains($ua, 'ipad') || str_contains($ua, 'ios')) {
+            $platform = 'iOS';
+            $device = 'Mobile';
+        } elseif (str_contains($ua, 'linux')) {
+            $platform = 'Linux';
+        }
+
+        if (str_contains($ua, 'edg/')) {
+            $browser = 'Edge';
+        } elseif (str_contains($ua, 'opr/') || str_contains($ua, 'opera')) {
+            $browser = 'Opera';
+        } elseif (str_contains($ua, 'chrome/') && ! str_contains($ua, 'edg/')) {
+            $browser = 'Chrome';
+        } elseif (str_contains($ua, 'safari/') && ! str_contains($ua, 'chrome/')) {
+            $browser = 'Safari';
+        } elseif (str_contains($ua, 'firefox/')) {
+            $browser = 'Firefox';
+        }
+
+        if ($device === 'Desktop' && (str_contains($ua, 'mobile') || str_contains($ua, 'iphone') || str_contains($ua, 'android'))) {
+            $device = 'Mobile';
+        }
+
+        return [$platform, $browser, $device];
     }
 
     private function registerChallengeCacheKey(string $token): string
