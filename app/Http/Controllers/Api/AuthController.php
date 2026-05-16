@@ -3482,83 +3482,29 @@ class AuthController extends Controller
                     'email' => $email,
                 ]);
 
-                // Link Google account to existing customer
-                \App\Models\CustomerSocialAccount::create([
-                    'csa_customer_id' => $customer->c_userid,
-                    'csa_provider' => 'google',
-                    'csa_provider_id' => $googleId,
-                    'csa_token' => $validated['id_token'],
-                    'csa_provider_data' => [
-                        'id' => $googleId,
-                        'email' => $email,
-                        'first_name' => $firstName,
-                        'last_name' => $lastName,
-                        'picture' => $picture,
-                        'verified' => $emailVerified,
-                    ],
-                ]);
-
-                // Register FCM token if provided
-                if ($validated['fcm_token']) {
-                    $this->registerFcmToken($customer->c_userid, $validated['fcm_token']);
-                }
-
-                return $this->completeMobileGoogleLogin($customer, $request);
-            }
-
-            // Create new customer account
-            Log::info('[Mobile Google Login] Creating new customer', [
-                'email' => $email,
-            ]);
-
-            $customer = DB::transaction(function () use ($email, $firstName, $lastName) {
-                if (DB::connection()->getDriverName() === 'pgsql') {
-                    DB::statement('LOCK TABLE tbl_customer IN EXCLUSIVE MODE');
-                }
-
-                $nextCustomerId = ((int) DB::table('tbl_customer')->whereNotNull('c_userid')->max('c_userid')) + 1;
-                $username = $this->generateUniqueUsernameFromEmail($email);
-
-                return Customer::create([
-                    'c_userid' => $nextCustomerId,
-                    'c_fname' => $firstName,
-                    'c_lname' => $lastName,
-                    'c_username' => $username,
-                    'c_email' => $email,
-                    'c_mobile' => '0',
-                    'c_password' => Hash::make(Str::random(32)),
-                    'c_password_pin' => '',
-                    'c_password_change_required' => false,
-                    'c_rank' => 0,
-                    'c_accnt_status' => 0,
-                    'c_lockstatus' => 0,
-                    'c_sponsor' => 0,
-                    'c_date_started' => now(),
-                ]);
-            });
-
-            // Create social account link
-            \App\Models\CustomerSocialAccount::create([
-                'csa_customer_id' => $customer->c_userid,
-                'csa_provider' => 'google',
-                'csa_provider_id' => $googleId,
-                'csa_token' => $validated['id_token'],
-                'csa_provider_data' => [
-                    'id' => $googleId,
+                // Google account is not linked to this customer
+                Log::warning('[Mobile Google Login] Google account not linked to existing customer', [
+                    'customer_id' => $customer->c_userid,
                     'email' => $email,
-                    'first_name' => $firstName,
-                    'last_name' => $lastName,
-                    'picture' => $picture,
-                    'verified' => $emailVerified,
-                ],
-            ]);
+                    'google_id' => $googleId,
+                ]);
 
-            // Register FCM token if provided
-            if ($validated['fcm_token']) {
-                $this->registerFcmToken($customer->c_userid, $validated['fcm_token']);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Please connect your Google account in your profile settings first.'
+                ], 401);
             }
 
-            return $this->completeMobileGoogleLogin($customer, $request);
+            // Google account not found and no matching customer email
+            Log::warning('[Mobile Google Login] Google account not connected to any account', [
+                'email' => $email,
+                'google_id' => $googleId,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'This Google account is not connected to any account. Please sign up first or connect it in your profile settings.'
+            ], 401);
 
         } catch (\Throwable $e) {
             Log::error('[Mobile Google Login] Exception', [
