@@ -116,13 +116,17 @@ Route::prefix('auth')->group(function () {
         Route::get('/linked-accounts', [AuthController::class, 'getLinkedAccounts']);
     });
 
-    // Mobile app specific endpoints
+    // Mobile app biometric login (public)
+    Route::middleware('throttle:auth')->prefix('mobile')->group(function () {
+        Route::post('/login-biometric', [AuthController::class, 'loginBiometric']);
+    });
+
+    // Mobile app specific endpoints (authenticated)
     Route::middleware(['auth:sanctum', 'throttle:auth'])->prefix('mobile')->group(function () {
         Route::post('/link-account', [AuthController::class, 'linkMobileAccount']);
         Route::post('/unlink-account', [AuthController::class, 'unlinkMobileAccount']);
         Route::get('/check-google-linked', [AuthController::class, 'checkGoogleLinked']);
         Route::post('/enable-biometric', [AuthController::class, 'enableBiometric']);
-        Route::post('/login-biometric', [AuthController::class, 'loginBiometric']);
         Route::post('/disable-biometric', [AuthController::class, 'disableBiometric']);
         Route::get('/biometric-devices', [AuthController::class, 'getBiometricDevices']);
         Route::delete('/biometric-devices/{device_id}', [AuthController::class, 'deleteBiometricDevice']);

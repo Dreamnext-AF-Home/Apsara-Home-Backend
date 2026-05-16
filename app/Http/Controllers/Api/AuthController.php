@@ -3334,8 +3334,31 @@ class AuthController extends Controller
     public function checkGoogleLinked(Request $request)
     {
         try {
+            Log::info('[Check Google Linked] Request started');
+
             /** @var Customer $customer */
             $customer = $request->user();
+
+            if (!$customer) {
+                Log::error('[Check Google Linked] No customer found');
+                return response()->json(['message' => 'Unauthorized'], 401);
+            }
+
+            Log::info('[Check Google Linked] Customer authenticated', [
+                'customer_id' => $customer->c_userid,
+                'email' => $customer->c_email,
+            ]);
+
+            // Get all social accounts for this customer
+            $allAccounts = \App\Models\CustomerSocialAccount::query()
+                ->where('csa_customer_id', $customer->c_userid)
+                ->get();
+
+            Log::info('[Check Google Linked] All social accounts for customer', [
+                'customer_id' => $customer->c_userid,
+                'total_accounts' => count($allAccounts),
+                'accounts' => $allAccounts->map(fn($a) => ['provider' => $a->csa_provider, 'provider_id' => $a->csa_provider_id])->toArray(),
+            ]);
 
             $linkedAccount = \App\Models\CustomerSocialAccount::query()
                 ->where('csa_customer_id', $customer->c_userid)
@@ -3343,9 +3366,10 @@ class AuthController extends Controller
                 ->first();
 
             if ($linkedAccount) {
-                Log::info('[Check Google Linked] Account found', [
+                Log::info('[Check Google Linked] Google account found', [
                     'customer_id' => $customer->c_userid,
                     'provider' => $linkedAccount->csa_provider,
+                    'created_at' => $linkedAccount->created_at,
                 ]);
 
                 return response()->json([
@@ -3355,7 +3379,9 @@ class AuthController extends Controller
                 ], 200);
             }
 
-            Log::info('[Check Google Linked] No account found', ['customer_id' => $customer->c_userid]);
+            Log::info('[Check Google Linked] No Google account found', [
+                'customer_id' => $customer->c_userid,
+            ]);
 
             return response()->json([
                 'linked' => false,
@@ -3364,7 +3390,12 @@ class AuthController extends Controller
             ], 200);
 
         } catch (\Exception $e) {
-            Log::error('[Check Google Linked] Error:', ['error' => $e->getMessage()]);
+            Log::error('[Check Google Linked] Unexpected error', [
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'trace' => $e->getTraceAsString(),
+            ]);
             return response()->json(['message' => 'Failed to check account status.'], 500);
         }
     }
@@ -3474,12 +3505,20 @@ class AuthController extends Controller
 
     public function loginBiometric(Request $request)
     {
-        $validated = $request->validate([
-            'device_id' => 'required|string|max:255',
-            'credential_token' => 'required|string|max:255',
-        ]);
-
         try {
+            Log::info('[Biometric Login] Request started', [
+                'payload' => $request->all(),
+            ]);
+
+            $validated = $request->validate([
+                'device_id' => 'required|string|max:255',
+                'credential_token' => 'required|string|max:255',
+            ]);
+
+            Log::info('[Biometric Login] Validation passed', [
+                'device_id' => $validated['device_id'],
+            ]);
+
             // Find biometric record
             $biometric = \App\Models\CustomerBiometricMobile::query()
                 ->where('cbm_device_id', $validated['device_id'])
@@ -3488,18 +3527,38 @@ class AuthController extends Controller
                 ->first();
 
             if (!$biometric) {
+                Log::warning('[Biometric Login] No matching biometric record found', [
+                    'device_id' => $validated['device_id'],
+                    'credential_token_length' => strlen($validated['credential_token']),
+                ]);
                 return response()->json(['message' => 'Invalid device or credential token.'], 401);
             }
+
+            Log::info('[Biometric Login] Biometric record found', [
+                'customer_id' => $biometric->cbm_customer_id,
+                'device_id' => $biometric->cbm_device_id,
+            ]);
 
             $customer = Customer::query()
                 ->where('c_userid', $biometric->cbm_customer_id)
                 ->first();
 
             if (!$customer) {
+                Log::error('[Biometric Login] Customer not found', [
+                    'customer_id' => $biometric->cbm_customer_id,
+                ]);
                 return response()->json(['message' => 'Customer not found.'], 404);
             }
 
+            Log::info('[Biometric Login] Customer found', [
+                'customer_id' => $customer->c_userid,
+                'email' => $customer->c_email,
+            ]);
+
             if ((int) ($customer->c_lockstatus ?? 0) === 1) {
+                Log::warning('[Biometric Login] Account is banned', [
+                    'customer_id' => $customer->c_userid,
+                ]);
                 return response()->json([
                     'message' => 'Your account has been banned.',
                     'reason' => 'banned',
@@ -3509,8 +3568,14 @@ class AuthController extends Controller
             // Update last used time
             $biometric->update(['cbm_last_used_at' => now()]);
 
+            Log::info('[Biometric Login] Updated last_used_at');
+
             // Create auth token
             $token = $customer->createToken('mobile-biometric')->plainTextToken;
+
+            Log::info('[Biometric Login] Auth token created successfully', [
+                'customer_id' => $customer->c_userid,
+            ]);
 
             return response()->json([
                 'message' => 'Biometric login successful.',
@@ -3523,8 +3588,19 @@ class AuthController extends Controller
                 ],
             ], 200);
 
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            Log::error('[Biometric Login] Validation error', [
+                'errors' => $e->errors(),
+            ]);
+            return response()->json(['message' => 'Validation failed.', 'errors' => $e->errors()], 422);
+
         } catch (\Exception $e) {
-            Log::error('[Biometric Login] Error:', ['error' => $e->getMessage()]);
+            Log::error('[Biometric Login] Unexpected error', [
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'trace' => $e->getTraceAsString(),
+            ]);
             return response()->json(['message' => 'Biometric login failed.'], 500);
         }
     }
