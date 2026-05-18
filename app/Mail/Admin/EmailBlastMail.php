@@ -25,7 +25,7 @@ class EmailBlastMail extends Mailable
             ->subject($this->subject)
             ->view('emails.admin.email-blast')
             ->with([
-                'body' => $this->body,
+                'body' => (string) $this->body,
                 'banner_image_base64' => $this->bannerImageBase64,
                 'brand_name' => $this->brandName,
             ]);

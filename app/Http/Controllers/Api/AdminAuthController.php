@@ -106,6 +106,7 @@ class AdminAuthController extends Controller
         $token = $admin->createToken('admin_auth_token')->plainTextToken;
         $role = AdminAccess::roleFromLevel((int) $admin->user_level_id);
         $storefrontIds = $this->resolveStorefrontIds($admin);
+        $disabledStorefrontIds = $this->resolveDisabledStorefrontIds($admin);
 
         return response()->json([
             'user' => [
@@ -117,6 +118,7 @@ class AdminAuthController extends Controller
                 'supplier_id' => $admin->supplier_id ? (int) $admin->supplier_id : null,
                 'admin_permissions' => AdminAccess::permissionsForAdmin($admin),
                 'storefront_ids' => $storefrontIds,
+                'disabled_storefront_ids' => $disabledStorefrontIds,
                 'avatar_url' => (string) ($admin->avatar_url ?? ''),
                 'is_banned' => (bool) $admin->is_banned,
                 'session_timeout_minutes' => $this->getSessionTimeoutMinutes(),
@@ -278,6 +280,7 @@ class AdminAuthController extends Controller
             'supplier_id' => $admin->supplier_id ? (int) $admin->supplier_id : null,
             'admin_permissions' => AdminAccess::permissionsForAdmin($admin),
             'storefront_ids' => $this->resolveStorefrontIds($admin),
+            'disabled_storefront_ids' => $this->resolveDisabledStorefrontIds($admin),
             'avatar_url' => (string) ($admin->avatar_url ?? ''),
         ]);
     }
@@ -328,6 +331,7 @@ class AdminAuthController extends Controller
                 'supplier_id' => $admin->supplier_id ? (int) $admin->supplier_id : null,
                 'admin_permissions' => AdminAccess::permissionsForAdmin($admin),
                 'storefront_ids' => $this->resolveStorefrontIds($admin),
+                'disabled_storefront_ids' => $this->resolveDisabledStorefrontIds($admin),
                 'avatar_url' => (string) ($admin->avatar_url ?? ''),
             ],
         ]);
@@ -339,10 +343,26 @@ class AdminAuthController extends Controller
             return [];
         }
 
-        $raw = $admin->admin_permissions ?? [];
+        $assignedIds = $this->normalizeStorefrontIds($admin->admin_permissions ?? []);
+        $disabledIds = $this->normalizeStorefrontIds($admin->partner_disabled_storefront_ids ?? []);
+
+        return array_values(array_diff($assignedIds, $disabledIds));
+    }
+
+    private function resolveDisabledStorefrontIds(?Admin $admin): array
+    {
+        if (! $admin || (int) $admin->user_level_id !== 4) {
+            return [];
+        }
+
+        return $this->normalizeStorefrontIds($admin->partner_disabled_storefront_ids ?? []);
+    }
+
+    private function normalizeStorefrontIds(mixed $raw): array
+    {
         if (! is_array($raw)) {
-            if (is_string($admin->admin_permissions) && trim($admin->admin_permissions) !== '') {
-                $decoded = json_decode($admin->admin_permissions, true);
+            if (is_string($raw) && trim($raw) !== '') {
+                $decoded = json_decode($raw, true);
                 if (is_array($decoded)) {
                     $raw = $decoded;
                 } else {
@@ -353,12 +373,10 @@ class AdminAuthController extends Controller
             }
         }
 
-        $ids = array_values(array_unique(array_filter(array_map(
+        return array_values(array_unique(array_filter(array_map(
             static fn ($id) => is_numeric($id) ? (int) $id : null,
             $raw,
         ), static fn ($id) => is_int($id) && $id > 0)));
-
-        return $ids;
     }
 
     private function isLoginTwoFactorEnabled(): bool

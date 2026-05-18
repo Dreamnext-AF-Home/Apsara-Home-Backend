@@ -962,6 +962,7 @@ class AuthController extends Controller
         $resolvedLocation = $this->resolveRequestLocation($request);
 
         $sessionsByToken = collect();
+        $sessionRows = collect();
         if ($this->isSessionTrackingReady() && $tokenIds->isNotEmpty()) {
             $sessionsByToken = CustomerLoginSession::query()
                 ->where('cls_customer_id', (int) $customer->c_userid)
@@ -972,8 +973,17 @@ class AuthController extends Controller
                 ->get()
                 ->keyBy(fn (CustomerLoginSession $row) => (int) ($row->cls_token_id ?? 0));
         }
+        if ($this->isSessionTrackingReady()) {
+            $sessionRows = CustomerLoginSession::query()
+                ->where('cls_customer_id', (int) $customer->c_userid)
+                ->whereNull('cls_revoked_at')
+                ->orderByDesc('cls_last_active_at')
+                ->orderByDesc('cls_created_at')
+                ->limit(100)
+                ->get();
+        }
 
-        $items = $tokenRows
+        $tokenItems = $tokenRows
             ->map(function (PersonalAccessToken $token) use ($sessionsByToken, $currentTokenId, $resolvedLocation): array {
                 $tokenId = (int) $token->id;
                 /** @var CustomerLoginSession|null $session */
@@ -1013,6 +1023,61 @@ class AuthController extends Controller
                     'last_active_at' => optional($lastActiveAt)->toIso8601String(),
                     'is_current' => $tokenId === $currentTokenId,
                 ];
+            })
+            ->values();
+
+        $sessionItems = $sessionRows
+            ->map(function (CustomerLoginSession $session) use ($currentTokenId, $resolvedLocation): array {
+                $tokenId = (int) ($session->cls_token_id ?? 0);
+                $platform = (string) ($session->cls_platform ?? 'Unknown OS');
+                $browser = (string) ($session->cls_browser ?? 'Unknown Browser');
+                $device = (string) ($session->cls_device ?? 'Desktop');
+                $locationRaw = (string) ($session->cls_location ?? 'Unknown location');
+                $location = $locationRaw;
+                if ($locationRaw === 'Current location' || trim($locationRaw) === '') {
+                    $location = $resolvedLocation;
+                }
+                $ipAddress = (string) ($session->cls_ip_address ?? '');
+                $userAgent = (string) ($session->cls_user_agent ?? '');
+
+                if (($platform === 'Unknown OS' || $browser === 'Unknown Browser') && $userAgent !== '') {
+                    [$uaPlatform, $uaBrowser, $uaDevice] = $this->detectDeviceInfo($userAgent);
+                    $platform = $uaPlatform;
+                    $browser = $uaBrowser;
+                    $device = $uaDevice;
+                }
+
+                $createdAt = $session->cls_created_at;
+                $lastActiveAt = $session->cls_last_active_at ?? $session->cls_created_at;
+
+                return [
+                    'id' => (int) ($session->cls_id ?? 0),
+                    'token_id' => $tokenId,
+                    'device' => $device,
+                    'platform' => $platform,
+                    'browser' => $browser,
+                    'location' => $location,
+                    'ip_address' => $ipAddress,
+                    'user_agent' => $userAgent,
+                    'created_at' => optional($createdAt)->toIso8601String(),
+                    'last_active_at' => optional($lastActiveAt)->toIso8601String(),
+                    'is_current' => $tokenId > 0 && $tokenId === $currentTokenId,
+                ];
+            })
+            ->values();
+
+        $items = $tokenItems
+            ->concat($sessionItems)
+            ->unique(function (array $item): string {
+                $tokenId = (int) ($item['token_id'] ?? 0);
+                if ($tokenId > 0) {
+                    return 'token:' . $tokenId;
+                }
+
+                $createdAt = (string) ($item['created_at'] ?? '');
+                $ip = (string) ($item['ip_address'] ?? '');
+                $ua = (string) ($item['user_agent'] ?? '');
+                return 'session:' . md5($createdAt . '|' . $ip . '|' . $ua);
             })
             ->values();
 
