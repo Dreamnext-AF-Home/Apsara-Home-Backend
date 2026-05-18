@@ -7,6 +7,7 @@ use App\Models\Admin;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
+use Laravel\Sanctum\PersonalAccessToken;
 
 class PartnerUserController extends Controller
 {
@@ -93,7 +94,7 @@ class PartnerUserController extends Controller
             }
 
             if ($allowedStorefrontIds === null) {
-                return ! empty($storefrontIds);
+                return true;
             }
 
             return ! empty(array_intersect($allowedStorefrontIds, $storefrontIds));
@@ -149,11 +150,7 @@ class PartnerUserController extends Controller
         } elseif (! empty($requestedStorefrontIds)) {
             $finalStorefrontIds = array_values(array_intersect($allowedStorefrontIds, $requestedStorefrontIds));
         } else {
-            $finalStorefrontIds = $allowedStorefrontIds;
-        }
-
-        if (empty($finalStorefrontIds)) {
-            return response()->json(['message' => 'Select at least one storefront for this user.'], 422);
+            $finalStorefrontIds = [];
         }
 
         $admin = Admin::query()->create([
@@ -163,6 +160,7 @@ class PartnerUserController extends Controller
             'passworde' => Hash::make((string) $validated['password']),
             'user_level_id' => 4,
             'admin_permissions' => $finalStorefrontIds,
+            'partner_disabled_storefront_ids' => [],
         ]);
 
         return response()->json([
@@ -208,6 +206,8 @@ class PartnerUserController extends Controller
             'password' => 'nullable|string|min:8',
             'storefront_ids' => 'nullable|array',
             'storefront_ids.*' => 'integer|min:1',
+            'disabled_storefront_ids' => 'nullable|array',
+            'disabled_storefront_ids.*' => 'integer|min:1',
         ]);
 
         if (array_key_exists('name', $validated)) {
@@ -229,15 +229,31 @@ class PartnerUserController extends Controller
             } elseif (! empty($requestedStorefrontIds)) {
                 $finalStorefrontIds = array_values(array_intersect($allowedStorefrontIds, $requestedStorefrontIds));
             } else {
-                $finalStorefrontIds = $allowedStorefrontIds;
-            }
-            if (empty($finalStorefrontIds)) {
-                return response()->json(['message' => 'Select at least one storefront for this user.'], 422);
+                $finalStorefrontIds = [];
             }
             $target->admin_permissions = $finalStorefrontIds;
+
+            // Keep disabled storefront IDs valid after assignment changes.
+            $currentDisabled = $this->normalizeStorefrontIds($target->partner_disabled_storefront_ids ?? []);
+            $target->partner_disabled_storefront_ids = array_values(array_intersect($currentDisabled, $finalStorefrontIds));
+        }
+
+        if (array_key_exists('disabled_storefront_ids', $validated)) {
+            $requestedDisabledIds = $this->normalizeStorefrontIds($validated['disabled_storefront_ids'] ?? []);
+            $assignedStorefrontIds = $this->normalizeStorefrontIds($target->admin_permissions ?? []);
+            // Disabled IDs must be a subset of assigned storefront IDs.
+            $target->partner_disabled_storefront_ids = array_values(array_intersect($requestedDisabledIds, $assignedStorefrontIds));
         }
 
         $target->save();
+
+        // Force re-login so new storefront access takes effect immediately in JWT/session guards.
+        if (array_key_exists('storefront_ids', $validated)) {
+            PersonalAccessToken::query()
+                ->where('tokenable_type', Admin::class)
+                ->where('tokenable_id', (int) $target->id)
+                ->delete();
+        }
 
         return response()->json([
             'message' => 'Partner user updated successfully.',
@@ -281,6 +297,7 @@ class PartnerUserController extends Controller
             'email' => (string) $admin->user_email,
             'user_level_id' => (int) $admin->user_level_id,
             'storefront_ids' => $this->normalizeStorefrontIds($admin->admin_permissions ?? []),
+            'disabled_storefront_ids' => $this->normalizeStorefrontIds($admin->partner_disabled_storefront_ids ?? []),
             'is_banned' => (bool) $admin->is_banned,
         ];
     }

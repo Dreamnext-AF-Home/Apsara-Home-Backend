@@ -16,6 +16,7 @@ class Admin extends Authenticatable
         'user_level_id',
         'supplier_id',
         'admin_permissions',
+        'partner_disabled_storefront_ids',
         'username',
         'passworde',
         'user_email',
@@ -30,6 +31,7 @@ class Admin extends Authenticatable
 
     protected $casts = [
         'admin_permissions' => 'array',
+        'partner_disabled_storefront_ids' => 'array',
         'last_seen_at' => 'datetime',
         'is_banned' => 'boolean',
     ];
