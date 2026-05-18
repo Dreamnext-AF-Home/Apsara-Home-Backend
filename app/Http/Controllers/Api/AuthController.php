@@ -3577,16 +3577,16 @@ class AuthController extends Controller
                 'customer_id' => $customer->c_userid,
             ]);
 
-            return response()->json([
-                'message' => 'Biometric login successful.',
+        // Match the same response structure used by mobile Google login
+        // and (mobile) email/password login: top-level success/message/data.
+        return response()->json([
+            'success' => true,
+            'message' => 'Login successful.',
+            'data' => [
                 'token' => $token,
-                'user' => [
-                    'id' => $customer->c_userid,
-                    'email' => $customer->c_email,
-                    'name' => $customer->c_fname . ' ' . $customer->c_lname,
-                    'avatar_url' => $customer->c_profile_picture_url ?? null,
-                ],
-            ], 200);
+                'user' => $this->transformCustomer($customer),
+            ],
+        ], 200);
 
         } catch (\Illuminate\Validation\ValidationException $e) {
             Log::error('[Biometric Login] Validation error', [
