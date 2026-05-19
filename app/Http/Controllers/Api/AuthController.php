@@ -478,7 +478,7 @@ class AuthController extends Controller
 
     public function mobileLogin(Request $request)
     {
-        return $this->handleLogin($request);
+        return $this->handleLoginMobile($request);
     }
 
     private function handleLogin(Request $request)
@@ -602,6 +602,99 @@ class AuthController extends Controller
 
         // Once the member is successfully using the modern hashed password,
         // legacy plain-password storage should be cleared automatically.
+        if (
+            $hashMatch
+            && ! $legacyDirectMatch
+            && ! $legacyCaseInsensitiveMatch
+            && trim((string) ($customer->c_password_pin ?? '')) !== ''
+        ) {
+            $customer->c_password_pin = '';
+        }
+
+        if ($mustChangePassword && ! $this->customerRequiresPasswordChange($customer)) {
+            $customer->c_password_change_required = true;
+        }
+
+        if ($customer->isDirty(['c_password_pin', 'c_password_change_required'])) {
+            $customer->save();
+        }
+
+        $tokenResult = $customer->createToken('auth_token');
+        $token = $tokenResult->plainTextToken;
+        $plainTokenId = (int) ($tokenResult->accessToken->id ?? 0);
+        try {
+            $this->recordLoginSession($customer, $request, $plainTokenId > 0 ? $plainTokenId : null);
+            MemberActivityLogger::logLogin((int) $customer->c_userid, $request);
+        } catch (\Throwable $e) {
+            report($e);
+        }
+
+        return response()->json([
+            'user'  => $this->transformCustomer($customer),
+            'token' => $token,
+            'message' => $mustChangePassword
+                ? 'Your account was signed in using a legacy password. Please change your password before continuing to the shop.'
+                : null,
+        ]);
+    }
+
+    private function handleLoginMobile(Request $request)
+    {
+        $request->validate([
+            'email'    => 'required|string',
+            'password' => 'required|string',
+        ]);
+
+        $identifier = trim($request->email);
+        $customer = Customer::query()
+            ->where(function ($query) use ($identifier) {
+                $query
+                    ->whereRaw('LOWER(c_email) = ?', [mb_strtolower($identifier, 'UTF-8')])
+                    ->orWhereRaw('LOWER(c_username) = ?', [mb_strtolower($identifier, 'UTF-8')]);
+            })
+            ->first();
+
+        if (! $customer) {
+            throw ValidationException::withMessages([
+                'email' => ['The provided credentials are incorrect.'],
+            ]);
+        }
+
+        $password = (string) $request->password;
+        $hashMatch = $this->matchesHashedCustomerPassword($customer, $password);
+        $legacyDirectMatch = $this->matchesLegacyCustomerPassword($customer, $password, false);
+        $legacyCaseInsensitiveMatch = $this->matchesLegacyCustomerPassword($customer, $password, true);
+        if (! $hashMatch && ! $legacyDirectMatch && ! $legacyCaseInsensitiveMatch) {
+            throw ValidationException::withMessages([
+                'email' => ['The provided credentials are incorrect.'],
+            ]);
+        }
+
+        if ((int) ($customer->c_lockstatus ?? 0) === 1) {
+            return response()->json([
+                'message' => 'Your account has been banned. Please contact support for assistance.',
+                'reason' => 'banned',
+            ], 403);
+        }
+
+        $modernPasswordInUse = $hashMatch
+            && ! $legacyDirectMatch
+            && ! $legacyCaseInsensitiveMatch
+            && $this->passwordMeetsModernRequirements($password);
+
+        if (
+            $modernPasswordInUse
+            && trim((string) ($customer->c_password_pin ?? '')) === ''
+            && $this->customerRequiresPasswordChange($customer)
+        ) {
+            $customer->c_password_change_required = false;
+        }
+
+        $mustChangePassword = $this->customerRequiresPasswordChange($customer)
+            || $legacyDirectMatch
+            || $legacyCaseInsensitiveMatch
+            || ! $this->passwordMeetsModernRequirements($password);
+
         if (
             $hashMatch
             && ! $legacyDirectMatch
