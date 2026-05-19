@@ -611,43 +611,51 @@ class AdminOrderController extends Controller
         });
 
         // Create child notification for approval
-        $checkoutId = (string) ($order->ch_checkout_id ?? '');
-        $status = (string) ($order->ch_fulfillment_status ?? 'pending');
+        try {
+            $checkoutId = (string) ($order->ch_checkout_id ?? '');
+            $status = (string) ($order->ch_fulfillment_status ?? 'pending');
 
-        $parentNotifications = \App\Models\OrderNotification::query()
-            ->where('on_checkout_id', $checkoutId)
-            ->where('on_is_parent', true)
-            ->get();
+            $parentNotifications = \App\Models\OrderNotification::query()
+                ->where('on_checkout_id', $checkoutId)
+                ->where('on_is_parent', true)
+                ->get();
 
-        foreach ($parentNotifications as $parentNotification) {
-            // Update parent notification status to processing if it was pending
-            if ($status === 'processing') {
-                $parentNotification->update(['on_status' => $status]);
+            foreach ($parentNotifications as $parentNotification) {
+                // Update parent notification status to processing if it was pending
+                if ($status === 'processing') {
+                    $parentNotification->update(['on_status' => $status]);
+                }
+
+                // Create child notification for approval timeline entry
+                \App\Models\OrderNotification::createChildNotificationFromAdminUpdate(
+                    (int) $parentNotification->on_id,
+                    (int) $parentNotification->on_customer_id,
+                    $checkoutId,
+                    (string) ($parentNotification->on_notification_group_id ?? ''),
+                    [
+                        'type' => 'order_approved',
+                        'event_type' => 'order_approved',
+                        'priority' => 'HIGH',
+                        'severity' => 'info',
+                        'status' => $status,
+                        'title' => 'Order Approved ✓',
+                        'message' => "Your order has been approved and is now being processed. We'll update you on the shipment status soon.",
+                    ]
+                );
+
+                // Broadcast approval update to customer
+                \App\Models\OrderNotification::broadcastStatusUpdate(
+                    (int) $parentNotification->on_customer_id,
+                    $checkoutId,
+                    $status
+                );
             }
-
-            // Create child notification for approval timeline entry
-            \App\Models\OrderNotification::createChildNotificationFromAdminUpdate(
-                (int) $parentNotification->on_id,
-                (int) $parentNotification->on_customer_id,
-                $checkoutId,
-                (string) ($parentNotification->on_notification_group_id ?? ''),
-                [
-                    'type' => 'order_approved',
-                    'event_type' => 'order_approved',
-                    'priority' => 'HIGH',
-                    'severity' => 'info',
-                    'status' => $status,
-                    'title' => 'Order Approved ✓',
-                    'message' => "Your order has been approved and is now being processed. We'll update you on the shipment status soon.",
-                ]
-            );
-
-            // Broadcast approval update to customer
-            \App\Models\OrderNotification::broadcastStatusUpdate(
-                (int) $parentNotification->on_customer_id,
-                $checkoutId,
-                $status
-            );
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to update notifications for order approval', [
+                'order_id' => $id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
         }
 
         $this->sendCustomerOrderStatusEmail($order, 'approval_approved');
@@ -806,73 +814,82 @@ class AdminOrderController extends Controller
         $order->save();
 
         // Update parent notification status and create child notification for timeline
-        $checkoutId = (string) ($order->ch_checkout_id ?? '');
-        $status = (string) $validated['status'];
+        try {
+            $checkoutId = (string) ($order->ch_checkout_id ?? '');
+            $status = (string) $validated['status'];
 
-        $parentNotifications = \App\Models\OrderNotification::query()
-            ->where('on_checkout_id', $checkoutId)
-            ->where('on_is_parent', true)
-            ->get();
+            $parentNotifications = \App\Models\OrderNotification::query()
+                ->where('on_checkout_id', $checkoutId)
+                ->where('on_is_parent', true)
+                ->get();
 
-        foreach ($parentNotifications as $parentNotification) {
-            // Update parent notification status
-            $parentNotification->update(['on_status' => $status]);
+            foreach ($parentNotifications as $parentNotification) {
+                // Update parent notification status
+                $parentNotification->update(['on_status' => $status]);
 
-            // Create child notification for timeline entry
-            \App\Models\OrderNotification::createChildNotificationFromAdminUpdate(
-                (int) $parentNotification->on_id,
-                (int) $parentNotification->on_customer_id,
-                $checkoutId,
-                (string) ($parentNotification->on_notification_group_id ?? ''),
-                [
-                    'type' => 'order_updated',
-                    'event_type' => match ($status) {
-                        'processing' => 'processing',
-                        'packed', 'to_ship' => 'ready_to_ship',
-                        'shipped' => 'shipped',
-                        'out_for_delivery' => 'out_for_delivery',
-                        'delivered', 'completed' => 'delivered',
-                        'cancelled' => 'cancelled',
-                        'refunded' => 'refunded',
-                        default => 'status_updated',
-                    },
-                    'priority' => 'MEDIUM',
-                    'severity' => match ($status) {
-                        'delivered', 'completed' => 'success',
-                        'shipped', 'out_for_delivery' => 'warning',
-                        'cancelled', 'refunded' => 'error',
-                        default => 'info',
-                    },
-                    'status' => $status,
-                    'title' => match ($status) {
-                        'processing' => 'Order Processing',
-                        'packed', 'to_ship' => 'Ready to Ship',
-                        'shipped' => 'Order Shipped',
-                        'out_for_delivery' => 'Out for Delivery',
-                        'delivered', 'completed' => 'Order Delivered',
-                        'cancelled' => 'Order Cancelled',
-                        'refunded' => 'Order Refunded',
-                        default => 'Order Updated',
-                    },
-                    'message' => match ($status) {
-                        'processing' => "Your order {$parentNotification->on_product_name ?? 'item'} is now being processed.",
-                        'packed', 'to_ship' => "Your order {$parentNotification->on_product_name ?? 'item'} is ready to ship.",
-                        'shipped' => "Your order {$parentNotification->on_product_name ?? 'item'} has been shipped.",
-                        'out_for_delivery' => "Your order {$parentNotification->on_product_name ?? 'item'} is out for delivery.",
-                        'delivered', 'completed' => "Your order {$parentNotification->on_product_name ?? 'item'} has been delivered. Thank you!",
-                        'cancelled' => "Your order {$parentNotification->on_product_name ?? 'item'} has been cancelled.",
-                        'refunded' => "Your order {$parentNotification->on_product_name ?? 'item'} has been refunded.",
-                        default => "Your order status has been updated to: {$status}",
-                    },
-                ]
-            );
+                // Create child notification for timeline entry
+                \App\Models\OrderNotification::createChildNotificationFromAdminUpdate(
+                    (int) $parentNotification->on_id,
+                    (int) $parentNotification->on_customer_id,
+                    $checkoutId,
+                    (string) ($parentNotification->on_notification_group_id ?? ''),
+                    [
+                        'type' => 'order_updated',
+                        'event_type' => match ($status) {
+                            'processing' => 'processing',
+                            'packed', 'to_ship' => 'ready_to_ship',
+                            'shipped' => 'shipped',
+                            'out_for_delivery' => 'out_for_delivery',
+                            'delivered', 'completed' => 'delivered',
+                            'cancelled' => 'cancelled',
+                            'refunded' => 'refunded',
+                            default => 'status_updated',
+                        },
+                        'priority' => 'MEDIUM',
+                        'severity' => match ($status) {
+                            'delivered', 'completed' => 'success',
+                            'shipped', 'out_for_delivery' => 'warning',
+                            'cancelled', 'refunded' => 'error',
+                            default => 'info',
+                        },
+                        'status' => $status,
+                        'title' => match ($status) {
+                            'processing' => 'Order Processing',
+                            'packed', 'to_ship' => 'Ready to Ship',
+                            'shipped' => 'Order Shipped',
+                            'out_for_delivery' => 'Out for Delivery',
+                            'delivered', 'completed' => 'Order Delivered',
+                            'cancelled' => 'Order Cancelled',
+                            'refunded' => 'Order Refunded',
+                            default => 'Order Updated',
+                        },
+                        'message' => match ($status) {
+                            'processing' => "Your order {$parentNotification->on_product_name ?? 'item'} is now being processed.",
+                            'packed', 'to_ship' => "Your order {$parentNotification->on_product_name ?? 'item'} is ready to ship.",
+                            'shipped' => "Your order {$parentNotification->on_product_name ?? 'item'} has been shipped.",
+                            'out_for_delivery' => "Your order {$parentNotification->on_product_name ?? 'item'} is out for delivery.",
+                            'delivered', 'completed' => "Your order {$parentNotification->on_product_name ?? 'item'} has been delivered. Thank you!",
+                            'cancelled' => "Your order {$parentNotification->on_product_name ?? 'item'} has been cancelled.",
+                            'refunded' => "Your order {$parentNotification->on_product_name ?? 'item'} has been refunded.",
+                            default => "Your order status has been updated to: {$status}",
+                        },
+                    ]
+                );
 
-            // Broadcast update to customer
-            \App\Models\OrderNotification::broadcastStatusUpdate(
-                (int) $parentNotification->on_customer_id,
-                $checkoutId,
-                $status
-            );
+                // Broadcast update to customer
+                \App\Models\OrderNotification::broadcastStatusUpdate(
+                    (int) $parentNotification->on_customer_id,
+                    $checkoutId,
+                    $status
+                );
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to update notifications for order status', [
+                'order_id' => $id,
+                'status' => $validated['status'],
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
         }
 
         if ($validated['status'] === 'delivered') {
