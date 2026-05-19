@@ -98,6 +98,12 @@ class OrderNotification extends Model
         ]);
     }
 
+    public static function createChildNotificationFromAdminUpdate(int $parentNotificationId, int $customerId, string $checkoutId, string $groupId, array $data = []): self
+    {
+        // Create child notification when admin updates order status
+        return self::createChildNotification($parentNotificationId, $customerId, $checkoutId, $groupId, $data);
+    }
+
     public static function createChildNotification(int $parentNotificationId, int $customerId, string $checkoutId, string $groupId, array $data = []): self
     {
         return self::create([
@@ -210,28 +216,11 @@ class OrderNotification extends Model
             default => 'status_updated',
         };
 
-        // Update each parent notification and create child notification
+        // Update each parent notification
         foreach ($parentNotifications as $parentNotification) {
             $href = $parentNotification->on_checkout_id
                 ? $hrefPrefix . '/' . $parentNotification->on_checkout_id
                 : $hrefPrefix;
-
-            // Check if a child notification already exists for this event type
-            $existingChild = self::query()
-                ->where('on_parent_notification_id', $parentNotification->on_id)
-                ->where('on_event_type', $eventType)
-                ->first();
-
-            if ($existingChild) {
-                Log::info('Child notification already exists for this status', [
-                    'parent_id' => $parentNotification->on_id,
-                    'checkout_id' => $checkoutId,
-                    'event_type' => $eventType,
-                    'existing_child_id' => $existingChild->on_id,
-                ]);
-                $customerIds[] = (int) $parentNotification->on_customer_id;
-                continue;
-            }
 
             // Build dynamic message based on status and notification details
             $productName = $parentNotification->on_product_name ?? 'your item';
@@ -269,35 +258,9 @@ class OrderNotification extends Model
                 'update_data' => $updateData,
             ]);
 
-            // Create child notification for this status update
-            $childNotification = self::createChildNotification(
-                $parentNotification->on_id,
-                $parentNotification->on_customer_id,
-                $checkoutId,
-                $parentNotification->on_notification_group_id ?? $checkoutId,
-                [
-                    'type' => 'order_updated',
-                    'event_type' => $eventType,
-                    'status' => $status,
-                    'priority' => 'MEDIUM',
-                    'severity' => $severity,
-                    'title' => $statusLabel . ' ' . $statusEmoji,
-                    'message' => $message ?? "Order status updated to: {$statusLabel}",
-                    'product_name' => $productName,
-                    'product_image' => $parentNotification->on_product_image,
-                    'amount' => $parentNotification->on_amount,
-                    'payment_method' => $parentNotification->on_payment_method,
-                    'href' => $href,
-                    'event_date' => now(),
-                ]
-            );
-
-            Log::info('Child notification created', [
-                'parent_id' => $parentNotification->on_id,
-                'child_id' => $childNotification->on_id,
-                'checkout_id' => $checkoutId,
-                'event_type' => $eventType,
-            ]);
+            // Note: Child notifications should only be created when admin manually updates status
+            // Not from automatic payment confirmation webhook
+            // See: createChildNotificationFromAdminUpdate()
 
             $customerIds[] = (int) $parentNotification->on_customer_id;
         }
