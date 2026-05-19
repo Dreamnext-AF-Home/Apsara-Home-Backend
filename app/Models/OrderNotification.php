@@ -216,6 +216,23 @@ class OrderNotification extends Model
                 ? $hrefPrefix . '/' . $parentNotification->on_checkout_id
                 : $hrefPrefix;
 
+            // Check if a child notification already exists for this event type
+            $existingChild = self::query()
+                ->where('on_parent_notification_id', $parentNotification->on_id)
+                ->where('on_event_type', $eventType)
+                ->first();
+
+            if ($existingChild) {
+                Log::info('Child notification already exists for this status', [
+                    'parent_id' => $parentNotification->on_id,
+                    'checkout_id' => $checkoutId,
+                    'event_type' => $eventType,
+                    'existing_child_id' => $existingChild->on_id,
+                ]);
+                $customerIds[] = (int) $parentNotification->on_customer_id;
+                continue;
+            }
+
             // Build dynamic message based on status and notification details
             $productName = $parentNotification->on_product_name ?? 'your item';
             $amount = number_format((float) ($parentNotification->on_amount ?? 0), 2);
@@ -253,7 +270,7 @@ class OrderNotification extends Model
             ]);
 
             // Create child notification for this status update
-            self::createChildNotification(
+            $childNotification = self::createChildNotification(
                 $parentNotification->on_id,
                 $parentNotification->on_customer_id,
                 $checkoutId,
@@ -274,6 +291,13 @@ class OrderNotification extends Model
                     'event_date' => now(),
                 ]
             );
+
+            Log::info('Child notification created', [
+                'parent_id' => $parentNotification->on_id,
+                'child_id' => $childNotification->on_id,
+                'checkout_id' => $checkoutId,
+                'event_type' => $eventType,
+            ]);
 
             $customerIds[] = (int) $parentNotification->on_customer_id;
         }
