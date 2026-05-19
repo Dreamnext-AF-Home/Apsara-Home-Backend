@@ -103,10 +103,7 @@ class MobilePaymentController extends Controller
             // Cache mobile order data for payment verification
             $this->cacheMobileOrderData($mobileOrderId, $validated, $mobileOrder);
 
-            // Send order confirmation email
-            $this->sendOrderConfirmationEmail($mobileOrder, $validated);
-
-            // Create order notification with product details
+            // Create order notification with product details (parent notification only - not email yet)
             $this->createOrderNotification($mobileOrder, $validated);
 
             return response()->json([
@@ -540,14 +537,11 @@ class MobilePaymentController extends Controller
         return $base . '/' . ltrim($path, '/');
     }
 
-    private function sendOrderConfirmationEmail(CheckoutHistory $order, array $validated): void
+    public static function sendOrderConfirmationEmailAfterPayment(CheckoutHistory $order, string $paymentMethod = ''): void
     {
-        $customerData = $validated['customer'] ?? [];
-        $orderData = $validated['order'] ?? [];
-
-        $recipient = $customerData['email'] ?? $order->ch_customer_email;
+        $recipient = $order->ch_customer_email;
         if (empty($recipient)) {
-            Log::warning('Mobile order email skipped: missing customer email', [
+            Log::warning('Mobile order confirmation email skipped: missing customer email', [
                 'mobile_order_id' => $order->ch_mobile_order_id,
                 'checkout_id' => $order->ch_checkout_id,
             ]);
@@ -556,44 +550,55 @@ class MobilePaymentController extends Controller
 
         $mailPayload = [
             'checkout_id' => $order->ch_checkout_id,
-            'customer_name' => $customerData['name'] ?? $order->ch_customer_name ?? 'Customer',
+            'customer_name' => $order->ch_customer_name ?? 'Customer',
             'customer_email' => $recipient,
-            'customer_phone' => $customerData['phone'] ?? $order->ch_customer_phone ?? null,
-            'description' => $validated['description'] ?? 'Order',
-            'amount' => (float) $validated['amount'],
-            'payment_method' => $validated['payment_method'] ?? null,
-            'status' => 'pending',
-            'order_status_label' => 'pending payment',
+            'customer_phone' => $order->ch_customer_phone ?? null,
+            'description' => $order->ch_description ?? 'Order',
+            'amount' => (float) $order->ch_amount,
+            'payment_method' => $paymentMethod ?: $order->ch_payment_method,
+            'status' => 'paid',
+            'order_status_label' => 'payment confirmed',
             'payment_intent_id' => $order->ch_payment_intent_id,
-            'shipping_address' => $customerData['address'] ?? $order->ch_customer_address ?? null,
+            'shipping_address' => $order->ch_customer_address ?? null,
             'source_label' => 'Mobile App',
             'order' => [
-                'product_name' => $orderData['product_name'] ?? null,
-                'product_sku' => $orderData['product_sku'] ?? null,
-                'quantity' => (int) ($orderData['quantity'] ?? 1),
-                'selected_color' => $orderData['selected_color'] ?? null,
-                'selected_size' => $orderData['selected_size'] ?? null,
-                'selected_type' => $orderData['selected_type'] ?? null,
+                'product_name' => $order->ch_product_name ?? null,
+                'product_sku' => $order->ch_product_sku ?? null,
+                'quantity' => (int) ($order->ch_quantity ?? 1),
+                'selected_color' => $order->ch_selected_color ?? null,
+                'selected_size' => $order->ch_selected_size ?? null,
+                'selected_type' => $order->ch_selected_type ?? null,
             ],
             'mobile_order_id' => $order->ch_mobile_order_id,
-            'platform' => $validated['platform'] ?? null,
+            'platform' => $order->ch_platform ?? null,
         ];
 
         try {
             Mail::to($recipient)->send(new CheckoutCompletedMail($mailPayload));
-            Log::info('Mobile order confirmation email sent', [
+            Log::info('Mobile order confirmation email sent after payment', [
                 'mobile_order_id' => $order->ch_mobile_order_id,
                 'checkout_id' => $order->ch_checkout_id,
                 'recipient' => $recipient,
+                'status' => 'paid',
             ]);
         } catch (\Throwable $e) {
-            Log::error('Failed to send mobile order confirmation email', [
+            Log::error('Failed to send mobile order confirmation email after payment', [
                 'mobile_order_id' => $order->ch_mobile_order_id,
                 'checkout_id' => $order->ch_checkout_id,
                 'recipient' => $recipient,
                 'error' => $e->getMessage(),
             ]);
         }
+    }
+
+    private function sendOrderConfirmationEmail(CheckoutHistory $order, array $validated): void
+    {
+        // Deprecated - email is now sent only after payment is confirmed via webhook
+        // This method is kept for backward compatibility but should not be called
+        Log::warning('sendOrderConfirmationEmail called - should use sendOrderConfirmationEmailAfterPayment instead', [
+            'mobile_order_id' => $order->ch_mobile_order_id,
+            'checkout_id' => $order->ch_checkout_id,
+        ]);
     }
 
     private function createOrderNotification(CheckoutHistory $order, array $validated): void
