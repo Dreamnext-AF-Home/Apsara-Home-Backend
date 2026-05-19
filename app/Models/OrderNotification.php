@@ -271,7 +271,7 @@ class OrderNotification extends Model
         }
     }
 
-    private static function broadcastStatusUpdate(int $customerId, string $checkoutId, string $status): void
+    public static function broadcastStatusUpdate(int $customerId, string $checkoutId, string $status): void
     {
         try {
             $key = (string) config('services.pusher.key', '');
