@@ -601,7 +601,6 @@ class MobilePaymentController extends Controller
         $customerData = $validated['customer'] ?? [];
         $orderData = $validated['order'] ?? [];
 
-        // Debug: Log the order object values
         Log::debug('Creating order notification', [
             'order_id' => $order->ch_id,
             'mobile_order_id' => $order->ch_mobile_order_id,
@@ -613,37 +612,37 @@ class MobilePaymentController extends Controller
             $productName = $orderData['product_name'] ?? $validated['description'] ?? 'Order Item';
             $quantity = (int) ($orderData['quantity'] ?? 1);
             $productImage = $orderData['product_image'] ?? $order->ch_product_image ?? null;
+            $amount = (float) $validated['amount'];
+            $groupId = $order->ch_checkout_id;
 
-            OrderNotification::create([
-                'on_customer_id' => $order->ch_customer_id,
-                'on_checkout_id' => $order->ch_checkout_id,
-                'on_mobile_order_id' => $order->ch_mobile_order_id,
-                'on_type' => 'order_created',
-                'on_severity' => 'info',
-                'on_title' => 'Order Placed: ' . $productName,
-                'on_message' => 'Your order has been created and is pending payment. Amount: ₱' . number_format((float) $validated['amount'], 2),
-                'on_product_name' => $productName,
-                'on_product_image' => $productImage,
-                'on_product_sku' => $orderData['product_sku'] ?? $order->ch_product_sku ?? null,
-                'on_quantity' => $quantity,
-                'on_amount' => (float) $validated['amount'],
-                'on_status' => 'pending',
-                'on_payment_method' => $validated['payment_method'] ?? null,
-                'on_href' => 'purchases://pending/' . $order->ch_checkout_id,
-                'on_payload' => [
-                    'mobile_order_id' => $order->ch_mobile_order_id,
-                    'checkout_id' => $order->ch_checkout_id,
-                    'platform' => $validated['platform'] ?? null,
-                    'product_id' => $orderData['product_id'] ?? null,
-                    'selected_color' => $orderData['selected_color'] ?? null,
-                    'selected_size' => $orderData['selected_size'] ?? null,
-                    'selected_type' => $orderData['selected_type'] ?? null,
-                ],
-                'on_is_read' => false,
-                'on_created_at' => now(),
-            ]);
+            // Create parent notification for order placed
+            $parentNotification = OrderNotification::createParentNotification(
+                $order->ch_customer_id,
+                $order->ch_checkout_id,
+                $groupId,
+                [
+                    'title' => 'Order Placed ✓',
+                    'message' => 'Your order has been created and is pending payment. Amount: ₱' . number_format($amount, 2),
+                    'product_name' => $productName,
+                    'product_image' => $productImage,
+                    'amount' => $amount,
+                    'payment_method' => $validated['payment_method'] ?? null,
+                    'href' => 'purchases://pending/' . $order->ch_checkout_id,
+                    'payload' => [
+                        'mobile_order_id' => $order->ch_mobile_order_id,
+                        'checkout_id' => $order->ch_checkout_id,
+                        'platform' => $validated['platform'] ?? null,
+                        'product_id' => $orderData['product_id'] ?? null,
+                        'product_sku' => $orderData['product_sku'] ?? null,
+                        'selected_color' => $orderData['selected_color'] ?? null,
+                        'selected_size' => $orderData['selected_size'] ?? null,
+                        'selected_type' => $orderData['selected_type'] ?? null,
+                    ],
+                ]
+            );
 
-            Log::info('Order notification created', [
+            Log::info('Parent notification created', [
+                'notification_id' => $parentNotification->on_id,
                 'mobile_order_id' => $order->ch_mobile_order_id,
                 'checkout_id' => $order->ch_checkout_id,
                 'customer_id' => $order->ch_customer_id,
@@ -665,43 +664,114 @@ class MobilePaymentController extends Controller
         $customer = $request->user();
         $customerId = (int) $customer->getAuthIdentifier();
 
-        $notifications = OrderNotification::query()
+        // Get parent notifications only
+        $parentNotifications = OrderNotification::query()
             ->where('on_customer_id', $customerId)
+            ->where('on_is_parent', true)
             ->orderByDesc('on_created_at')
             ->orderByDesc('on_id')
-            ->get()
-            ->map(function (OrderNotification $notification) {
-                return [
-                    'id' => (int) $notification->on_id,
-                    'type' => $notification->on_type,
-                    'severity' => $notification->on_severity,
-                    'title' => $notification->on_title,
-                    'message' => $notification->on_message,
-                    'product_name' => $notification->on_product_name,
-                    'product_image' => $notification->on_product_image,
-                    'product_sku' => $notification->on_product_sku,
-                    'quantity' => (int) $notification->on_quantity,
-                    'amount' => (float) $notification->on_amount,
-                    'status' => $notification->on_status,
-                    'payment_method' => $notification->on_payment_method,
-                    'href' => $notification->on_href,
-                    'is_read' => (bool) $notification->on_is_read,
-                    'mobile_order_id' => $notification->on_mobile_order_id,
-                    'checkout_id' => $notification->on_checkout_id,
-                    'created_at' => $notification->on_created_at?->toISOString(),
-                    'payload' => $notification->on_payload ?? [],
-                ];
-            });
+            ->get();
+
+        $notifications = $parentNotifications->map(function (OrderNotification $notification) {
+            // Get child notifications (updates) for this parent
+            $childNotifications = $notification->childNotifications()
+                ->get()
+                ->map(function (OrderNotification $child) {
+                    return [
+                        'id' => (int) $child->on_id,
+                        'type' => $child->on_type,
+                        'event_type' => $child->on_event_type,
+                        'severity' => $child->on_severity,
+                        'priority' => $child->on_priority,
+                        'title' => $child->on_title,
+                        'message' => $child->on_message,
+                        'status' => $child->on_status,
+                        'event_date' => $child->on_event_date?->toISOString(),
+                        'created_at' => $child->on_created_at?->toISOString(),
+                    ];
+                });
+
+            return [
+                'id' => (int) $notification->on_id,
+                'type' => $notification->on_type,
+                'severity' => $notification->on_severity,
+                'priority' => $notification->on_priority,
+                'title' => $notification->on_title,
+                'message' => $notification->on_message,
+                'product_name' => $notification->on_product_name,
+                'product_image' => $notification->on_product_image,
+                'product_sku' => $notification->on_product_sku,
+                'quantity' => (int) $notification->on_quantity,
+                'amount' => (float) $notification->on_amount,
+                'status' => $notification->on_status,
+                'payment_method' => $notification->on_payment_method,
+                'href' => $notification->on_href,
+                'is_read' => (bool) $notification->on_is_read,
+                'mobile_order_id' => $notification->on_mobile_order_id,
+                'checkout_id' => $notification->on_checkout_id,
+                'is_parent' => (bool) $notification->on_is_parent,
+                'notification_group_id' => $notification->on_notification_group_id,
+                'created_at' => $notification->on_created_at?->toISOString(),
+                'payload' => $notification->on_payload ?? [],
+                'updates' => $childNotifications,
+            ];
+        });
 
         $unreadCount = OrderNotification::query()
             ->where('on_customer_id', $customerId)
             ->where('on_is_read', false)
+            ->where('on_is_parent', true)
             ->count();
 
         return response()->json([
             'notifications' => $notifications,
             'unread_count' => $unreadCount,
             'total' => $notifications->count(),
+        ]);
+    }
+
+    public function getNotificationUpdates(Request $request, int $notificationId)
+    {
+        $customer = $request->user();
+        $customerId = (int) $customer->getAuthIdentifier();
+
+        $parentNotification = OrderNotification::query()
+            ->where('on_id', $notificationId)
+            ->where('on_customer_id', $customerId)
+            ->where('on_is_parent', true)
+            ->first();
+
+        if (!$parentNotification) {
+            return response()->json(['message' => 'Notification not found'], 404);
+        }
+
+        // Get child notifications (timeline of updates)
+        $childNotifications = $parentNotification->childNotifications()
+            ->get()
+            ->map(function (OrderNotification $child) {
+                return [
+                    'id' => (int) $child->on_id,
+                    'type' => $child->on_type,
+                    'event_type' => $child->on_event_type,
+                    'severity' => $child->on_severity,
+                    'priority' => $child->on_priority,
+                    'title' => $child->on_title,
+                    'message' => $child->on_message,
+                    'status' => $child->on_status,
+                    'event_date' => $child->on_event_date?->toISOString(),
+                    'created_at' => $child->on_created_at?->toISOString(),
+                ];
+            });
+
+        return response()->json([
+            'parent_id' => (int) $parentNotification->on_id,
+            'title' => $parentNotification->on_title,
+            'product_name' => $parentNotification->on_product_name,
+            'product_image' => $parentNotification->on_product_image,
+            'checkout_id' => $parentNotification->on_checkout_id,
+            'status' => $parentNotification->on_status,
+            'updates' => $childNotifications,
+            'total_updates' => count($childNotifications),
         ]);
     }
 
