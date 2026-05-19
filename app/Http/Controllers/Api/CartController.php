@@ -186,6 +186,209 @@ class CartController extends Controller
         }
     }
 
+    public function bulkAddToCart(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'items' => 'required|array|min:1|max:100',
+                'items.*.product_id' => 'required|integer|min:1',
+                'items.*.variant_id' => 'nullable|integer',
+                'items.*.quantity' => 'required|integer|min:1',
+                'items.*.selected_color' => 'nullable|string|max:100',
+                'items.*.selected_size' => 'nullable|string|max:100',
+                'items.*.selected_type' => 'nullable|string|max:100',
+            ]);
+
+            $customer = $request->user();
+
+            if (!$customer instanceof Customer) {
+                Log::error('Bulk Cart: User is not a Customer instance', ['user_type' => get_class($request->user())]);
+                return response()->json(['message' => 'Unauthorized'], 401);
+            }
+
+            $items = $validated['items'];
+            $addedItems = [];
+            $failedItems = [];
+
+            foreach ($items as $index => $item) {
+                try {
+                    $product = DB::table('tbl_product')->where('pd_id', $item['product_id'])->first();
+
+                    if (!$product) {
+                        $failedItems[] = [
+                            'index' => $index,
+                            'product_id' => $item['product_id'],
+                            'message' => 'Product not found',
+                        ];
+                        continue;
+                    }
+
+                    $manualCheckoutModeEnabled = QueryOptimizerService::getSystemSetting('enable_manual_checkout_mode') ?? false;
+                    if ($manualCheckoutModeEnabled && ! (bool) ($product->pd_manual_checkout_enabled ?? false)) {
+                        $failedItems[] = [
+                            'index' => $index,
+                            'product_id' => $item['product_id'],
+                            'message' => 'This product is not available for checkout at the moment.',
+                        ];
+                        continue;
+                    }
+
+                    $variant = null;
+                    if (!empty($item['variant_id'])) {
+                        $variant = ProductVariant::query()
+                            ->where('pv_id', $item['variant_id'])
+                            ->where('pv_pdid', $item['product_id'])
+                            ->where('pv_status', 1)
+                            ->first();
+
+                        if (!$variant) {
+                            $failedItems[] = [
+                                'index' => $index,
+                                'product_id' => $item['product_id'],
+                                'message' => 'Selected variant is not available',
+                            ];
+                            continue;
+                        }
+                    }
+
+                    $unitPrice = 0;
+                    if ($variant && $variant->pv_price_member && $variant->pv_price_member > 0) {
+                        $unitPrice = $variant->pv_price_member;
+                    } elseif ($variant && $variant->pv_price_dp && $variant->pv_price_dp > 0) {
+                        $unitPrice = $variant->pv_price_dp;
+                    } elseif ($variant && $variant->pv_price_srp && $variant->pv_price_srp > 0) {
+                        $unitPrice = $variant->pv_price_srp;
+                    } elseif ($product->pd_price_member && $product->pd_price_member > 0) {
+                        $unitPrice = $product->pd_price_member;
+                    } elseif ($product->pd_price_dp && $product->pd_price_dp > 0) {
+                        $unitPrice = $product->pd_price_dp;
+                    } elseif ($product->pd_price_srp && $product->pd_price_srp > 0) {
+                        $unitPrice = $product->pd_price_srp;
+                    }
+
+                    if ($unitPrice <= 0) {
+                        $failedItems[] = [
+                            'index' => $index,
+                            'product_id' => $item['product_id'],
+                            'message' => 'Product price not available',
+                        ];
+                        continue;
+                    }
+
+                    $totalPrice = $unitPrice * $item['quantity'];
+
+                    $existingCartItem = DB::table('tbl_add_to_cart')
+                        ->where('crt_customer_id', $customer->c_userid)
+                        ->where('crt_product_id', $item['product_id'])
+                        ->where('crt_variant_id', $item['variant_id'] ?? null)
+                        ->where('crt_selected_color', $item['selected_color'] ?? null)
+                        ->where('crt_selected_size', $item['selected_size'] ?? null)
+                        ->where('crt_selected_type', $item['selected_type'] ?? null)
+                        ->where('crt_status', 'active')
+                        ->first();
+
+                    if ($existingCartItem) {
+                        $newQuantity = $existingCartItem->crt_quantity + $item['quantity'];
+                        $newTotalPrice = $unitPrice * $newQuantity;
+
+                        DB::table('tbl_add_to_cart')
+                            ->where('crt_id', $existingCartItem->crt_id)
+                            ->update([
+                                'crt_quantity' => $newQuantity,
+                                'crt_total_price' => $newTotalPrice,
+                                'crt_updated_at' => now(),
+                            ]);
+
+                        $cartItem = DB::table('tbl_add_to_cart')->where('crt_id', $existingCartItem->crt_id)->first();
+                    } else {
+                        $cartId = DB::table('tbl_add_to_cart')->insertGetId([
+                            'crt_customer_id' => $customer->c_userid,
+                            'crt_product_id' => $item['product_id'],
+                            'crt_variant_id' => $item['variant_id'] ?? null,
+                            'crt_quantity' => $item['quantity'],
+                            'crt_selected_color' => $item['selected_color'] ?? null,
+                            'crt_selected_size' => $item['selected_size'] ?? null,
+                            'crt_selected_type' => $item['selected_type'] ?? null,
+                            'crt_unit_price' => $unitPrice,
+                            'crt_total_price' => $totalPrice,
+                            'crt_status' => 'active',
+                            'crt_created_at' => now(),
+                            'crt_updated_at' => now(),
+                        ], 'crt_id');
+
+                        $cartItem = DB::table('tbl_add_to_cart')->where('crt_id', $cartId)->first();
+                    }
+
+                    $addedItems[] = [
+                        'index' => $index,
+                        'product_id' => $item['product_id'],
+                        'cart_item' => $cartItem,
+                        'message' => 'Added successfully',
+                    ];
+
+                    Log::info('Bulk Cart: Item added', [
+                        'customer_id' => $customer->c_userid,
+                        'product_id' => $item['product_id'],
+                        'quantity' => $item['quantity']
+                    ]);
+
+                } catch (\Exception $e) {
+                    Log::error('Bulk Cart: Error processing item', [
+                        'index' => $index,
+                        'product_id' => $item['product_id'],
+                        'error' => $e->getMessage(),
+                    ]);
+
+                    $failedItems[] = [
+                        'index' => $index,
+                        'product_id' => $item['product_id'],
+                        'message' => 'Error processing item: ' . $e->getMessage(),
+                    ];
+                }
+            }
+
+            $totalCartItems = DB::table('tbl_add_to_cart')
+                ->where('crt_customer_id', $customer->c_userid)
+                ->sum('crt_quantity');
+
+            try {
+                foreach ($addedItems as $addedItem) {
+                    $product = DB::table('tbl_product')->where('pd_id', $addedItem['product_id'])->first();
+                    CartAdded::dispatch((int) $customer->c_userid, $product, $addedItem['cart_item'], $totalCartItems);
+                }
+            } catch (\Exception $e) {
+                Log::warning('Bulk Cart: Failed to broadcast events', [
+                    'customer_id' => $customer->c_userid,
+                    'error' => $e->getMessage()
+                ]);
+            }
+
+            QueryOptimizerService::invalidateCustomerCaches((int) $customer->c_userid);
+
+            return response()->json([
+                'message' => 'Bulk add to cart completed',
+                'summary' => [
+                    'total_requested' => count($items),
+                    'successful' => count($addedItems),
+                    'failed' => count($failedItems),
+                ],
+                'added_items' => $addedItems,
+                'failed_items' => $failedItems,
+                'total_cart_items' => $totalCartItems,
+            ], count($failedItems) > 0 ? 207 : 201);
+
+        } catch (\Exception $e) {
+            Log::error('Bulk Cart: Validation or general error', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            return response()->json([
+                'message' => 'Error processing bulk add to cart',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
     public function getCart(Request $request)
     {
         $customer = $request->user();
