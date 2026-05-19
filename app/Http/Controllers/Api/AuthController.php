@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\AdminNotification;
+use App\Models\Admin;
 use App\Models\Customer;
 use App\Models\CustomerLoginSession;
 use App\Models\CustomerAddress;
@@ -1844,6 +1845,227 @@ class AuthController extends Controller
         ]);
     }
 
+    public function submitWebstoreRequest(Request $request)
+    {
+        $customer = $request->user();
+        if (! $customer instanceof Customer) {
+            return response()->json(['message' => 'Only customer accounts can submit webstore requests.'], 403);
+        }
+
+        $validated = $request->validate([
+            'full_name' => 'required|string|max:255',
+            'username' => 'required|string|max:255',
+            'email' => 'required|email|max:255',
+            'slug_name' => ['required', 'string', 'max:255', 'regex:/^[a-z0-9]+(?:-[a-z0-9]+)*$/'],
+            'display_name' => 'required|string|max:255',
+            'accepted_terms' => 'required|boolean|accepted',
+        ]);
+
+        $submittedAt = now();
+
+        $ticketId = DB::table('tbl_tickets')->insertGetId([
+            't_bid' => 0,
+            't_eid' => (int) $customer->c_userid,
+            't_department' => 1,
+            't_subject' => $this->webstoreRequestTicketSubject(),
+            't_urgency' => 2,
+            't_related' => 0,
+            't_view_status' => 1,
+            't_status' => 1,
+            't_date' => $submittedAt,
+            't_archive' => 0,
+            't_category' => 0,
+        ], 't_id');
+
+        $requestPayload = [
+            'type' => 'webstore_request',
+            'full_name' => trim((string) $validated['full_name']),
+            'username' => trim((string) $validated['username']),
+            'email' => trim((string) $validated['email']),
+            'slug_name' => trim((string) $validated['slug_name']),
+            'display_name' => trim((string) $validated['display_name']),
+            'accepted_terms' => true,
+            'submitted_at' => $submittedAt->toDateTimeString(),
+        ];
+
+        DB::table('tbl_tickets_details')->insert([
+            't_id' => (int) $ticketId,
+            'td_content' => json_encode($requestPayload, JSON_THROW_ON_ERROR),
+            'td_attachment' => null,
+            'td_datetime' => $submittedAt,
+            'td_rate' => 0,
+            'td_eid' => (int) $customer->c_userid,
+            'td_replystat' => 0,
+            'td_viewstat' => '1',
+            'td_ip' => (string) $request->ip(),
+        ]);
+
+        $customerName = $this->fullName($customer);
+        AdminNotification::query()->firstOrCreate(
+            [
+                'an_type' => 'webstore_request',
+                'an_source_type' => 'ticket',
+                'an_source_id' => (int) $ticketId,
+            ],
+            [
+                'an_severity' => 'info',
+                'an_title' => 'Partner Webstore Request',
+                'an_message' => sprintf(
+                    '%s submitted a Partner Webstore Request for "%s" (%s).',
+                    $customerName !== '' ? $customerName : ('Member #' . $customer->c_userid),
+                    trim((string) $validated['display_name']),
+                    trim((string) $validated['slug_name'])
+                ),
+                'an_href' => '/admin/inquiry',
+                'an_payload' => [
+                    'ticket_id' => (int) $ticketId,
+                    'customer_id' => (int) $customer->c_userid,
+                    'customer_name' => $customerName,
+                    'customer_email' => (string) ($customer->c_email ?? ''),
+                    'request' => $requestPayload,
+                    'submitted_at' => $submittedAt->toDateTimeString(),
+                ],
+                'an_created_at' => $submittedAt,
+            ]
+        );
+
+        return response()->json([
+            'message' => 'Webstore request submitted successfully.',
+            'request' => [
+                'id' => (int) $ticketId,
+                'submitted_at' => $submittedAt->toDateTimeString(),
+            ],
+        ]);
+    }
+
+    public function latestWebstoreRequest(Request $request)
+    {
+        $customer = $request->user();
+        if (! $customer instanceof Customer) {
+            return response()->json(['request' => null]);
+        }
+
+        $latest = DB::table('tbl_tickets')
+            ->where('t_subject', $this->webstoreRequestTicketSubject())
+            ->where('t_eid', (int) $customer->c_userid)
+            ->orderByDesc('t_id')
+            ->first();
+
+        return response()->json([
+            'request' => $latest ? $this->transformWebstoreTicket((int) $latest->t_id) : null,
+        ]);
+    }
+
+    public function syncWebstorePartnerAccount(Request $request)
+    {
+        $customer = $request->user();
+        if (! $customer instanceof Customer) {
+            return response()->json(['message' => 'Only customer accounts can sync partner access.'], 403);
+        }
+
+        $latest = DB::table('tbl_tickets')
+            ->where('t_subject', $this->webstoreRequestTicketSubject())
+            ->where('t_eid', (int) $customer->c_userid)
+            ->orderByDesc('t_id')
+            ->first();
+
+        if (! $latest) {
+            return response()->json(['message' => 'No webstore request found.'], 404);
+        }
+
+        $status = $this->mapTicketDecisionStatus((int) $latest->t_status, (int) $latest->t_id);
+        if ($status !== 'approved') {
+            return response()->json(['message' => 'Only approved webstore requests can be synced.'], 422);
+        }
+
+        $requestDetail = DB::table('tbl_tickets_details')
+            ->where('t_id', (int) $latest->t_id)
+            ->where('td_replystat', 0)
+            ->orderBy('td_id')
+            ->first();
+        $payload = $this->decodeWebstorePayload($requestDetail?->td_content ?? null);
+
+        $requestedUsername = trim((string) ($payload['username'] ?? ''));
+        $requestedEmail = trim((string) ($payload['email'] ?? ''));
+        $requestedName = trim((string) ($payload['full_name'] ?? ''));
+        $requestedSlug = strtolower(trim((string) ($payload['slug_name'] ?? '')));
+
+        $targetUsername = $requestedUsername !== '' ? $requestedUsername : trim((string) ($customer->c_username ?? ''));
+        if ($targetUsername === '') {
+            return response()->json(['message' => 'Unable to determine username for partner login.'], 422);
+        }
+
+        $storefrontId = $this->resolveStorefrontIdBySlug($requestedSlug);
+        if (! $storefrontId) {
+            return response()->json(['message' => 'Unable to map request slug to a partner storefront.'], 422);
+        }
+
+        $existingByUsername = Admin::query()
+            ->whereRaw('LOWER(username) = ?', [mb_strtolower($targetUsername, 'UTF-8')])
+            ->first();
+
+        if ($existingByUsername instanceof Admin && (int) ($existingByUsername->user_level_id ?? 0) !== 4) {
+            return response()->json(['message' => 'Username already belongs to a non-partner account.'], 422);
+        }
+
+        $existingByEmail = null;
+        if ($requestedEmail !== '') {
+            $existingByEmail = Admin::query()
+                ->whereRaw('LOWER(user_email) = ?', [mb_strtolower($requestedEmail, 'UTF-8')])
+                ->first();
+            if ($existingByEmail instanceof Admin && (int) ($existingByEmail->user_level_id ?? 0) !== 4) {
+                return response()->json(['message' => 'Email already belongs to a non-partner account.'], 422);
+            }
+        }
+
+        $sourcePassword = trim((string) ($customer->c_password ?? ''));
+        if ($sourcePassword === '') {
+            return response()->json(['message' => 'Customer password is missing. Please reset password first.'], 422);
+        }
+
+        $passwordInfo = password_get_info($sourcePassword);
+        if (($passwordInfo['algo'] ?? null) === null) {
+            return response()->json(['message' => 'Please reset your member password first before syncing partner login.'], 422);
+        }
+
+        $partner = $existingByUsername instanceof Admin ? $existingByUsername : ($existingByEmail instanceof Admin ? $existingByEmail : null);
+        $existingStorefrontIds = $this->normalizeStorefrontIds($partner?->admin_permissions ?? []);
+        $mergedStorefrontIds = array_values(array_unique(array_filter(array_merge($existingStorefrontIds, [$storefrontId]))));
+
+        $resolvedName = $requestedName !== '' ? $requestedName : $this->fullName($customer);
+        $resolvedEmail = $requestedEmail !== '' ? $requestedEmail : trim((string) ($customer->c_email ?? ''));
+
+        if (! $partner instanceof Admin) {
+            $partner = Admin::query()->create([
+                'fname' => $resolvedName,
+                'username' => $targetUsername,
+                'user_email' => $resolvedEmail,
+                'passworde' => $sourcePassword,
+                'user_level_id' => 4,
+                'admin_permissions' => $mergedStorefrontIds,
+                'partner_disabled_storefront_ids' => [],
+            ]);
+        } else {
+            $partner->fname = $resolvedName !== '' ? $resolvedName : (string) $partner->fname;
+            if ($resolvedEmail !== '') {
+                $partner->user_email = $resolvedEmail;
+            }
+            $partner->passworde = $sourcePassword;
+            $partner->user_level_id = 4;
+            $partner->admin_permissions = $mergedStorefrontIds;
+            $partner->save();
+        }
+
+        return response()->json([
+            'message' => 'Partner login account synced successfully.',
+            'partner' => [
+                'id' => (int) $partner->id,
+                'username' => (string) $partner->username,
+                'storefront_ids' => $mergedStorefrontIds,
+            ],
+        ]);
+    }
+
     private function transformCustomer(Customer $customer): array
     {
         $fullName = $this->fullName($customer);
@@ -2708,6 +2930,46 @@ class AuthController extends Controller
         ];
     }
 
+    private function transformWebstoreTicket(int $ticketId): array
+    {
+        $ticket = DB::table('tbl_tickets')->where('t_id', $ticketId)->first();
+        if (! $ticket) {
+            return [];
+        }
+
+        $requestDetail = DB::table('tbl_tickets_details')
+            ->where('t_id', $ticketId)
+            ->where('td_replystat', 0)
+            ->orderBy('td_id')
+            ->first();
+
+        $payload = $this->decodeWebstorePayload($requestDetail?->td_content ?? null);
+        $status = $this->mapTicketDecisionStatus((int) $ticket->t_status, $ticketId);
+
+        return [
+            'id' => (int) $ticket->t_id,
+            'reference_no' => $this->ticketReferenceNo((int) $ticket->t_id),
+            'status' => $status,
+            'full_name' => (string) ($payload['full_name'] ?? ''),
+            'username' => (string) ($payload['username'] ?? ''),
+            'email' => (string) ($payload['email'] ?? ''),
+            'slug_name' => (string) ($payload['slug_name'] ?? ''),
+            'display_name' => (string) ($payload['display_name'] ?? ''),
+            'can_sync_account' => $status === 'approved' && ! $this->hasSyncedPartnerAccount(
+                (string) ($payload['username'] ?? ''),
+                (string) ($payload['email'] ?? ''),
+                (string) ($payload['slug_name'] ?? '')
+            ),
+            'partner_sync_status' => $this->hasSyncedPartnerAccount(
+                (string) ($payload['username'] ?? ''),
+                (string) ($payload['email'] ?? ''),
+                (string) ($payload['slug_name'] ?? '')
+            ) ? 'synced' : 'not_synced',
+            'reviewed_at' => $payload['reviewed_at'] ?? null,
+            'created_at' => $ticket->t_date ? (string) $ticket->t_date : null,
+        ];
+    }
+
     private function ticketReferenceNo(int $ticketId): string
     {
         return sprintf('TKT-%06d', $ticketId);
@@ -2816,6 +3078,11 @@ class AuthController extends Controller
         return 'Username Change Request';
     }
 
+    private function webstoreRequestTicketSubject(): string
+    {
+        return 'Partner Webstore Request';
+    }
+
     private function decodeUsernameChangePayload(?string $content): array
     {
         if (!is_string($content) || trim($content) === '') {
@@ -2826,7 +3093,22 @@ class AuthController extends Controller
         return is_array($decoded) ? $decoded : [];
     }
 
+    private function decodeWebstorePayload(?string $content): array
+    {
+        if (!is_string($content) || trim($content) === '') {
+            return [];
+        }
+
+        $decoded = json_decode($content, true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
     private function mapUsernameChangeStatus(int $ticketStatus, int $ticketId): string
+    {
+        return $this->mapTicketDecisionStatus($ticketStatus, $ticketId);
+    }
+
+    private function mapTicketDecisionStatus(int $ticketStatus, int $ticketId): string
     {
         if ($ticketStatus === 1) {
             return 'pending_review';
@@ -2843,6 +3125,69 @@ class AuthController extends Controller
         }
 
         return 'approved';
+    }
+
+    private function resolveStorefrontIdBySlug(string $slug): ?int
+    {
+        $normalizedSlug = strtolower(trim($slug));
+        if ($normalizedSlug === '') {
+            return null;
+        }
+
+        $storefront = WebPageContent::query()
+            ->whereIn('wpc_type', ['partner-storefront', 'partner-storefronts'])
+            ->orderByDesc('wpc_status')
+            ->get()
+            ->first(function (WebPageContent $item) use ($normalizedSlug) {
+                $key = strtolower(trim((string) ($item->wpc_key ?? '')));
+                $payloadSlug = strtolower(trim((string) data_get($item->wpc_payload, 'fields.slug', '')));
+                return $key === $normalizedSlug || $payloadSlug === $normalizedSlug;
+            });
+
+        if (! $storefront instanceof WebPageContent) {
+            return null;
+        }
+
+        return (int) $storefront->wpc_id;
+    }
+
+    private function hasSyncedPartnerAccount(string $username, string $email, string $slug): bool
+    {
+        $targetUsername = trim($username);
+        $targetEmail = trim($email);
+        $storefrontId = $this->resolveStorefrontIdBySlug($slug);
+        if (! $storefrontId) {
+            return false;
+        }
+
+        $query = Admin::query()->where('user_level_id', 4);
+        if ($targetUsername !== '') {
+            $query->whereRaw('LOWER(username) = ?', [mb_strtolower($targetUsername, 'UTF-8')]);
+        } elseif ($targetEmail !== '') {
+            $query->whereRaw('LOWER(user_email) = ?', [mb_strtolower($targetEmail, 'UTF-8')]);
+        } else {
+            return false;
+        }
+
+        $partner = $query->first();
+        if (! $partner instanceof Admin) {
+            return false;
+        }
+
+        $ids = $this->normalizeStorefrontIds($partner->admin_permissions ?? []);
+        return in_array($storefrontId, $ids, true);
+    }
+
+    private function normalizeStorefrontIds(mixed $storefrontIds): array
+    {
+        if (! is_array($storefrontIds)) {
+            return [];
+        }
+
+        return array_values(array_unique(array_filter(array_map(
+            static fn ($id) => is_numeric($id) ? (int) $id : null,
+            $storefrontIds,
+        ), static fn ($id) => is_int($id) && $id > 0)));
     }
 
     private function normalizeReferralValue(string $value): string

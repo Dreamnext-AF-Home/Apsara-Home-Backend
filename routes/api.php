@@ -217,6 +217,9 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::get('/username-change/latest', [AuthController::class, 'latestUsernameChangeRequest']);
     Route::post('/username-change/send-otp', [AuthController::class, 'sendUsernameChangeOtp']);
     Route::post('/username-change/submit', [AuthController::class, 'submitUsernameChangeRequest']);
+    Route::post('/webstore-requests', [AuthController::class, 'submitWebstoreRequest']);
+    Route::get('/webstore-requests/latest', [AuthController::class, 'latestWebstoreRequest']);
+    Route::post('/webstore-requests/sync-account', [AuthController::class, 'syncWebstorePartnerAccount']);
     Route::get('/account/snapshot', [AuthController::class, 'accountSnapshot']);
     Route::get('/auth/addresses', [CustomerAddressController::class, 'index']);
     Route::post('/auth/addresses', [CustomerAddressController::class, 'store']);
@@ -338,6 +341,10 @@ Route::middleware(['auth:sanctum', 'admin.token.validation', 'admin.role:super_a
     Route::get('/admin/inquiries/username-changes', [AdminInquiryController::class, 'usernameChangeRequests']);
     Route::patch('/admin/inquiries/username-changes/{id}/approve', [AdminInquiryController::class, 'approveUsernameChange']);
     Route::patch('/admin/inquiries/username-changes/{id}/reject', [AdminInquiryController::class, 'rejectUsernameChange']);
+    Route::get('/admin/inquiries/webstore-requests', [AdminInquiryController::class, 'webstoreRequests']);
+    Route::patch('/admin/inquiries/webstore-requests/{id}/approve', [AdminInquiryController::class, 'approveWebstoreRequest']);
+    Route::patch('/admin/inquiries/webstore-requests/{id}/reject', [AdminInquiryController::class, 'rejectWebstoreRequest']);
+    Route::delete('/admin/inquiries/webstore-requests/{id}', [AdminInquiryController::class, 'destroyWebstoreRequest']);
 
     // Admin: Customer Service / Conversations
     Route::get('/admin/conversations', [AdminConversationController::class, 'index']);
