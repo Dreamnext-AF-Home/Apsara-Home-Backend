@@ -2131,12 +2131,13 @@ class PaymentController extends Controller
 
             Log::info('🔍 [DEBUG] OrderNotification data extracted', [
                 'checkout_id' => (string) $order->ch_checkout_id,
+                'notification_id' => $orderNotification->on_id,
                 'title' => $customTitle ?: 'EMPTY',
                 'message' => $customMessage ?: 'EMPTY',
                 'image' => $customImage ?: 'EMPTY',
-                'image_field_raw' => (string) ($orderNotification->on_product_image ?? 'NULL'),
-                'image_field_exists' => isset($orderNotification->on_product_image) ? 'YES' : 'NO',
-                'href' => $customHref ?: 'EMPTY',
+                'href_raw' => (string) ($orderNotification->on_href ?? 'NULL'),
+                'href_trimmed' => $customHref ?: 'EMPTY',
+                'href_is_empty' => empty($customHref) ? 'YES' : 'NO',
             ]);
 
             if ($customTitle !== '') {
