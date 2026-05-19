@@ -271,6 +271,7 @@ Route::middleware(['auth:sanctum', 'customer.actor'])->group(function () {
     Route::post('/wishlist', [WishlistController::class, 'store']);
     Route::delete('/wishlist/{productId}', [WishlistController::class, 'destroy']);
     Route::post('/cart/add', [CartController::class, 'addToCart']);
+    Route::post('/cart/bulk-add', [CartController::class, 'bulkAddToCart']);
     Route::get('/cart', [CartController::class, 'getCart']);
     Route::put('/cart/{id}', [CartController::class, 'updateCartItem']);
     Route::delete('/cart/{id}', [CartController::class, 'removeCartItem']);
