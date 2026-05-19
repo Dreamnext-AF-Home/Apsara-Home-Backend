@@ -844,6 +844,16 @@ class PaymentController extends Controller
                 Log::info('Order notification update completed successfully', [
                     'checkout_id' => $checkoutId,
                 ]);
+
+                // Send confirmation email for mobile orders after payment
+                $mobileOrder = CheckoutHistory::query()
+                    ->where('ch_checkout_id', $checkoutId)
+                    ->where('ch_is_mobile', true)
+                    ->first();
+
+                if ($mobileOrder) {
+                    MobilePaymentController::sendOrderConfirmationEmailAfterPayment($mobileOrder, $attrs['payment_method'] ?? '');
+                }
             } catch (\Throwable $e) {
                 Log::error('Order notification update FAILED', [
                     'checkout_id' => $checkoutId,
@@ -911,6 +921,16 @@ class PaymentController extends Controller
             Log::info('Order notification update completed from test webhook', [
                 'checkout_id' => $checkoutId,
             ]);
+
+            // Send confirmation email for mobile orders after payment
+            $mobileOrder = CheckoutHistory::query()
+                ->where('ch_checkout_id', $checkoutId)
+                ->where('ch_is_mobile', true)
+                ->first();
+
+            if ($mobileOrder) {
+                MobilePaymentController::sendOrderConfirmationEmailAfterPayment($mobileOrder, $attrs['payment_method'] ?? '');
+            }
         }
 
         return response()->json([
