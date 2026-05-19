@@ -999,6 +999,12 @@ class PaymentController extends Controller
         array $orderDetails
     ): array {
         $voucher = is_array($customer['voucher'] ?? null) ? $customer['voucher'] : [];
+        $paymentStatus = (string) ($attrs['status'] ?? 'paid');
+        $approvalStatus = (string) ($order?->ch_approval_status ?? 'pending_approval');
+
+        $displayStatus = $this->isPaidStatus($paymentStatus) && $approvalStatus === 'pending_approval'
+            ? 'pending approval'
+            : $paymentStatus;
 
         return [
             'checkout_id' => $checkoutId,
@@ -1008,8 +1014,8 @@ class PaymentController extends Controller
             'description' => $customer['description'] ?? ($order?->ch_description ?? 'Order'),
             'amount' => $customer['amount'] ?? ($order?->ch_amount ?? 0),
             'payment_method' => $customer['payment_method'] ?? ($order?->ch_payment_method ?? null),
-            'status' => $attrs['status'] ?? 'paid',
-            'order_status_label' => 'pending approval',
+            'status' => $paymentStatus,
+            'order_status_label' => $displayStatus,
             'payment_intent_id' => $attrs['payment_intent']['id'] ?? null,
             'shipping_address' => $customer['address'] ?? ($order?->ch_customer_address ?? null),
             'referred_by' => $customer['referred_by'] ?? null,
